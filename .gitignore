@@ -27,3 +27,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Local junction to .agents/skills (Windows-specific, not portable across OS)
+.claude/skills

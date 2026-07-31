@@ -1,0 +1,16 @@
+{
+  "files": [],
+  // "paths" is redundant with tsconfig.app.json for TypeScript itself (which follows
+  // "references" below), but the shadcn CLI reads this root file directly and does not
+  // follow project references. Without it, `shadcn add`/`info` silently resolve "@/*"
+  // to the wrong path instead of erroring. Keep this in sync with tsconfig.app.json.
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}
