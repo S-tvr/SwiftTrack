@@ -17,19 +17,29 @@ Endpoints/Components: <λίστα>
 Σημειώσεις: <οτιδήποτε το επόμενο session/βήμα πρέπει να ξέρει>
 -->
 
-## Step 0 — Static Mockups (frontend tooling prep)
-Status: ⚠️ Partial
+## Step 0 — Static Mockups
+Status: ✅ Done
 Ημερομηνία: 2026-07-31
 Αρχεία που προστέθηκαν/άλλαξαν:
-- Convert σε TypeScript: `src/main.tsx`, `src/App.tsx` (placeholder, demo content αφαιρέθηκε), `tsconfig.json` + `tsconfig.app.json` + `tsconfig.node.json`, `vite.config.ts`, `eslint.config.js`
-- Tailwind CSS v4: `@tailwindcss/vite` plugin, `src/index.css` (`@import "tailwindcss"`)
-- shadcn/ui init (style: base-nova): `components.json`, `src/lib/utils.ts`, `src/components/ui/button.tsx`, theme variables στο `index.css`
-Endpoints/Components: Κανένα ακόμα — μόνο tooling/config, καμία mockup σελίδα δεν έχει χτιστεί.
+- Tooling prep: Convert σε TypeScript (`src/main.tsx`, `src/App.tsx`, `tsconfig*.json`, `vite.config.ts`, `eslint.config.js`), Tailwind CSS v4, shadcn/ui init (style: base-nova)
+- Routing/scaffolding: `react-router-dom` εγκαταστάθηκε, routing στο `App.tsx` (`AppLayout` τυλίγει Header/Footer γύρω από κάθε route εκτός `/login`/`/activate`)
+- `frontend/src/mocks/data.ts` — typed `MockUser`/`MockTimeEntry`/`MockSettings` + helpers (`getEmployeeById`, `getTimeEntriesForUser`, `getMockCycle`, `isWithinCycle`, `hoursBetween`)
+- `frontend/src/lib/messages.ts` — αυτούσιο UI copy από spec §8a
+- `components/layout/Header.tsx` + `Footer.tsx`
+- shadcn components: dropdown-menu, input, label, card, dialog, table, badge, textarea
+- Καθαρίστηκαν dead demo assets (`hero.png`, `react.svg`, `vite.svg`, `icons.svg`)· διορθώθηκε το lint issue στο shadcn-generated `button.tsx` (react-refresh rule off για `components/ui/**`)· `FormEvent` → `SubmitEvent` (deprecated στο React 19 types)
+Endpoints/Components:
+- `LoginPage.tsx`, `SetInitialPasswordPage.tsx` — inert forms, χωρίς backend call
+- `ClockPage.tsx` + `ClockButton.tsx` (τοπικό toggle Clock In/Out) + `MonthSummary.tsx`
+- `ShiftHistoryPage.tsx` + `ShiftList.tsx` + `ShiftForm.tsx` (dialog, add/edit) + `CycleNavigator.tsx` — shared component, `/shifts` + `/shifts/:userId`
+- `PayrollPage.tsx` + `PayrollBreakdown.tsx` — shared, `/payroll` + `/payroll/:userId`
+- `TeamPage.tsx` + `EmployeeList.tsx` + `EmployeeForm.tsx` — admin only, Active/Pending badges
+- `PayrollOverviewPage.tsx` + `PayrollOverview.tsx` — admin only, total μηνιαίο κόστος, open-shift ένδειξη
+- `SettingsPage.tsx` — cycleStartDay/cycleEndDay form, inert
 Σημειώσεις:
-- Αποφασίστηκε (μέσω /architect): TypeScript από την αρχή· React Router ενεργό ήδη από το Step 0 (πλοήγηση μεταξύ mockup σελίδων επιτρέπεται, "no functionality" σημαίνει μόνο "no backend calls")· ένα κοινό mock data αρχείο `frontend/src/mocks/data.ts` για όλες τις σελίδες.
-- **Πρόβλημα που λύθηκε**: το `npx shadcn init` (v4.16.0 και v4.15.0) απέτυχε με "Could not load the workspace config" γιατί το root `tsconfig.json` (project-references pattern, χωρίς δικό του `compilerOptions.paths`) δεν ήταν αναγνώσιμο από το CLI. Fix: προστέθηκε `compilerOptions.paths` (`"@/*": ["./src/*"]`) και στο root `tsconfig.json`, με comment που εξηγεί γιατί πρέπει να μείνει συγχρονισμένο με το `tsconfig.app.json` — επιβεβαιώθηκε ότι η αφαίρεσή του σπάει σιωπηλά (όχι με error) το resolve των mελλοντικών `shadcn add`/`info`.
-- `tsconfig.app.json` χρειάστηκε `"types": ["vite/client"]` για να δουλέψει το CSS side-effect import.
-- `npx tsc -b` καθαρό, `npm run dev` τρέχει κανονικά (http://localhost:5173/).
-- **Ανοιχτά/minor issues από review** (δεν διορθώθηκαν ακόμα, χαμηλή προτεραιότητα): `npm run lint` αποτυγχάνει πάνω στο shadcn-generated `button.tsx` (`react-refresh/only-export-components`)· dead demo assets (`src/assets/hero.png`, `react.svg`, `vite.svg`, `public/icons.svg`) δεν έχουν καθαριστεί ακόμα.
-- Backend είναι ακόμα το bare NestJS scaffold — δεν έχει αγγιχτεί, όπως προβλέπει το AGENTS.md (backend δεν ξεκινά πριν ολοκληρωθεί το Step 0).
-- **Επόμενο βήμα**: React Router setup, `frontend/src/mocks/data.ts` (typed fake User/TimeEntry/AppSettings), `Header.tsx`/`Footer.tsx`, μετά οι 7 mockup σελίδες μία-μία (Login/Activation, Clock, Shift History, Payroll, Team, Payroll Overview, Settings) — English UI copy ακριβώς από spec §8a.
+- Αποφασίστηκε (μέσω /architect): TypeScript από την αρχή· React Router ενεργό ήδη από το Step 0· ένα κοινό mock data αρχείο για όλες τις σελίδες· mock role preview μέσω hardcoded `VIEW_AS_ADMIN` constant στο `mocks/data.ts` (αντί για πραγματικό AuthContext, που έρχεται στο Step 9) — flip + reload για εναλλαγή ρόλου, το `currentUser` διαβάζεται από όλα τα components.
+- Δεν υπάρχει ακόμα `ProtectedRoute` — κάθε route είναι προσβάσιμο μέσω URL ανεξαρτήτως ρόλου· θα μπλοκαριστεί σωστά στο Step 9.
+- Τοπική interactivity (χωρίς backend call) επιτρέπεται σε mockup όπου βοηθάει το demo — π.χ. το toggle του ClockButton, το add/edit/delete στο ShiftList/EmployeeForm πάνω σε in-memory αντίγραφο.
+- `npx tsc -b` και `npm run lint` καθαρά.
+- Προστέθηκε νέο βήμα **13a — Client-side validation polish** στο `build-plan.md` (μετά το 13, πριν το README, χωρίς αλλαγή αρίθμησης 0-14): Zod + react-hook-form + shadcn `Form` σε όλες τις φόρμες, σκόπιμα τελευταίο.
+- **Επόμενο βήμα**: Step 1 — Backend infra (Docker + Prisma schema + migration + seed script για τον πρώτο admin).

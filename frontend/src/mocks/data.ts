@@ -33,7 +33,7 @@ export interface MockSettings {
 // mockup has no real auth yet, so this constant stands in for AuthContext
 // until step 9. Typed `as boolean` so TS doesn't narrow it to a single
 // literal and flag the ADMIN branch below as unreachable.
-const VIEW_AS_ADMIN = false as boolean
+const VIEW_AS_ADMIN = true as boolean
 export const MOCK_VIEW_AS: Role = VIEW_AS_ADMIN ? "ADMIN" : "EMPLOYEE"
 
 export const mockAdmin: MockUser = {

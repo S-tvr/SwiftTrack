@@ -126,6 +126,11 @@ It never automatically moves to the next step without this confirmation, even if
   - `PayrollOverviewPage` — list of employees, total monthly cost, open-shifts indicator, cycle nav, click → employee's PayrollPage
   - `SettingsPage` — cycleStartDay/cycleEndDay
 
+- [ ] **13a. Client-side validation polish** (do this last, after all forms exist)
+  - `zod` + `react-hook-form` (+ shadcn's `Form` component) across all forms: Login, Set Initial Password, ShiftForm, EmployeeForm, Settings
+  - Replaces the native browser validation tooltip (unstyled, e.g. missing `@` in email) with styled in-app error messages
+  - Replaces the current per-field `useState` pattern in each form with `useForm` + a Zod schema per form
+
 - [ ] **14. README**
   - Build/deploy instructions, seed script instructions
 
