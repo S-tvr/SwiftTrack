@@ -9,5 +9,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Without this, `docker compose up -d` returns while Postgres is still
+    # initialising, and an immediate `prisma migrate dev` fails to connect.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swifttrack -d swifttrack"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 volumes:
   pgdata:

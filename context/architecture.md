@@ -12,6 +12,7 @@
 | Auth       | JWT (`@nestjs/jwt`)      | Stateless auth, role-based access                |
 | API Docs   | Swagger                  | Auto-generated API reference                     |
 | Validation | `class-validator` + `class-transformer` | DTO-based request validation, global `ValidationPipe` |
+| Config     | `@nestjs/config`         | Loads `.env` into `process.env` for the running app |
 | Language   | TypeScript               | Throughout (backend + frontend)                  |
 
 ---
@@ -273,6 +274,24 @@ Backend: JwtAuthGuard validates token on all protected routes
 | id            | Int (PK) | fixed, always `1`             |
 | cycleStartDay | Int      | default 25                    |
 | cycleEndDay   | Int      | default 24 (of the following month — cycle wraps across the month boundary, e.g. 25 Jun → 24 Jul) |
+
+---
+
+## Environment Variables
+
+There are **two separate paths** that read `.env`, and both must be kept working — they are not interchangeable:
+
+| Path | Who loads `.env` | Used by |
+| ---- | ---------------- | ------- |
+| Prisma CLI | `import 'dotenv/config'` at the top of `prisma.config.ts` | `prisma migrate`, `prisma generate`, `prisma studio` |
+| Seed script | `import 'dotenv/config'` at the top of `prisma/seed.ts` | `prisma db seed` (runs standalone via `tsx`, outside Nest) |
+| Running app | `ConfigModule.forRoot({ isGlobal: true })` in `AppModule` | every request the API serves |
+
+The running app's path is the one that is easy to get wrong: **Nest does not read `.env` on its own.** Without `ConfigModule`, `process.env.DATABASE_URL` is `undefined` and every DB query fails — but the app still *logs a clean successful startup*, because Prisma 7's `$connect()` on a driver adapter is lazy and the pg pool never dials until a real query runs.
+
+> Consequence for verification: "the app started without errors" **never** proves DB connectivity in this stack. Only an actual query does. Likewise, a CORS check against `http://localhost:5173` proves nothing while that same value is the hardcoded fallback in `main.ts` — test with a distinct origin.
+
+`ConfigModule.forRoot()` loads the file synchronously (`fs.readFileSync` → `process.env`) while the `@Module` decorator is being evaluated, i.e. before Nest instantiates any provider — so `PrismaService`'s constructor can safely read `process.env.DATABASE_URL` directly.
 
 ---
 
