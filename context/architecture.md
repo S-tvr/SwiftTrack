@@ -278,16 +278,19 @@ Backend: JwtAuthGuard validates token on all protected routes
 
 ## Prisma Client Pattern
 
-> Uses **Prisma ORM 7** (confirmed via official docs at implementation time — see Third-Party Library & Version Policy above). Prisma 7 changed several defaults vs. earlier majors: the client is generated to an explicit `output` path (not implicitly into `node_modules`), a `prisma.config.ts` file is required for schema path/migrations/seed config, and `prisma migrate dev` no longer auto-runs `prisma generate` or the seed script — both must be invoked explicitly.
+> Uses **Prisma ORM 7** (confirmed via official docs at implementation time — see Third-Party Library & Version Policy above). Prisma 7 changed several defaults vs. earlier majors: the client is generated to an explicit `output` path (not implicitly into `node_modules`), a `prisma.config.ts` file is required for schema path/migrations/seed config, `prisma migrate dev` no longer auto-runs `prisma generate` or the seed script (both must be invoked explicitly), and PostgreSQL now requires an explicit **driver adapter** (`@prisma/adapter-pg`) passed into the `PrismaClient` constructor — a bare connection string is no longer enough on its own.
 
 `backend/prisma/schema.prisma` generator block:
 
 ```prisma
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
 }
 ```
+
+(`moduleFormat = "cjs"` matches this backend's CommonJS setup — `tsconfig.json` uses `module: "nodenext"` with no `"type": "module"` in `package.json`.)
 
 `backend/prisma.config.ts`:
 
@@ -312,10 +315,16 @@ One shared, injectable `PrismaService` — never instantiate `PrismaClient` else
 ```typescript
 // backend/src/prisma/prisma.service.ts
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  constructor() {
+    super({
+      adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
+    });
+  }
   async onModuleInit() {
     await this.$connect();
   }
