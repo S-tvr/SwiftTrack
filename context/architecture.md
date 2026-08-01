@@ -16,16 +16,27 @@
 
 ---
 
+## Third-Party Library & Version Policy
+
+- Before touching any 3rd-party library or tool in a step (installing it, upgrading it, or using an API from it for the first time), the agent looks up current official documentation online (or via MCP, if available) instead of relying on prior/training knowledge — APIs and recommended patterns change between versions.
+- The agent stays aware of version compatibility across the stack (e.g. a Prisma version against the Node/TypeScript version in use, a NestJS version against `@nestjs/*` companion packages) and checks for known breaking changes before introducing or bumping a dependency.
+- Whenever a specific version needs to be chosen (a new dependency, or a major/minor bump of an existing one), the agent does not decide unilaterally — it presents the options/tradeoffs found in the docs and asks the user to confirm before installing.
+
+---
+
 ## Folder Structure
 
 ```
 /
 ├── docker-compose.yml
 ├── backend/
+│   ├── prisma.config.ts                   → Prisma 7 config: schema path, migrations path, seed command, datasource url
 │   ├── prisma/
 │   │   ├── schema.prisma                  → User, TimeEntry, AppSettings models
+│   │   ├── seed.ts                        → creates the first admin
 │   │   └── migrations/
 │   ├── src/
+│   │   ├── generated/prisma/              → Prisma Client output (generated, gitignored — never hand-edited)
 │   │   ├── main.ts                        → App bootstrap, Swagger setup, global ValidationPipe (whitelist+forbidNonWhitelisted), CORS for frontend origin
 │   │   ├── app.module.ts
 │   │   ├── prisma/
@@ -267,12 +278,41 @@ Backend: JwtAuthGuard validates token on all protected routes
 
 ## Prisma Client Pattern
 
+> Uses **Prisma ORM 7** (confirmed via official docs at implementation time — see Third-Party Library & Version Policy above). Prisma 7 changed several defaults vs. earlier majors: the client is generated to an explicit `output` path (not implicitly into `node_modules`), a `prisma.config.ts` file is required for schema path/migrations/seed config, and `prisma migrate dev` no longer auto-runs `prisma generate` or the seed script — both must be invoked explicitly.
+
+`backend/prisma/schema.prisma` generator block:
+
+```prisma
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+```
+
+`backend/prisma.config.ts`:
+
+```typescript
+import 'dotenv/config';
+import { defineConfig, env } from 'prisma/config';
+
+export default defineConfig({
+  schema: 'prisma/schema.prisma',
+  migrations: {
+    path: 'prisma/migrations',
+    seed: 'tsx prisma/seed.ts',
+  },
+  datasource: {
+    url: env('DATABASE_URL'),
+  },
+});
+```
+
 One shared, injectable `PrismaService` — never instantiate `PrismaClient` elsewhere.
 
 ```typescript
 // backend/src/prisma/prisma.service.ts
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma/client';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -286,6 +326,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 ```
 
 Every other module imports `PrismaModule` and injects `PrismaService` into its own service — controllers never touch Prisma directly.
+
+Command sequence after any schema change: `npx prisma generate` → `npx prisma migrate dev` → `npx prisma db seed` (each run explicitly — none of these trigger each other automatically in v7). The generated client folder (`backend/src/generated/prisma`) is build output, not hand-written source — it is gitignored, like `dist/`.
 
 ---
 

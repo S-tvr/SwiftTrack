@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  EMPLOYEE
+}
+
+model User {
+  id                  Int       @id @default(autoincrement())
+  name                String
+  email               String    @unique
+  password            String?
+  role                Role
+  hourlyRate          Int?
+  isActive            Boolean   @default(true)
+  setupCode           String?
+  setupCodeExpiresAt  DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  timeEntries         TimeEntry[]
+}
+
+model TimeEntry {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  startTime DateTime
+  endTime   DateTime?
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id])
+}
+
+model AppSettings {
+  id            Int @id @default(1)
+  cycleStartDay Int @default(25)
+  cycleEndDay   Int @default(24)
+}
