@@ -43,6 +43,9 @@ model TimeEntry {
   @@index([userId, startTime])
 }
 
+// DB also has a `CHECK ("id" = 1)` constraint, added by hand in a migration
+// (Prisma has no native syntax for it) — enforces the single-row invariant
+// below the application layer too. See migrations/..._appsettings_singleton_check.
 model AppSettings {
   id            Int @id @default(1)
   cycleStartDay Int @default(25)

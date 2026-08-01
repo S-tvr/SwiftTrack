@@ -459,7 +459,7 @@ Rules the AI agent (Claude Code) must never violate:
 
 - Controllers contain no business logic and no direct Prisma calls — only services touch Prisma.
 - Every service function whose data is scoped to a specific user (time entries, personal payroll, own profile) takes `userId` explicitly as a parameter and uses it in the query's `where` clause — never an implicit or missing filter. This does **not** apply to functions that are inherently global by design (e.g. `getAllEmployees()`, `getSettings()`, `login()`) — those correctly have no `userId` param. The rule only guards against *accidentally* returning unfiltered data where a user-scope should exist.
-- No `PrismaClient` is ever instantiated outside `PrismaService`.
+- No `PrismaClient` is ever instantiated outside `PrismaService`, with one sanctioned exception: `backend/prisma/seed.ts`, which runs standalone via `tsx` (outside the Nest app, so there's no DI container to inject `PrismaService` through) and therefore constructs its own `PrismaClient` the same way `PrismaService` does (same driver adapter). No other file gets this exception.
 - `AuthService` never queries Prisma directly for `User` data — it always goes through `UsersService` (e.g. `usersService.findByEmail()`), which is the single owner of all `User`-model queries. This also fixes the build order: `Users` module is built before `Auth` module, since `Auth` depends on it.
 - `TimeEntry.endTime = null` entries are never included in payroll totals — only "closed" shifts count.
 - Only `RolesGuard` + `@Roles('ADMIN')` may restrict a route — never inline role checks scattered in controllers.
@@ -479,5 +479,5 @@ Rules the AI agent (Claude Code) must never violate:
 - The Payroll page/component is a single shared component for both roles — the admin view is the same component with `userId` unlocked instead of pinned to `me`.
 - Frontend components never call `fetch` directly — all HTTP calls go through `frontend/src/api/`.
 - Passwords are never stored or logged in plaintext — always bcrypt hashed before persistence.
-- `AppSettings` always operates on the single fixed row (`id = 1`) — never creates a second settings row.
+- `AppSettings` always operates on the single fixed row (`id = 1`) — never creates a second settings row. Enforced at two levels: application code always reads/writes via `id: 1`, and the DB itself has a hand-written `CHECK ("id" = 1)` constraint (added via raw SQL in a migration, since Prisma's schema DSL has no native check-constraint syntax) — so even a mistaken `create()` with a different id fails outright instead of silently succeeding.
 - `DELETE /users/:id` sets `isActive = false` — it never hard-deletes a User row, since that would cascade/orphan their TimeEntry and payroll history. Deactivated users can no longer log in but their historical data remains intact.
