@@ -48,6 +48,7 @@ It never automatically moves to the next step without this confirmation, even if
   - `PUT /users/:id` (ADMIN) — DTO validation
   - `DELETE /users/:id` (ADMIN) — soft delete, sets `isActive = false`
   - Exposes `findByEmail()`, `activateAccount()` — will be used by the Auth module
+  - **No guards yet.** `JwtAuthGuard`/`RolesGuard` don't exist until Step 3 — all Users routes are built open and get `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles('ADMIN')` retrofitted in Step 3, alongside `GET /users/me` actually resolving `req.user.userId`. "Role restrictions work" for this module is verified in Step 3, not Step 2.
 
 - [ ] **3. Auth module**
   - `POST /auth/login` — bcrypt compare, checks `password !== null` **and** `isActive === true` before issuing a JWT `{ userId, role }`
