@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Role } from '../../generated/prisma/client';
 
 export class UserResponseDto {
   @ApiProperty({ example: 1 })
@@ -10,8 +11,8 @@ export class UserResponseDto {
   @ApiProperty({ example: 'jane@swifttrack.local' })
   email!: string;
 
-  @ApiProperty({ enum: ['ADMIN', 'EMPLOYEE'], example: 'EMPLOYEE' })
-  role!: 'ADMIN' | 'EMPLOYEE';
+  @ApiProperty({ enum: Role, example: Role.EMPLOYEE })
+  role!: Role;
 
   @ApiPropertyOptional({ example: 3500, nullable: true })
   hourlyRate!: number | null;

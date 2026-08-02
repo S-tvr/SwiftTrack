@@ -211,7 +211,7 @@ All user-facing text is in English.
 | Clock-in: an open shift already exists | "You already have an open shift. Please clock out first." |
 | Clock-out: no open shift | "No open shift to clock out of." |
 
-> This table is the source of truth for exact wording. The agent does not paraphrase these strings freely — it uses them exactly as written (can store them in a constants file in the frontend, e.g. `messages.ts`).
+> This table is the source of truth for exact wording. The agent does not paraphrase these strings freely — it uses them exactly as written (can store them in a constants file in the frontend, e.g. `messages.ts`). It only covers the cases listed· messages for anything else are written as needed and don't have to be added here.
 
 ---
 

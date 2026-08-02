@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
+import { UserProfileDto } from './dto/user-profile.dto';
 import { Prisma, type User } from '../generated/prisma/client';
 
 const SETUP_CODE_VALIDITY_DAYS = 3;
@@ -24,9 +25,9 @@ export class UsersService {
     return users.map((user) => this.toResponseDto(user));
   }
 
-  async findMe(userId: number): Promise<UserResponseDto> {
+  async findMe(userId: number): Promise<UserProfileDto> {
     const user = await this.findUserByIdOrThrow(userId);
-    return this.toResponseDto(user);
+    return this.toProfileDto(user);
   }
 
   async findByEmail(email: string): Promise<User | null> {
@@ -142,6 +143,17 @@ export class UsersService {
     const result = new Date(date);
     result.setDate(result.getDate() + days);
     return result;
+  }
+
+  /** The user's own view of themselves — never carries setupCode. */
+  toProfileDto(user: User): UserProfileDto {
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      hourlyRate: user.hourlyRate,
+    };
   }
 
   private toResponseDto(user: User): UserResponseDto {
