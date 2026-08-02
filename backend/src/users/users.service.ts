@@ -9,7 +9,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
-import { Prisma, type User } from '../generated/prisma/client';
+import { Prisma, Role, type User } from '../generated/prisma/client';
 
 const SETUP_CODE_VALIDITY_DAYS = 3;
 
@@ -32,6 +32,21 @@ export class UsersService {
 
   async findByEmail(email: string): Promise<User | null> {
     return this.prisma.user.findUnique({ where: { email } });
+  }
+
+  /**
+   * Used by JwtStrategy on every authenticated request: resolves the id in the
+   * token to a user who is still active, or null if they were deactivated (or
+   * deleted) since the token was issued.
+   *
+   * `select` is deliberate — this runs on every request, and password/setupCode
+   * have no business being loaded into memory that often.
+   */
+  async findActiveById(id: number): Promise<{ id: number; role: Role } | null> {
+    return this.prisma.user.findFirst({
+      where: { id, isActive: true },
+      select: { id: true, role: true },
+    });
   }
 
   async createEmployee(dto: CreateUserDto): Promise<UserResponseDto> {

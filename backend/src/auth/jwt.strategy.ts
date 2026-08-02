@@ -1,12 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { UsersService } from '../users/users.service';
 import { JwtPayload } from './jwt-payload.interface';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(configService: ConfigService) {
+  constructor(
+    configService: ConfigService,
+    private readonly usersService: UsersService,
+  ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
@@ -14,11 +18,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  // Whatever this returns becomes req.user. Trusts the signed payload — no DB
-  // lookup per request (deliberate: see architect session for Step 3). Rebuilt
-  // field by field rather than returned as-is, so req.user holds exactly what
-  // JwtPayload declares and nothing downstream can lean on iat/exp.
-  validate(payload: JwtPayload): JwtPayload {
-    return { userId: payload.userId, role: payload.role };
+  /**
+   * Whatever this returns becomes req.user.
+   *
+   * The signature proves who the caller is, but not that they are still allowed
+   * in: isActive can change after a token is issued, and the token cannot know
+   * that. So identity comes from the payload and authority comes from the DB —
+   * a user deactivated via DELETE /users/:id stops working immediately rather
+   * than lingering until their token expires.
+   *
+   * role is read from the row for the same reason: it is current, not whatever
+   * was true when the token was signed.
+   */
+  async validate(payload: JwtPayload): Promise<JwtPayload> {
+    const user = await this.usersService.findActiveById(payload.userId);
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+    return { userId: user.id, role: user.role };
   }
 }

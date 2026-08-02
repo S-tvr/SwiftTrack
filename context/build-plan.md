@@ -74,7 +74,7 @@ It never automatically moves to the next step without this confirmation, even if
   - `DELETE /time-entries/:id` (Owner or ADMIN)
   - **Owner-or-ADMIN is enforced in the service, never by a guard.** The ownership filter goes straight into the Prisma `where` (`{ id, ...(role === ADMIN ? {} : { userId }) }`), so "not yours" and "doesn't exist" collapse into one 404 and there is no separate check to forget on one of the three routes. `RolesGuard` compares a single role and cannot express ownership, and a guard would have to query Prisma — which only services may do.
   - Clock-in/clock-out error copy is already fixed in spec §8a — use it verbatim
-  - **Open question to settle first:** a deactivated employee holding a token issued before deactivation can still clock in, because `JwtStrategy` trusts the payload and never re-reads the DB (step 3 decision, documented in architecture.md). This step is the first that *writes* data, and those hours would flow into payroll. Decide explicitly: accept it, or have clock-in/`POST` re-check `isActive`.
+  - Nothing extra is needed to keep a deactivated employee out: `JwtStrategy` re-checks `isActive` on every request (see architecture.md § Invariants), so a token issued before deactivation stops working everywhere at once — this module included.
 
 - [ ] **6. Payroll module — Stage A (flat rate)**
   - `GET /payroll/me?cycle=`

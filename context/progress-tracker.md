@@ -140,7 +140,7 @@ Status: ✅ Done
 - `backend/src/auth/auth.module.ts` — `JwtModule.registerAsync` (μέσω `ConfigService`, `expiresIn: '14d'`), `PassportModule`
 - `backend/src/auth/auth.controller.ts` — `POST /auth/login`, `POST /auth/set-initial-password`, και τα δύο πίσω από `@UseGuards(ThrottlerGuard)`· Swagger τεκμηριώνει και 429
 - `backend/src/auth/auth.service.ts` — `login()` (bcrypt compare, σειρά ελέγχων: user exists → `isActive` → `password !== null` → password match), `setInitialPassword()` (user exists → `isActive` → ήδη ενεργοποιημένος → κωδικός → λήξη) — μόνο μέσω `UsersService`, ποτέ Prisma απευθείας
-- `backend/src/auth/jwt.strategy.ts` — `validate()` ανακατασκευάζει ρητά `{ userId, role }` (trust-payload-only, καμία DB lookup ανά request — απόφαση από `/architect`)
+- `backend/src/auth/jwt.strategy.ts` — `validate()` επιστρέφει ρητά `{ userId, role }`. ⚠️ Χτίστηκε ως trust-payload-only, **αλλά αναθεωρήθηκε στην ίδια session** — κάνει πλέον DB lookup ανά request· βλ. «Η απόφαση trust-payload-only ΑΝΑΘΕΩΡΗΘΗΚΕ» παρακάτω
 - `backend/src/auth/jwt-auth.guard.ts`, `roles.guard.ts`, `roles.decorator.ts` — ακριβώς το pattern του architecture.md
 - `backend/src/auth/current-user.decorator.ts` — αντικαθιστά το ad-hoc `req.user!` του Step 2
 - `backend/src/auth/jwt-payload.interface.ts` — `{ userId, role }`, με `Role` από το Prisma
@@ -159,7 +159,7 @@ Endpoints/Components:
 - `GET/POST/PUT/DELETE /users` — τώρα πραγματικά ADMIN-only (403 σε EMPLOYEE token)
 - `GET /users/me` — και οι δύο ρόλοι, επιστρέφει `UserProfileDto`· δοκιμάστηκε πραγματικά **για πρώτη φορά** (ποτέ δεν είχε δοκιμαστεί στο Step 2)
 Σημειώσεις:
-- **`/architect` έτρεξε πριν το build**, μία απόφαση τη φορά: (1) JWT expiry **14 μέρες**, ένα ενιαίο token, **χωρίς refresh token** — ρητά out of scope για το Phase 1 (θα απαιτούσε αλλαγή domain model, νέο endpoint, frontend interceptor logic· ασυνεπές με την επόμενη απόφαση). (2) `JwtStrategy.validate()` **trust-payload-only** — καμία DB lookup ανά request· συνέπεια: αν ο admin κάνει `DELETE` σε έναν employee, το ήδη εκδομένο token του παραμένει έγκυρο μέχρι να λήξει φυσικά (14 μέρες), όχι στιγμιαία ανάκληση. (3) Rate limiting **5 προσπάθειες/60s ανά IP**, σε `login` **και** `set-initial-password` ξεχωριστά (διαφορετικά throttle buckets ανά route, επιβεβαιώθηκε). (4) Σειρά ελέγχων στο login (δική μου κλήση, όχι ερώτηση στον χρήστη): `isActive` πρώτα, μετά `password === null` — ώστε ένας ταυτόχρονα deactivated+unactivated χρήστης να παίρνει πάντα "no longer active", ποτέ το παραπλανητικό μήνυμα ενεργοποίησης.
+- **`/architect` έτρεξε πριν το build**, μία απόφαση τη φορά: (1) JWT expiry **14 μέρες**, ένα ενιαίο token, **χωρίς refresh token** — ρητά out of scope για το Phase 1 (θα απαιτούσε αλλαγή domain model, νέο endpoint, frontend interceptor logic· ασυνεπές με την επόμενη απόφαση). (2) `JwtStrategy.validate()` **trust-payload-only** — καμία DB lookup ανά request· συνέπεια: αν ο admin κάνει `DELETE` σε έναν employee, το ήδη εκδομένο token του παραμένει έγκυρο μέχρι να λήξει φυσικά (14 μέρες), όχι στιγμιαία ανάκληση. **⚠️ ΑΝΑΘΕΩΡΗΘΗΚΕ αργότερα στην ίδια session — δεν ισχύει πια· βλ. τη σχετική ενότητα στο τέλος του Step 3.** (3) Rate limiting **5 προσπάθειες/60s ανά IP**, σε `login` **και** `set-initial-password` ξεχωριστά (διαφορετικά throttle buckets ανά route, επιβεβαιώθηκε). (4) Σειρά ελέγχων στο login (δική μου κλήση, όχι ερώτηση στον χρήστη): `isActive` πρώτα, μετά `password === null` — ώστε ένας ταυτόχρονα deactivated+unactivated χρήστης να παίρνει πάντα "no longer active", ποτέ το παραπλανητικό μήνυμα ενεργοποίησης.
 - **Version check πριν το build**: επιβεβαιώθηκαν μέσω `npm view` + official NestJS docs/search οι τελευταίες συμβατές εκδόσεις με NestJS 11 (`@nestjs/common@^11.0.1` peer dep όλων). Το `@nestjs/throttler` API είναι array-based στο v6 (`ThrottlerModule.forRoot([{ ttl, limit }])`, `ttl` σε ms, helper `seconds()`) — διαφορετικό από παλιότερες εκδόσεις, επιβεβαιώθηκε πριν γραφτεί κώδικας.
 - `npm audit`: ίδια 2 high-severity ευρήματα με το Step 2 (`js-yaml` transitive μέσω `@nestjs/swagger`, όχι νέο, όχι exploitable στη ροή μας) — τίποτα νέο από τα auth packages.
 - Βρέθηκε στο πρώτο `tsc --noEmit`: το `JwtPayload` ως τύπος σε decorated param (`@CurrentUser() user: JwtPayload`) χρειαζόταν `import type` (`isolatedModules` + `emitDecoratorMetadata`) — διορθώθηκε αμέσως, μία γραμμή.
@@ -210,6 +210,20 @@ Endpoints/Components:
 2. **Το «Owner or ADMIN» επιβάλλεται στο service**, με το φίλτρο ιδιοκτησίας μέσα στο Prisma `where` → **404** όταν η εγγραφή ανήκει σε άλλον. Ο `RolesGuard` δεν μπορεί να το εκφράσει (συγκρίνει έναν ρόλο), και guard θα χρειαζόταν πρόσβαση σε Prisma. Ίδιο μοτίβο με το `findEmployeeByIdOrThrow` του Step 2.
 3. **Το cycle filter μπαίνει από την αρχή** στο Time Entries, αφού πλέον το Settings προηγείται.
 
-**Ερώτημα που ΔΕΝ απαντήθηκε και πρέπει να απαντηθεί στην αρχή του Step 5:** απενεργοποιημένος employee με token εκδομένο πριν την απενεργοποίηση **μπορεί να κάνει clock-in**, γιατί το `JwtStrategy` εμπιστεύεται το payload χωρίς DB lookup (απόφαση Step 3). Μέχρι τώρα αυτό αφορούσε μόνο αναγνώσεις· το Step 5 είναι το πρώτο που **γράφει** δεδομένα, και αυτές οι ώρες θα έμπαιναν στο payroll.
+### ⚠️ Η απόφαση «trust-payload-only» του Step 3 ΑΝΑΘΕΩΡΗΘΗΚΕ (ίδια session)
+
+Το ερώτημα που προέκυψε εξετάζοντας το Step 5: απενεργοποιημένος employee με token εκδομένο **πριν** την απενεργοποίηση συνέχιζε να δουλεύει κανονικά. **Δεν χρειαζόταν καμία κακή πρόθεση** — το token ζει στο localStorage, δεν ζητείται νέο login, ο χρήστης ανοίγει το ίδιο tab και πατάει το ίδιο κουμπί. Παράθυρο: έως 14 μέρες.
+
+Εξετάστηκαν τρεις επιλογές: (α) αποδοχή, (β) έλεγχος `isActive` μόνο στα endpoints που γράφουν, (γ) έλεγχος στο `JwtStrategy.validate()` για κάθε request.
+
+**Επιλέχθηκε το (γ).** Το (β) απορρίφθηκε γιατί δημιουργεί κανόνα που πρέπει να θυμάται κανείς σε **κάθε μελλοντικό write endpoint** — και η ίδια η σημερινή session βρήκε **τρία** ακριβώς τέτοια ξεχασμένα («να το κάνεις και εδώ»): το `setupCode` που διέρρευσε από επαναχρησιμοποίηση DTO, το `isActive` που έλειπε από το `set-initial-password` ενώ υπήρχε στο `login`, και τα `PUT`/`DELETE` που δεν δοκιμάστηκαν ποτέ με employee token. Το (γ) ζει σε ένα σημείο και δεν μπορεί να παρακαμφθεί.
+
+Το κόστος (ένα indexed PK lookup ανά request) είναι πρακτικά μηδενικό σε αυτή την κλίμακα. Η αρχική απόφαση **δεν ήταν λάθος τότε** — πάρθηκε όταν όλα τα endpoints ήταν read-only· το Time Entries είναι το πρώτο που γράφει δεδομένα τα οποία γίνονται χρήματα.
+
+**Αλλαγές:** `users.service.ts` → νέα `findActiveById()` (με `select` μόνο `id`/`role`, ώστε να μη φορτώνονται `password`/`setupCode` σε κάθε request — αυτή είναι η μέθοδος που το review του Step 2 είχε προβλέψει ότι «θα μπει όταν τη χρειαστεί το JwtStrategy»). `jwt.strategy.ts` → async `validate()` που την καλεί, 401 αν ο χρήστης λείπει ή είναι ανενεργός, και το `role` διαβάζεται πλέον από τη γραμμή αντί από το token. `auth.module.ts` αμετάβλητο (ήδη έκανε import το `UsersModule`).
+
+**Επαληθεύτηκε:** ίδιο token → `GET /users/me` **200 πριν** την απενεργοποίηση, **401 μετά**· ο admin ανεπηρέαστος. `tsc`/lint καθαρά.
+
+**Πλευρικό όφελος:** δεν αφορούσε μόνο το clock-in. Ο απενεργοποιημένος έβλεπε payroll, βάρδιες, τα πάντα, για 14 μέρες. Η τρύπα ήταν πάντα ευρύτερη από το σημείο που ξεκίνησε η συζήτηση.
 
 - **Επόμενο βήμα**: Step 4 — **Settings module** (`GET /settings`, `PUT /settings`, `resolveCycleRange()` ως pure function).
