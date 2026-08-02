@@ -58,17 +58,23 @@ It never automatically moves to the next step without this confirmation, even if
   - No `/auth/register` route — the first admin only comes from the seed script
   - `AuthService` uses `UsersService` for queries on `User` — never Prisma directly
 
-- [ ] **4. Time Entries module**
-  - `POST /time-entries/clock-in` (EMPLOYEE) — fails if the user already has an open entry (`endTime = null`)· never a second open shift at the same time
-  - `PATCH /time-entries/clock-out` (EMPLOYEE)
-  - `GET /time-entries/me` (EMPLOYEE, optional cycle filter)
-  - `GET /time-entries?userId=` (ADMIN)
-  - `PUT /time-entries/:id` (Owner or ADMIN)
-  - `DELETE /time-entries/:id` (Owner or ADMIN)
-
-- [ ] **5. Settings module**
+- [ ] **4. Settings module** *(swapped with Time Entries — see below)*
   - `GET /settings` (Both)
   - `PUT /settings` (ADMIN) — updates cycleStartDay/cycleEndDay
+  - `resolveCycleRange()` lives here, not in `PayrollService`. The date arithmetic itself is a **pure function** (`cycle`, `cycleStartDay`, `cycleEndDay` → `{ start, end }`) with no DB access, so step 8a can test it directly· `SettingsService` reads the singleton row and calls it. `TimeEntriesService` and `PayrollService` inject `SettingsService` instead of resolving cycles themselves — same pattern as `AuthService` going through `UsersService` for every `User` query.
+  - **Why this moved ahead of Time Entries:** Settings owns `AppSettings` and depends on nothing beyond Prisma and the guards, while **both** Time Entries (`?cycle=` filter) and Payroll need cycle boundaries. In the original order, step 4 would have had to improvise cycle maths that step 6 would then write a second time — exactly what the "single source of truth for cycle boundaries" invariant exists to prevent. Only 4 and 5 swap· steps 6+ are untouched.
+
+- [ ] **5. Time Entries module** *(swapped with Settings)*
+  - `POST /time-entries/clock-in` (EMPLOYEE) — fails if the user already has an open entry (`endTime = null`)· never a second open shift at the same time
+  - `PATCH /time-entries/clock-out` (EMPLOYEE) — takes no `:id`· closes the caller's own open entry, fails if there is none
+  - `POST /time-entries` (Owner or ADMIN) — manually add a forgotten or missing shift, with explicit `startTime`/`endTime`/`notes`. **Distinct from clock-in**, which always writes `startTime = now, endTime = null` and refuses when a shift is open. Required by the approved `ShiftForm` mockup ("Add a forgotten or missing shift") and by step 11's `ShiftForm (add/edit/delete)` — without it that UI has no API to call
+  - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) — returns the resolved `cycleStart`/`cycleEnd` alongside the entries, per the cycle invariant
+  - `GET /time-entries?userId=` (ADMIN)
+  - `PUT /time-entries/:id` (Owner or ADMIN) — DTO accepts `startTime`/`endTime`/`notes` only, never `userId`
+  - `DELETE /time-entries/:id` (Owner or ADMIN)
+  - **Owner-or-ADMIN is enforced in the service, never by a guard.** The ownership filter goes straight into the Prisma `where` (`{ id, ...(role === ADMIN ? {} : { userId }) }`), so "not yours" and "doesn't exist" collapse into one 404 and there is no separate check to forget on one of the three routes. `RolesGuard` compares a single role and cannot express ownership, and a guard would have to query Prisma — which only services may do.
+  - Clock-in/clock-out error copy is already fixed in spec §8a — use it verbatim
+  - **Open question to settle first:** a deactivated employee holding a token issued before deactivation can still clock in, because `JwtStrategy` trusts the payload and never re-reads the DB (step 3 decision, documented in architecture.md). This step is the first that *writes* data, and those hours would flow into payroll. Decide explicitly: accept it, or have clock-in/`POST` re-check `isActive`.
 
 - [ ] **6. Payroll module — Stage A (flat rate)**
   - `GET /payroll/me?cycle=`
@@ -92,8 +98,8 @@ It never automatically moves to the next step without this confirmation, even if
     - CORS: a request from the frontend origin passes through normally
     - Error messages (login/set-initial-password) match the spec §8a wording exactly, in English
 
-- [ ] **8a. Unit tests — Payroll**
-  - Tests for `resolveCycleRange()`: cycle boundaries, edge-case months with 28/29/30/31 days
+- [ ] **8a. Unit tests — cycle resolution & Payroll**
+  - Tests for `resolveCycleRange()` (now owned by `SettingsService`, step 4): cycle boundaries, edge-case months with 28/29/30/31 days. The date arithmetic is a pure function, so these tests need no database
   - Tests for `getPayrollForCycle()`: correct hour total, correct ISK rounding, entries outside the cycle are excluded, open shifts (`endTime = null`) are excluded
 
 ---

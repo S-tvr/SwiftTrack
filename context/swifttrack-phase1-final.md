@@ -116,6 +116,7 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 |---|---|---|---|
 | POST | `/time-entries/clock-in` | EMPLOYEE | Starts a new entry (startTime = now, endTime = null) |
 | PATCH | `/time-entries/clock-out` | EMPLOYEE | Closes the current open entry (endTime = now) |
+| POST | `/time-entries` | Owner or ADMIN | Manually add a forgotten/missing shift — explicit `startTime`, `endTime`, `notes`. Distinct from clock-in, which always writes `startTime = now, endTime = null` |
 | GET | `/time-entries/me` | EMPLOYEE | My own entries (with optional cycle filter) |
 | GET | `/time-entries?userId=` | ADMIN | Entries for any employee |
 | PUT | `/time-entries/:id` | Owner or ADMIN | Edit (startTime, endTime, notes) |
@@ -251,8 +252,8 @@ volumes:
 1. Docker + Prisma schema (User, TimeEntry, AppSettings) + migration + seed script (first admin)
 2. Users module (CRUD, admin-only creation with setupCode)
 3. Auth module (login with activation check, set-initial-password, JWT, guards) — `AuthService` uses `UsersService` for queries on `User`, never Prisma directly
-4. Time Entries module (clock-in/out, CRUD, owner or admin permissions)
-5. Settings module (GET/PUT cycle days)
+4. Settings module (GET/PUT cycle days) — also owns `resolveCycleRange()`. Built before Time Entries because both Time Entries and Payroll need cycle boundaries, and Settings itself depends on nothing else
+5. Time Entries module (clock-in/out, manual add, CRUD, owner or admin permissions)
 6. Payroll module — Stage A (flat rate)
 7. Swagger docs (built into each step, with decorators)
 8. **Full check via Postman/Swagger before touching React**

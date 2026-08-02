@@ -196,4 +196,20 @@ Endpoints/Components:
 
 Τρεις επιλογές για το Step 14: (α) postinstall + README που επιβάλλει σειρά «αντίγραψε `.env` πριν το `npm install`», (β) `process.env.DATABASE_URL ?? 'placeholder'` στο config αντί για `env()` και μετά postinstall, (γ) χωρίς postinstall, ρητό `npm run setup` + οδηγίες. Η πρόταση ήταν **(β)**, δεν αποφασίστηκε.
 
-- **Επόμενο βήμα**: Step 4 — Time Entries module (`POST /time-entries/clock-in`, `PATCH /time-entries/clock-out`, `GET /time-entries/me`, `GET /time-entries?userId=`, `PUT/DELETE /time-entries/:id`) — EMPLOYEE-only clock-in/out, no-double-open-shift invariant, owner-or-ADMIN ελέγχεται πλέον με πραγματικά guards/`@CurrentUser()` έτοιμα από αυτό το βήμα.
+### ⚠️ Τα Steps 4 και 5 ΑΝΤΑΛΛΑΞΑΝ θέση (απόφαση στο τέλος αυτής της session)
+
+**Το Step 4 είναι πλέον το Settings, το Step 5 το Time Entries.** Τα 6+ δεν άλλαξαν. Η ανταλλαγή έγινε τώρα επειδή κανένα ολοκληρωμένο βήμα (0-3) δεν αναφέρεται σε αυτούς τους αριθμούς — σε δύο βήματα δεν θα ήταν δωρεάν.
+
+**Λόγος:** το Settings δεν εξαρτάται από τίποτα πέρα από Prisma + guards, ενώ **και** το Time Entries (`?cycle=` filter) **και** το Payroll χρειάζονται όρια κύκλου. Με την αρχική σειρά, το Time Entries θα αυτοσχεδίαζε υπολογισμό κύκλου που το Payroll θα ξανάγραφε — δηλαδή δύο υλοποιήσεις της ίδιας ημερομηνιακής λογικής, ακριβώς ό,τι απαγορεύει το invariant «single source of truth for cycle boundaries».
+
+Ενημερώθηκαν αντίστοιχα: `build-plan.md` §4/§5/§8a, spec §6 (νέο endpoint) + §11 (σειρά), `architecture.md` (invariant + δείγμα κώδικα Payroll + νέο invariant για owner-or-ADMIN).
+
+**Τρεις αποφάσεις που πάρθηκαν για το Time Entries πριν γραφτεί κώδικας** (μέσω review του build-plan, όπως έγινε και με τη σειρά των guards στο Step 2):
+
+1. **Προστίθεται `POST /time-entries`** (Owner ή ADMIN) για χειροκίνητη προσθήκη ξεχασμένης βάρδιας. Έλειπε από spec **και** build-plan, ενώ ο εγκεκριμένος mockup `ShiftForm.tsx` έχει ήδη κατάσταση "Add Shift" με κείμενο «Add a forgotten or missing shift», και το build-plan §11 λέει `ShiftForm (add/edit/delete)`. Ίδια κατηγορία με το critical εύρημα του Step 2 (`setupCode` που το `EmployeeList.tsx` έκανε render χωρίς να το επιστρέφει το API). Το `clock-in` δεν καλύπτει την ανάγκη — γράφει πάντα `startTime = now, endTime = null`. Συζητήθηκε ρητά ότι αυτό σημαίνει πως ο υπάλληλος γράφει μόνος τις ώρες του· έγινε αποδεκτό γιατί το spec **ήδη** του δίνει `PUT`/`DELETE` στις δικές του εγγραφές, άρα η δυνατότητα υπήρχε ούτως ή άλλως. Ροή έγκρισης θα ήταν αλλαγή domain model (`source`, `status`, `approvedById`, `approvedAt` + αλλαγή στον υπολογισμό μισθοδοσίας) — **εκτός Phase 1**.
+2. **Το «Owner or ADMIN» επιβάλλεται στο service**, με το φίλτρο ιδιοκτησίας μέσα στο Prisma `where` → **404** όταν η εγγραφή ανήκει σε άλλον. Ο `RolesGuard` δεν μπορεί να το εκφράσει (συγκρίνει έναν ρόλο), και guard θα χρειαζόταν πρόσβαση σε Prisma. Ίδιο μοτίβο με το `findEmployeeByIdOrThrow` του Step 2.
+3. **Το cycle filter μπαίνει από την αρχή** στο Time Entries, αφού πλέον το Settings προηγείται.
+
+**Ερώτημα που ΔΕΝ απαντήθηκε και πρέπει να απαντηθεί στην αρχή του Step 5:** απενεργοποιημένος employee με token εκδομένο πριν την απενεργοποίηση **μπορεί να κάνει clock-in**, γιατί το `JwtStrategy` εμπιστεύεται το payload χωρίς DB lookup (απόφαση Step 3). Μέχρι τώρα αυτό αφορούσε μόνο αναγνώσεις· το Step 5 είναι το πρώτο που **γράφει** δεδομένα, και αυτές οι ώρες θα έμπαιναν στο payroll.
+
+- **Επόμενο βήμα**: Step 4 — **Settings module** (`GET /settings`, `PUT /settings`, `resolveCycleRange()` ως pure function).

@@ -474,7 +474,9 @@ export class AuthService {
 ```typescript
 // backend/src/payroll/payroll.service.ts
 async getPayrollForCycle(userId: number, cycle: string) {
-  const { start, end } = this.resolveCycleRange(cycle); // uses AppSettings — cycle wraps across month boundary
+  // Cycle boundaries come from SettingsService, which owns AppSettings — this
+  // service never computes them itself. The cycle wraps across the month boundary.
+  const { start, end } = await this.settingsService.resolveCycleRange(cycle);
   const entries = await this.prisma.timeEntry.findMany({
     where: { userId, startTime: { gte: start, lt: end }, endTime: { not: null } },
   });
@@ -506,6 +508,7 @@ Rules the AI agent (Claude Code) must never violate:
 - `AuthService` never queries Prisma directly for `User` data — it always goes through `UsersService` (e.g. `usersService.findByEmail()`), which is the single owner of all `User`-model queries. This also fixes the build order: `Users` module is built before `Auth` module, since `Auth` depends on it.
 - `TimeEntry.endTime = null` entries are never included in payroll totals — only "closed" shifts count.
 - Only `RolesGuard` + `@Roles('ADMIN')` may restrict a route — never inline role checks scattered in controllers.
+- "Owner or ADMIN" access to a specific row (time entries) is **not** a role check and is never expressed with a guard. `RolesGuard` compares a single role and knows nothing about who owns a row, and a guard would have to query Prisma — which only services may do. The service folds the ownership filter into the Prisma `where` itself (`{ id, ...(role === Role.ADMIN ? {} : { userId }) }`), so a row belonging to someone else and a row that does not exist produce the same **404**. This is deliberate on both counts: the caller learns nothing about rows that are not theirs, and there is no separate "am I the owner?" branch that can be forgotten on one route out of several. Note this is an authorization boundary, not a UI one — the API accepts any `:id` a client sends, and ids are sequential integers.
 - There is no public `/auth/register` route. The first admin is seeded directly into the DB via a seed script, never created through the API.
 - `POST /users` never accepts a `password` in the request body — employees are always created with `password: null` plus a fresh `setupCode` and 3-day `setupCodeExpiresAt`.
 - `setupCode` and `setupCodeExpiresAt` are always cleared to `null` together, immediately after a successful `set-initial-password` call — a setup code is never reusable, even before it expires.
@@ -516,7 +519,7 @@ Rules the AI agent (Claude Code) must never violate:
 - All `TimeEntry` timestamps are stored and compared in UTC. The app targets Iceland only (no DST, UTC year-round) — no timezone conversion logic is ever introduced.
 - `hourlyRate` and every computed pay amount are Icelandic króna (ISK) and are always whole numbers (`Int`) — never `Decimal` or `Float`. Intermediate hour calculations may be fractional, but `totalPay` is rounded to the nearest whole krona as the final step of the payroll calculation, never left unrounded and never rounded earlier in the pipeline.
 - `AppSettings.cycleStartDay`/`cycleEndDay` default to 25/24, meaning a cycle wraps across the month boundary (e.g. 25 Jun → 24 Jul) — a cycle never resolves to a same-month start/end range.
-- The backend is the single source of truth for pay-cycle date boundaries. `resolveCycleRange()` lives only in `PayrollService` (or a shared backend util it calls); every response that involves a cycle (time-entries list, payroll breakdown) returns the resolved `cycleStart`/`cycleEnd` as ISO dates. The frontend never computes cycle boundaries itself (including the ◀▶ `CycleNavigator`) — it only reads and displays the dates the backend already gave it.
+- The backend is the single source of truth for pay-cycle date boundaries. `resolveCycleRange()` lives only in `SettingsService`, which owns the `AppSettings` row it derives from; `TimeEntriesService` and `PayrollService` inject `SettingsService` rather than resolving cycles themselves, the same way `AuthService` goes through `UsersService` for every `User` query. The date arithmetic itself is a pure function (`cycle`, `cycleStartDay`, `cycleEndDay` → `{ start, end }`) so it can be unit-tested without a database. Every response that involves a cycle (time-entries list, payroll breakdown) returns the resolved `cycleStart`/`cycleEnd` as ISO dates. The frontend never computes cycle boundaries itself (including the ◀▶ `CycleNavigator`) — it only reads and displays the dates the backend already gave it.
 - `/time-entries/clock-in` and `/time-entries/clock-out` are EMPLOYEE-only — the admin never clocks in/out and has no Clock page/ClockButton in their UI. Admin lands on the Team page after login instead.
 - `/time-entries/clock-in` fails (never silently creates a duplicate) if the user already has an open `TimeEntry` (`endTime = null`) — a user can have at most one open shift at a time.
 - The Payroll page/component is a single shared component for both roles — the admin view is the same component with `userId` unlocked instead of pinned to `me`.
