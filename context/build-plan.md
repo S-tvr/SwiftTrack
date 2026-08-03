@@ -71,10 +71,24 @@ It never automatically moves to the next step without this confirmation, even if
   - `POST /time-entries/clock-in` (EMPLOYEE) — fails if the user already has an open entry (`endTime = null`)· never a second open shift at the same time
   - `PATCH /time-entries/clock-out` (EMPLOYEE) — takes no `:id`· closes the caller's own open entry, fails if there is none
   - `POST /time-entries` (Owner or ADMIN) — manually add a forgotten or missing shift, with explicit `startTime`/`endTime`/`notes`. **Distinct from clock-in**, which always writes `startTime = now, endTime = null` and refuses when a shift is open. Required by the approved `ShiftForm` mockup ("Add a forgotten or missing shift") and by step 11's `ShiftForm (add/edit/delete)` — without it that UI has no API to call
-  - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) — returns the resolved cycle block (`cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`) alongside the entries, per the cycle invariant. Selects entries that **overlap** the cycle, not those whose `startTime` falls inside it, and carries a per-entry `hoursInCycle` + `isSplit` so the Hours column adds up to what payroll pays (spec §4 decision 5b)
-  - `GET /time-entries?userId=` (ADMIN)
+  - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) and `GET /time-entries?userId=&cycle=` (ADMIN) — **the same response shape**, because both feed the same `ShiftList` component with the same `CycleNavigator` (employee at `/shifts`, admin at `/shifts/:userId`). The admin route needs `?cycle=` for exactly the reason the employee one does: without it the ◀▶ has no key to send and no dates to print
+    ```
+    { cycle, prevCycle, nextCycle, cycleStart, cycleEnd,
+      entries: [ { id, startTime, endTime, notes, hoursInCycle, isSplit } ] }
+    ```
+    `hoursInCycle` is the entry's hours **within this cycle** and `isSplit` marks one that extends beyond it — both straight from `cycle.util.ts` (step 4), so the Hours column adds up to what payroll pays (spec §4 decision 5b)
+  - ⚠️ **The list query is NOT the payroll query.** Payroll takes closed shifts overlapping the cycle. The list must additionally show **open** shifts (`endTime = null`), which `endTime: { not: null }` would silently drop — and the approved `ShiftList` renders a red **"Open"** badge for exactly those, so an employee who forgot to clock out would have no screen on which to find and fix it. Open shifts cannot overlap-match (they have no end), so they are selected by `startTime` instead, per the invariant in architecture.md:
+    ```ts
+    where: { userId, OR: [
+      { endTime: { not: null, gt: start }, startTime: { lt: endExclusive } }, // closed: overlapping
+      { endTime: null, startTime: { gte: start, lt: endExclusive } },         // open: by startTime
+    ]}
+    ```
+    An open shift reports `hoursInCycle: 0` and `isSplit: false` — already the behaviour of the step-4 functions, covered by their tests
+  - `GET /time-entries/open` (EMPLOYEE) — the caller's open shift, or `null`. Needed by step 10: `ClockButton` must render "Clock In" or "Clock Out" on page load, and it cannot read that off the list, because an open shift started in the *previous* cycle is filtered out of the current one. Without this the button renders the wrong label and clock-in then fails with "You already have an open shift"
   - `PUT /time-entries/:id` (Owner or ADMIN) — DTO accepts `startTime`/`endTime`/`notes` only, never `userId`
   - `DELETE /time-entries/:id` (Owner or ADMIN)
+  - ⚠️ **BLOCKED until the user decides — do not improvise.** Three validation rules for `POST /time-entries` and `PUT /time-entries/:id` are unspecified, and each one guessed wrong changes what people get paid: whether `endTime` must be after `startTime`, whether two shifts may overlap each other, and whether the manual form may create an open shift (`endTime = null`). See the pending-decision entry at the end of `progress-tracker.md` — read it and ask before writing this module
   - **Owner-or-ADMIN is enforced in the service, never by a guard.** The ownership filter goes straight into the Prisma `where` (`{ id, ...(role === ADMIN ? {} : { userId }) }`), so "not yours" and "doesn't exist" collapse into one 404 and there is no separate check to forget on one of the three routes. `RolesGuard` compares a single role and cannot express ownership, and a guard would have to query Prisma — which only services may do.
   - Clock-in/clock-out error copy is already fixed in spec §8a — use it verbatim
   - Nothing extra is needed to keep a deactivated employee out: `JwtStrategy` re-checks `isActive` on every request (see architecture.md § Invariants), so a token issued before deactivation stops working everywhere at once — this module included.

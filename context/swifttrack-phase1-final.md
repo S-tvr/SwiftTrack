@@ -119,8 +119,9 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | POST | `/time-entries/clock-in` | EMPLOYEE | Starts a new entry (startTime = now, endTime = null) |
 | PATCH | `/time-entries/clock-out` | EMPLOYEE | Closes the current open entry (endTime = now) |
 | POST | `/time-entries` | Owner or ADMIN | Manually add a forgotten/missing shift — explicit `startTime`, `endTime`, `notes`. Distinct from clock-in, which always writes `startTime = now, endTime = null` |
-| GET | `/time-entries/me` | EMPLOYEE | My own entries (with optional cycle filter) |
-| GET | `/time-entries?userId=` | ADMIN | Entries for any employee |
+| GET | `/time-entries/me` | EMPLOYEE | My own entries for a cycle (optional `?cycle=`, defaults to the current one). Returns the resolved cycle block plus per-entry `hoursInCycle`/`isSplit` |
+| GET | `/time-entries?userId=&cycle=` | ADMIN | Entries for any employee — **same response shape** as `/me`, since both feed the same shared `ShiftList` + `CycleNavigator` |
+| GET | `/time-entries/open` | EMPLOYEE | The caller's open shift, or `null` — what the Clock page's button state is read from |
 | PUT | `/time-entries/:id` | Owner or ADMIN | Edit (startTime, endTime, notes) |
 | DELETE | `/time-entries/:id` | Owner or ADMIN | Delete |
 
