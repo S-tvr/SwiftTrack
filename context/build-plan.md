@@ -60,15 +60,18 @@ It never automatically moves to the next step without this confirmation, even if
 
 - [ ] **4. Settings module** *(swapped with Time Entries — see below)*
   - `GET /settings` (Both)
-  - `PUT /settings` (ADMIN) — updates cycleStartDay/cycleEndDay
-  - `resolveCycleRange()` lives here, not in `PayrollService`. The date arithmetic itself is a **pure function** (`cycle`, `cycleStartDay`, `cycleEndDay` → `{ start, end }`) with no DB access, so step 8a can test it directly· `SettingsService` reads the singleton row and calls it. `TimeEntriesService` and `PayrollService` inject `SettingsService` instead of resolving cycles themselves — same pattern as `AuthService` going through `UsersService` for every `User` query.
+  - `PUT /settings` (ADMIN) — updates cycleStartDay/cycleEndDay. Both fields required· `cycleStartDay` 11–25 and `cycleEndDay` exactly `cycleStartDay - 1`, enforced by `class-validator` (custom `@IsDayBefore`), otherwise 400. See spec §4 decision 5a for why the range is restricted — contiguous cycles, and no day-of-month clamping ever needed
+  - `resolveCycleRange()` lives here, not in `PayrollService`. The date arithmetic itself is a **pure function** (`cycle`, `cycleStartDay` → `{ start, endExclusive }`) with no DB access, in `cycle.util.ts`· `SettingsService` reads the singleton row and calls it. `TimeEntriesService` and `PayrollService` inject `SettingsService` instead of resolving cycles themselves — same pattern as `AuthService` going through `UsersService` for every `User` query
+  - `cycle.util.ts` also owns `hoursWithinCycle()` (the shift/cycle intersection used for splitting), `shiftCycleKey()` (◀▶ prev/next), and `resolveCurrentCycleKey()` (the `?cycle=` omitted default). All pure, all consumed by steps 5 and 6 — one implementation each, for the same reason `resolveCycleRange()` moved here
+  - **Unit tests for `cycle.util.ts` are written in this step, not deferred to 8a.** The functions have no HTTP surface until step 5, so the alternative would be a throwaway verification script· step 8a extends these and adds the payroll-level tests
+  - A missing `AppSettings` row (migrations run without the seed) fails loudly with a 500 naming the fix — never a silent `upsert` to defaults, which would move the payroll boundary by up to two weeks with no signal
   - **Why this moved ahead of Time Entries:** Settings owns `AppSettings` and depends on nothing beyond Prisma and the guards, while **both** Time Entries (`?cycle=` filter) and Payroll need cycle boundaries. In the original order, step 4 would have had to improvise cycle maths that step 6 would then write a second time — exactly what the "single source of truth for cycle boundaries" invariant exists to prevent. Only 4 and 5 swap· steps 6+ are untouched.
 
 - [ ] **5. Time Entries module** *(swapped with Settings)*
   - `POST /time-entries/clock-in` (EMPLOYEE) — fails if the user already has an open entry (`endTime = null`)· never a second open shift at the same time
   - `PATCH /time-entries/clock-out` (EMPLOYEE) — takes no `:id`· closes the caller's own open entry, fails if there is none
   - `POST /time-entries` (Owner or ADMIN) — manually add a forgotten or missing shift, with explicit `startTime`/`endTime`/`notes`. **Distinct from clock-in**, which always writes `startTime = now, endTime = null` and refuses when a shift is open. Required by the approved `ShiftForm` mockup ("Add a forgotten or missing shift") and by step 11's `ShiftForm (add/edit/delete)` — without it that UI has no API to call
-  - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) — returns the resolved `cycleStart`/`cycleEnd` alongside the entries, per the cycle invariant
+  - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) — returns the resolved cycle block (`cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`) alongside the entries, per the cycle invariant. Selects entries that **overlap** the cycle, not those whose `startTime` falls inside it, and carries a per-entry `hoursInCycle` + `isSplit` so the Hours column adds up to what payroll pays (spec §4 decision 5b)
   - `GET /time-entries?userId=` (ADMIN)
   - `PUT /time-entries/:id` (Owner or ADMIN) — DTO accepts `startTime`/`endTime`/`notes` only, never `userId`
   - `DELETE /time-entries/:id` (Owner or ADMIN)
@@ -79,9 +82,9 @@ It never automatically moves to the next step without this confirmation, even if
 - [ ] **6. Payroll module — Stage A (flat rate)**
   - `GET /payroll/me?cycle=`
   - `GET /payroll/:userId?cycle=` (ADMIN)
-  - Logic: only entries with `endTime != null`, within the cycle
+  - Logic: only entries with `endTime != null`, **overlapping** the cycle· each entry contributes only the hours that fall inside it (`hoursWithinCycle()` from step 4 — spec §4 decision 5b, §7)
   - `totalPay` always rounded to an integer (ISK, `Math.round` at the end — never in between)
-  - Response includes `cycleStart`/`cycleEnd` (ISO dates) — the backend is the single source of truth for cycle boundaries, the frontend consumes them ready-made
+  - Response includes the resolved cycle block (`cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`) — the backend is the single source of truth for cycle boundaries, the frontend consumes them ready-made
 
 - [ ] **7. Swagger**
   - `@ApiTags`, `@ApiOperation`, `@ApiResponse` on every controller — built in with each step, not at the end
@@ -95,12 +98,14 @@ It never automatically moves to the next step without this confirmation, even if
     - Login with `isActive = false` (must fail)
     - `POST /users` with `password` in the body (must be rejected by the ValidationPipe)
     - Cycle boundary: a shift exactly on the 25th or the 24th of the month — correct cycle
+    - A shift crossing the boundary (e.g. 24 Aug 20:00 → 25 Aug 03:00) — appears in both cycles, hours split 4/3, and the two parts sum to the full shift
+    - `PUT /settings` with a non-contiguous or out-of-range day pair (e.g. `{25, 20}`, `{10, 9}`, `{26, 25}`) — must be rejected with 400
     - CORS: a request from the frontend origin passes through normally
     - Error messages (login/set-initial-password) match the spec §8a wording exactly, in English
 
 - [ ] **8a. Unit tests — cycle resolution & Payroll**
-  - Tests for `resolveCycleRange()` (now owned by `SettingsService`, step 4): cycle boundaries, edge-case months with 28/29/30/31 days. The date arithmetic is a pure function, so these tests need no database
-  - Tests for `getPayrollForCycle()`: correct hour total, correct ISK rounding, entries outside the cycle are excluded, open shifts (`endTime = null`) are excluded
+  - `cycle.util.spec.ts` already exists from step 4 (boundaries, February, splitting, open shifts, prev/next keys, the omitted-`?cycle=` default) — extend rather than re-create. The 28/29/30/31 clamping cases from the original plan no longer apply: the 11–25 restriction means every allowed day exists in every month (spec §4 decision 5a)
+  - Tests for `getPayrollForCycle()`: correct hour total, correct ISK rounding, entries outside the cycle are excluded, open shifts (`endTime = null`) are excluded, and a shift crossing the boundary contributes its clipped hours to **each** of the two cycles (the two parts summing to its full length)
 
 ---
 
@@ -131,7 +136,7 @@ It never automatically moves to the next step without this confirmation, even if
   - `TeamPage` — first page after admin login. List, create, edit hourlyRate, click → employee's ShiftHistoryPage
   - `TeamPage` — badge per employee **"Active" / "Pending"** (from the `hasActivated` returned by the backend· see spec §8a)
   - `PayrollOverviewPage` — list of employees, total monthly cost, open-shifts indicator, cycle nav, click → employee's PayrollPage
-  - `SettingsPage` — cycleStartDay/cycleEndDay
+  - `SettingsPage` — cycleStartDay/cycleEndDay. ⚠️ The step-0 mockup has two free number inputs (1–31)· it becomes a **single** `<select>` of 11–25 with the end day rendered beside it as derived text ("Cycle ends on the 24th of the following month"). The request still sends both fields — the admin simply cannot produce an invalid pair. The backend validation stays regardless (see step 4)
 
 - [ ] **13a. Client-side validation polish** (do this last, after all forms exist)
   - `zod` + `react-hook-form` (+ shadcn's `Form` component) across all forms: Login, Set Initial Password, ShiftForm, EmployeeForm, Settings

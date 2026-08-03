@@ -54,8 +54,8 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | Field | Type | Notes |
 |---|---|---|
 | id | Int (PK) | fixed, always `1` — a single unique row |
-| cycleStartDay | Int | default 25 |
-| cycleEndDay | Int | default 24 (of the following month — the cycle "wraps" across the month boundary, e.g. 25 June → 24 July) |
+| cycleStartDay | Int | default 25· allowed range **11–25** (see §4, decision 5a). The only field the cycle arithmetic reads |
+| cycleEndDay | Int | default 24 (of the following month — the cycle "wraps" across the month boundary, e.g. 25 June → 24 July). Always exactly `cycleStartDay - 1`, so allowed range **10–24**. Stored and validated, but **derived** — never used to compute a boundary |
 
 ---
 
@@ -69,6 +69,8 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | 3 | Forgotten Clock Out | Stays open (`endTime = null`), fixed manually later. Doesn't count toward payroll until closed |
 | 4 | Who can edit entries | Both the employee (their own) and the admin (any employee's) |
 | 5 | Pay cycle configuration | `AppSettings` table, configured by the admin via the UI. The cycle wraps across the month boundary (e.g. 25 → 24 of the following month). The backend is the **single source of truth** for resolving cycle boundaries — every relevant response (time-entries, payroll) includes the resolved `cycleStart`/`cycleEnd` as ISO dates, so the frontend never computes any dates itself, only displays them |
+| 5a | Allowed cycle days | `cycleStartDay` is restricted to **11–25**, and `cycleEndDay` is always exactly `cycleStartDay - 1` (so 11–10 … 25–24) — any other combination is rejected with a 400. Two consequences, both deliberate: consecutive cycles are contiguous, so no shift can fall into a gap between them or into two at once; and every allowed day exists in every month, so no day-of-month clamping for 28/29/30/31-day months is ever needed. Since the range is fully determined by `cycleStartDay`, the cycle arithmetic uses **only** that field — `cycleEndDay` is stored and validated but never computed with |
+| 5b | Shifts crossing a cycle boundary | A shift is **split** at the boundary: the hours before it count toward the earlier cycle, the hours after it toward the later one. A shift 24 Aug 20:00 → 25 Aug 03:00 with a 25th boundary contributes 4h to one cycle and 3h to the next. A shift is therefore never assigned wholesale to the cycle of its `startTime` — the sum over all cycles always equals the hours actually worked, and no hour is ever lost or paid twice. The boundary itself is **exclusive**: `cycleEnd` as returned by the API is the last instant *inside* the cycle (display), while every query and every hour calculation uses the exclusive instant (midnight), which is simultaneously the next cycle's start |
 | 6 | Currency | Icelandic króna (ISK) — no decimals. `hourlyRate` and every computed pay amount are always whole integers (Int), never decimal |
 | 7 | Timezone | Everything in UTC. The app is exclusively for Iceland, where there's no DST — UTC always matches local time |
 | 8 | API validation | Every endpoint that accepts a body uses a DTO with `class-validator` + a global `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })`· any field that isn't expected (e.g. a `password` sent to `POST /users`) is automatically rejected, not just "not documented" |
@@ -132,7 +134,7 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | GET | `/settings` | Both | Current cycle settings |
-| PUT | `/settings` | ADMIN | Update cycleStartDay/cycleEndDay |
+| PUT | `/settings` | ADMIN | Update cycleStartDay/cycleEndDay. Both fields are required· `cycleStartDay` must be 11–25 and `cycleEndDay` must be exactly `cycleStartDay - 1`, otherwise 400 (see §4, decision 5a) |
 
 **Architectural rule**: Every service function whose data belongs to a specific user (time entries, personal payroll, own profile) explicitly takes `userId` as an argument and uses it in the query filter — never a silent or missing filter. Doesn't apply to functions that are intentionally global (e.g. `getAllEmployees()`, `getSettings()`) — those correctly don't take a `userId`.
 
@@ -140,14 +142,34 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 
 ## 7. Pay Calculation Logic (Service layer)
 
-**Flat rate:**
+**Flat rate, with boundary splitting (§4, decision 5b):**
 ```
-approvedEntries = all of the user's TimeEntries within the cycle WITH endTime != null
-totalHours = Σ(endTime - startTime) for each entry  (UTC, fractional hours allowed here)
-totalPay = round(totalHours × user.hourlyRate)      (ISK — always rounded to an integer as the final step)
+relevantEntries = the user's closed TimeEntries (endTime != null) that OVERLAP the cycle
+                  — i.e. startTime < cycleEndExclusive AND endTime > cycleStart.
+                  Not "entries whose startTime falls inside the cycle": a shift that
+                  crosses the boundary is relevant to both cycles it touches.
+
+hoursInCycle(entry) = max(0, min(entry.endTime, cycleEndExclusive)
+                             - max(entry.startTime, cycleStart)) / 3_600_000
+                  — the intersection of the shift with the cycle, in fractional hours.
+                  For a shift entirely inside the cycle this is simply its full length.
+
+totalHours = Σ hoursInCycle(entry)                  (UTC, fractional hours allowed here)
+totalPay   = round(totalHours × user.hourlyRate)    (ISK — rounded to an integer as the FINAL step)
 ```
 
-> `cycle=2026-07` means: the cycle that **starts** in July 2026 (e.g. 25/07 → 24/08 with the defaults). The backend computes the exact `cycleStart`/`cycleEnd` from `AppSettings` and returns them ready-to-use in every relevant response — the frontend never computes any cycle dates itself (see §4, decision 5).
+Open shifts (`endTime = null`) contribute **0 hours** — they cannot be split without an end — and are listed under the cycle their `startTime` falls in.
+
+> `cycle=2026-07` means: the cycle that **starts** in July 2026 (e.g. 25/07 → 25/08 exclusive, displayed as 25/07 – 24/08, with the defaults). The backend computes the exact boundaries from `AppSettings` and returns them ready-to-use in every relevant response — the frontend never computes any cycle dates itself (see §4, decision 5).
+
+**Every cycle-aware response** (time entries list, payroll breakdown) carries the same block, so the ◀▶ navigator never does date arithmetic of its own — it just sends back the key it was handed:
+
+```
+{ cycle: "2026-07", prevCycle: "2026-06", nextCycle: "2026-08",
+  cycleStart: "2026-07-25T00:00:00.000Z", cycleEnd: "2026-08-24T23:59:59.999Z" }
+```
+
+When `?cycle=` is omitted, the backend resolves the cycle that **contains the current moment** — note this is not the current calendar month: on 3 August with a 25th boundary, the current cycle is `2026-07`.
 
 ---
 

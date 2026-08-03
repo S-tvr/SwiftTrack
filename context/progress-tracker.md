@@ -227,3 +227,62 @@ Endpoints/Components:
 **Πλευρικό όφελος:** δεν αφορούσε μόνο το clock-in. Ο απενεργοποιημένος έβλεπε payroll, βάρδιες, τα πάντα, για 14 μέρες. Η τρύπα ήταν πάντα ευρύτερη από το σημείο που ξεκίνησε η συζήτηση.
 
 - **Επόμενο βήμα**: Step 4 — **Settings module** (`GET /settings`, `PUT /settings`, `resolveCycleRange()` ως pure function).
+
+## Step 4 — Settings Module
+Status: ✅ Done
+Ημερομηνία: 2026-08-03
+Αρχεία που προστέθηκαν/άλλαξαν:
+- `backend/src/settings/cycle.util.ts` — **όλη** η ημερομηνιακή λογική κύκλου, καθαρές συναρτήσεις χωρίς DB/DI: `parseCycleKey`, `formatCycleKey`, `computeCycleRange`, `shiftCycleKey`, `resolveCurrentCycleKey`, `hoursWithinCycle`, `isSplitAcrossCycle`, `toCycleRangeDto`
+- `backend/src/settings/settings.service.ts` — `getSettings`, `updateSettings`, `resolveCycleRange(cycle?)`· private `getSettingsRow()` + `assertUsableCycleStartDay()`
+- `backend/src/settings/settings.controller.ts` — `GET /settings` (και οι δύο ρόλοι), `PUT /settings` (ADMIN)· Swagger 200/400/401/403
+- `backend/src/settings/settings.module.ts` — imports `PrismaModule`, exports `SettingsService` (θα το κάνουν inject τα Steps 5/6)
+- `backend/src/settings/dto/` — `settings-response.dto.ts`, `update-settings.dto.ts`, `cycle-range.dto.ts` (το κοινό cycle payload), `is-day-before.validator.ts` (custom `class-validator` decorator)
+- `backend/src/settings/cycle.util.spec.ts` (30 tests) + `settings.service.spec.ts` (10 tests, stubbed Prisma)
+- `backend/src/app.module.ts` — import `SettingsModule`
+- `backend/package.json` — **jest `moduleNameMapper`** (βλ. σημείωση παρακάτω· δεν είναι cosmetic, χωρίς αυτό δεν τρέχει κανένα service test)
+- `context/swifttrack-phase1-final.md` — §3 (AppSettings notes), §4 (νέες αποφάσεις **5a** & **5b**), §6 (PUT /settings constraints), §7 (ξαναγράφτηκε ο υπολογισμός με splitting + cycle payload + default cycle)
+- `context/architecture.md` — folder structure, AppSettings schema notes, § Data Flow (Payroll), § Payroll Calculation Pattern (overlap query + clipping), **4 νέα/ξαναγραμμένα invariants** (day range 11-25, exclusive boundary, shift splitting, default `?cycle=`)
+- `context/build-plan.md` — §4 (πλήρως ξαναγραμμένο), §5, §6, §8, §8a, §13
+Endpoints/Components:
+- `GET /settings` — 200 `{ cycleStartDay, cycleEndDay }`, και οι δύο ρόλοι (ο employee χρειάζεται τις μέρες για να διαβάσει τις δικές του σελίδες)
+- `PUT /settings` — 200, μόνο ADMIN· 400 σε οτιδήποτε εκτός 11..25 / μη-συνεχόμενο ζευγάρι
+- `SettingsService.resolveCycleRange(cycle?)` — **δεν έχει HTTP επιφάνεια σε αυτό το βήμα**· είναι το API που καταναλώνουν τα Steps 5/6
+
+### Οι 5 αποφάσεις που πάρθηκαν μέσω `/architect` πριν τον κώδικα
+
+1. **Splitting βάρδιας στο όριο (νέο, αλλάζει το spec §7).** Βάρδια 24 Aug 20:00 → 25 Aug 03:00 δίνει 4h στον έναν κύκλο και 3h στον επόμενο, αντί για 7h ολόκληρες στον κύκλο του `startTime`. Το άθροισμα όλων των κύκλων ισούται πάντα με τις πραγματικές ώρες — καμία ώρα δεν χάνεται, καμία δεν πληρώνεται δύο φορές. **Καμία αλλαγή στο domain model, καμία migration.**
+2. **Exclusive όριο εσωτερικά, inclusive στο API.** Το splitting απαιτεί **μία** στιγμή τομής· τα μεσάνυχτα είναι ταυτόχρονα `endExclusive` του ενός κύκλου και `start` του επόμενου (υπάρχει test γι' αυτή την ταυτότητα). Κάθε Prisma filter γράφει `lt`, ποτέ `lte`. Το `cycleEnd` του DTO (`23:59:59.999`) είναι **μόνο** για εμφάνιση και δεν μπαίνει ποτέ σε query.
+3. **`cycleStartDay` ∈ 11..25, `cycleEndDay` = start − 1** (απόφαση του χρήστη). Δύο συνέπειες: οι διαδοχικοί κύκλοι κουμπώνουν (καμία βάρδια σε κενό ή σε δύο κύκλους), και **το clamping για 28/29/30/31 εξαφανίστηκε** — κάθε επιτρεπτή μέρα υπάρχει σε κάθε μήνα. Το `cycleEndDay` αποθηκεύεται και επικυρώνεται αλλά **δεν μπαίνει στα μαθηματικά** (μία πηγή αλήθειας ανά όριο).
+4. **Το cycle payload κουβαλάει `cycle`/`prevCycle`/`nextCycle`** μαζί με `cycleStart`/`cycleEnd`. Το ◀▶ ξαναστέλνει key — ούτε καν month rollover δεν υλοποιείται δεύτερη φορά στο frontend.
+5. **Η βάρδια εμφανίζεται σε κάθε κύκλο που ακουμπάει, με κομμένες ώρες + `isSplit`.** Το κριτήριο ήταν συγκεκριμένο: η στήλη Hours του `PayrollBreakdown` πρέπει να αθροίζει σε αυτό που πληρώνεται, αλλιώς ο υπάλληλος βλέπει 23h στη στήλη και 20h στο σύνολο χωρίς εξήγηση.
+
+### Πού μπαίνει ο έλεγχος 11..25 — δύο στρώματα, όχι διπλός
+
+Ο χρήστης πρότεινε (σωστά) να περιορίζει η φόρμα τις επιλογές ώστε να μη μπορεί να σταλεί άκυρο ζευγάρι. Αυτό **έκλεισε** τη συζήτηση υπέρ του «δύο πεδία στο DTO»: αφού το UI δεν παράγει ποτέ άκυρο ζευγάρι, το API κρατάει το συμβόλαιο του spec §6 αναλλοίωτο και το 400 αφορά μόνο χειροποίητα requests. **Ο backend έλεγχος παρέμεινε** για τέσσερις λόγους που συζητήθηκαν ρητά: το Swagger UI είναι ανοιχτό στο `/api` και είναι κυριολεκτικά φόρμα για χειροποίητα requests· το frontend έρχεται στο Step 13, άρα τα Steps 5-12 αναπτύσσονται χωρίς δίχτυ· το Step 13a ξαναγράφει κάθε φόρμα με zod· και η βάση δεν έχει constraint γι' αυτό. Ίδιο μοτίβο με το `findByEmail()` + `P2002` του Step 2.
+
+### Δύο σκόπιμες ασυμμετρίες στο `SettingsService`
+
+- **Λείπει το `AppSettings` row → 500** «Settings not initialised. Run `npx prisma db seed`.», ποτέ σιωπηλό `upsert` στα defaults. Ένα σιωπηλό fallback θα μετακινούσε το όριο μισθοδοσίας έως δύο εβδομάδες χωρίς κανένα σημάδι. Το αντεπιχείρημα «να δουλεύει χωρίς seed» δεν στέκει: το ίδιο seed φτιάχνει και τον πρώτο admin, άρα δεν υπάρχει κατάσταση όπου χρησιμοποιείς την εφαρμογή έχοντας παραλείψει το seed.
+- **`assertUsableCycleStartDay()` τρέχει μόνο στο `resolveCycleRange`, όχι στο GET/PUT.** Μια γραμμή αλλαγμένη με το χέρι στη βάση (π.χ. 31) θα έκανε το `Date.UTC` να κυλήσει σιωπηλά στον επόμενο μήνα — λάθος όριο, όχι error. Ο έλεγχος μπαίνει στο μονοπάτι που υπολογίζει· το `GET` πρέπει να δείχνει τη γραμμή όπως είναι και το `PUT` είναι ο τρόπος να διορθωθεί, αλλιώς ο admin κλειδώνεται έξω από την επιδιόρθωση.
+
+### Επαλήθευση (πραγματικά εκτελεσμένη — βλ. το μάθημα διαδικασίας του Step 3)
+
+**40 unit tests, όλα περνάνε** (`npm test`): 30 στο `cycle.util.spec.ts` + 10 στο `settings.service.spec.ts`. Καλύπτουν: όρια κύκλου, rollover Δεκεμβρίου/Ιανουαρίου, Φεβρουάριος + δίσεκτο, η ταυτότητα `julyEndExclusive === augustStart`, το split 4h/3h με άθροισμα 7h, βάρδια που τελειώνει/ξεκινάει ακριβώς στο όριο, ανοιχτή βάρδια = 0h, βάρδια που καταπίνει όλο τον κύκλο, `cycleEnd < endExclusive`, το default `?cycle=` με fake timers, και τα δύο 500 μονοπάτια (λείπει row / out-of-range day) που **δεν φτάνονται μέσω HTTP** χωρίς να χαλάσεις τη βάση επίτηδες.
+
+**17 HTTP checks σε ζωντανό server + πραγματική DB, όλα PASS:** `GET` χωρίς token → 401· `GET` admin/employee → 200· `PUT` employee → **403**· `PUT` χωρίς token → 401· `PUT {11,10}` → 200 και **επιβεβαιώθηκε ότι έγραψε** με δεύτερο `GET`· `PUT {25,20}`/`{10,9}`/`{26,25}`/`{25,26}`/`{25}` μόνο/strings/fractional/extra key → όλα 400· επαναφορά σε `{25,24}`. Τα μηνύματα ελέγχθηκαν αυτούσια: `"cycleEndDay must be exactly cycleStartDay - 1."` (custom validator), `"cycleStartDay must not be greater than 25"`, `"property nope should not exist"` (whitelist).
+
+Test data καθαρίστηκαν — η DB είναι πάλι στην αρχική seed κατάσταση (1 admin, `AppSettings` 25/24, επιβεβαιώθηκε με `psql`). `npx tsc --noEmit` καθαρό, `npm run lint` καθαρό.
+
+### ⚠️ Αλλαγή στο jest config που **πρέπει** να ξέρει το Step 8a
+
+Το `settings.service.spec.ts` **δεν έτρεχε καθόλου** αρχικά: ο resolver του jest δεν λύνει τα explicit `.js` specifiers που παράγει ο Prisma 7 client (`import * as $Class from "./internal/class.js"`). Κάθε spec που αγγίζει `PrismaService` — δηλαδή **όλα** τα service tests του 8a — έσκαγε με `Cannot find module './internal/class.js'`. Λύση: `moduleNameMapper: { "^(\\.{1,2}/.*)\\.js$": "$1" }` στο jest config του `package.json`. Δεν είναι workaround του δικού μας κώδικα, είναι το τεκμηριωμένο mapping για TS πηγές με explicit extensions.
+
+Ίδια ρίζα είχαν και δύο αποτυχημένες προσπάθειες να τρέξει throwaway verification script μέσα από το Nest DI: το `tsx` (esbuild) **δεν παράγει decorator metadata**, άρα το DI σπάει (`ConfigService` undefined στο `JwtStrategy`)· το `ts-node` σκόνταψε στο ίδιο `.js` resolution. Μετά τη δεύτερη αποτυχία σταμάτησα αυτή τη διαδρομή (Recovery Protocol) και ο έλεγχος έγινε ως **μόνιμο** spec με stubbed Prisma — καλύτερο αποτέλεσμα, αφού μένει στο repo. **Για μελλοντικά scripts που χρειάζονται Nest DI: ούτε `tsx` ούτε `ts-node` — jest ή compiled `dist/`.**
+
+### Ανοιχτά που δημιουργεί αυτό το βήμα
+
+- **Step 5/6**: το `hoursWithinCycle()`/`isSplitAcrossCycle()` υπάρχουν ήδη και είναι δοκιμασμένα — δεν ξαναγράφονται. Το query είναι **overlap**, όχι containment: `{ endTime: { not: null, gt: start }, startTime: { lt: endExclusive } }`.
+- **Step 6/12**: το `PayrollBreakdown` του mockup στρογγυλοποιεί ISK **ανά γραμμή**· `Σ round(...) ≠ round(Σ ...)`. Ίδια οικογένεια «η στήλη δεν αθροίζει» με το splitting, αλλά δεν λύθηκε εδώ.
+- **Step 13**: το `SettingsPage.tsx` έχει δύο ελεύθερα number inputs 1-31 — γίνεται ένα `<select>` 11..25 με το end day ως παράγωγο κείμενο. Στέλνει και τα δύο πεδία.
+
+**Επόμενο βήμα**: Step 5 — Time Entries module (clock-in/out, χειροκίνητη προσθήκη βάρδιας, CRUD, owner-or-ADMIN στο service, cycle filter με splitting).
