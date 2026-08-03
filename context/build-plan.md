@@ -1,6 +1,6 @@
 # Build Plan — SwiftTrack (Phase 1)
 
-Development order. Each step must be completed (and working) before the next one starts. We don't move on to the rest of the frontend (steps 9+) before the entire backend is verified via Swagger/Postman (step 8) — exception: step 0, which is built first of all, before even Docker/backend.
+Development order. Each step must be completed (and working) before the next one starts. We don't move on to the rest of the frontend (steps 9+) before the entire backend is verified — that means all the way through **step 8b**: the manual sweep (8), the service unit tests (8a) and the full-stack tests against a real database (8b). Exception: step 0, which is built first of all, before even Docker/backend.
 
 ---
 
@@ -90,7 +90,7 @@ It never automatically moves to the next step without this confirmation, even if
   - `@ApiTags`, `@ApiOperation`, `@ApiResponse` on every controller — built in with each step, not at the end
 
 - [ ] **8. Full check of the backend before the frontend**
-  - Full check of all endpoints via Swagger UI or Postman
+  - Full check of all endpoints via Swagger UI or Postman. **The checklist below is executed by hand here and turned into automated tests in 8b** — 8 is the first point where the system exists as a system, 8b is what stops that check from being a one-off snapshot
   - Auth flow, role restrictions, edge cases:
     - Wrong/expired setupCode on set-initial-password
     - Clock-out with no open shift
@@ -103,9 +103,39 @@ It never automatically moves to the next step without this confirmation, even if
     - CORS: a request from the frontend origin passes through normally
     - Error messages (login/set-initial-password) match the spec §8a wording exactly, in English
 
-- [ ] **8a. Unit tests — cycle resolution & Payroll**
+- [ ] **8a. Unit tests — cycle resolution, Payroll, Auth & Users**
+
+  **Why this grew beyond cycle+payroll:** step 8 is a *snapshot* — it proves the backend worked on the day it was clicked through, not that it still works after the next change. That is not hypothetical here: step 3 rewrote `JwtStrategy` to hit the database on every request, a change that passes through **every** authenticated endpoint, and nothing automated would have caught it breaking login. `AuthService` in particular is the one place where a wrong order of checks is a security bug rather than a display bug — and it has already been wrong once (`set-initial-password` was missing the `isActive` check, caught by `/review` in step 3, not by any test).
+
+  All of these use the pattern established in `settings.service.spec.ts`: **stubbed Prisma, no database**, so they stay fast and need no fixtures.
+
   - `cycle.util.spec.ts` already exists from step 4 (boundaries, February, splitting, open shifts, prev/next keys, the omitted-`?cycle=` default) — extend rather than re-create. The 28/29/30/31 clamping cases from the original plan no longer apply: the 11–25 restriction means every allowed day exists in every month (spec §4 decision 5a)
   - Tests for `getPayrollForCycle()`: correct hour total, correct ISK rounding, entries outside the cycle are excluded, open shifts (`endTime = null`) are excluded, and a shift crossing the boundary contributes its clipped hours to **each** of the two cycles (the two parts summing to its full length)
+  - Tests for `AuthService`: the order of checks in `login()` (`isActive` → `password !== null` → bcrypt compare) and in `setInitialPassword()` (`isActive` → already activated → code matches → not expired), each asserted against the **exact** §8a wording — those strings are binding and otherwise break silently. Plus: a rejected `set-initial-password` attempt does **not** consume the setupCode
+  - Tests for `UsersService`: `updateEmployee`/`deactivate` never touch an ADMIN row (404 instead)· `activateAccount` clears `setupCode` **and** `setupCodeExpiresAt` together· `toProfileDto` never carries `setupCode`, while `toResponseDto` always does for a pending employee· duplicate email yields 409 from both the explicit check and the `P2002` catch
+  - Tests for `TimeEntriesService`: clock-in refuses while an open shift exists· clock-out with no open shift fails· the owner-or-ADMIN filter resolves someone else's row to a 404 rather than returning it
+
+  These stop at the service boundary on purpose — instantiating a controller directly runs **no** guard, pipe or `ValidationPipe`, because Nest applies those in the HTTP layer. A controller unit test would therefore pass even with `@Roles('ADMIN')` deleted. That layer is covered by 8b instead.
+
+- [ ] **8b. Full-stack tests — guards, real SQL, constraints**
+
+  **What this covers that nothing else does.** 8a proves the logic with a fake database· step 8 proves the whole system once, by hand. Four things fall between them:
+  1. That `@Roles('ADMIN')` and `JwtAuthGuard` are actually **wired and executing** on each route — not merely present in the source
+  2. That the Prisma queries are correct SQL against the real schema. A mock returns whatever it was told, so an overlap query written with `gte` instead of `gt` passes every 8a test and quietly mispays a boundary shift
+  3. DB-level constraints: `CHECK ("id" = 1)` on `AppSettings`, the unique email index behind the 409
+  4. That the migrations apply from an empty database, and that the seed script runs — **neither is verified anywhere today**
+
+  **Setup** (uses `backend/test/jest-e2e.json`, unused scaffold since step 1):
+  - A separate database `swifttrack_test` in the **same** Postgres container that already runs — dev data is never touched, so no truncation of real rows and no cleanup step like the one step 4 needed
+  - `.env.test` (gitignored, with a committed `.env.test.example`, mirroring the existing `.env` convention) loaded with `override: true` in the jest setup file — portable, and avoids per-shell env syntax on Windows
+  - Before the suite: `prisma migrate deploy` then `prisma db seed` against that URL — which is what makes point 4 above free
+  - Truncate the data tables between tests, keeping the `AppSettings` singleton· run with `--runInBand`, since the tests share one database
+  - ⚠️ The global `ValidationPipe` is registered in `main.ts`, **not** in `AppModule` — a testing app does not inherit it. It must be applied explicitly in the test bootstrap, or every validation assertion passes falsely
+  - ⚠️ Set a `FRONTEND_URL` distinct from `http://localhost:5173` for the run, so a CORS assertion tests the configured origin rather than the hardcoded fallback (the step 1 lesson)
+
+  **Scope: the checklist in §8 becomes code** — role restrictions per route, the activation flow end to end, double clock-in, clock-out with no open shift, login while inactive/unactivated with the exact §8a strings, `password` in `POST /users` rejected by the pipe, the cycle boundary and the split shift against real rows, `PUT /settings` validation, CORS. Roughly 15-20 tests.
+
+  Step 8 then keeps only what a human should actually do: read the Swagger UI, sanity-check the shape of responses, and try the things nobody thought to list.
 
 ---
 

@@ -72,7 +72,7 @@ The agent explicitly identifies which mode it's in before acting:
 
 ## Specifically for the Backend/Frontend Boundary
 
-- No frontend step (9+) starts before the backend is fully completed and verified via Swagger/Postman (Step 8) — exception: Step 0 (static mockups), which is built first of all.
+- No frontend step (9+) starts before the backend is fully completed and verified — that means through **Step 8b**, not Step 8: the manual sweep (8), the service unit tests (8a) **and** the full-stack tests against a real database (8b). The gate is 8b deliberately: tests written after a frontend already consumes the API arrive too late to change its shape, and a contract bug found then costs a rewrite on both sides instead of a fix on one. Exception: Step 0 (static mockups), which is built first of all.
 - Every new service function tied to a specific user takes `userId` explicitly — never a silent filter (see architecture.md § Invariants).
 - No component calls `fetch` directly — only via `frontend/src/api/`.
 

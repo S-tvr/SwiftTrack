@@ -278,7 +278,7 @@ volumes:
 5. Time Entries module (clock-in/out, manual add, CRUD, owner or admin permissions)
 6. Payroll module — Stage A (flat rate)
 7. Swagger docs (built into each step, with decorators)
-8. **Full check via Postman/Swagger before touching React**
+8. **Full check before touching React** — the manual Postman/Swagger sweep (8), the service unit tests (8a) and the full-stack tests against a real database (8b). All three gate step 9· see `build-plan.md` for what each one covers and why they are not the same check three times
 9. Frontend: Auth (Login + SetInitialPasswordPage) + Auth Context + Header/Footer
 10. Frontend: Clock Page (clock in/out first, summary after)
 11. Frontend: Shift History (shared component, employee + admin)
