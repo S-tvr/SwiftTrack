@@ -64,7 +64,7 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | # | Topic | Decision |
 |---|---|---|
 | 1 | How employees are onboarded | The first admin goes directly into the database via a seed script (no `/register` route). The admin creates each employee (name, email, hourlyRate, no password) — the system generates a random 4-digit setupCode with a 3-day expiry. The employee activates their own account with email + setupCode + their own password |
-| 1a | Audit log for deletions/edits | Not present in core |
+| 1a | Audit log for deletions/edits | Not present in core — and the same call was made for an **approval flow** (`source`/`status`/`approvedById`), weighed when `POST /time-entries` was added and deferred for the same reason: both need domain-model changes, so both belong to a later phase. Consequence, deliberate rather than overlooked: an employee's self-reported hours carry no history, and nothing records that an entry was edited or deleted |
 | 2 | Limits on time-entry corrections | An employee can edit/delete **any** of their own entries, in any cycle — no restriction |
 | 3 | Forgotten Clock Out | Stays open (`endTime = null`), fixed manually later. Doesn't count toward payroll until closed |
 | 4 | Who can edit entries | Both the employee (their own) and the admin (any employee's) |
@@ -118,10 +118,10 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 |---|---|---|---|
 | POST | `/time-entries/clock-in` | EMPLOYEE | Starts a new entry (startTime = now, endTime = null) |
 | PATCH | `/time-entries/clock-out` | EMPLOYEE | Closes the current open entry (endTime = now) |
-| POST | `/time-entries` | Owner or ADMIN | Manually add a forgotten/missing shift — explicit `startTime`, `endTime`, `notes`. Distinct from clock-in, which always writes `startTime = now, endTime = null` |
+| POST | `/time-entries` | Owner or ADMIN | Manually add a forgotten/missing shift — explicit `startTime`, `endTime`, `notes`, plus `userId` when an ADMIN calls (rejected from an EMPLOYEE, who always writes to themselves). Distinct from clock-in, which always writes `startTime = now, endTime = null`. Always produces a **closed** shift: `endTime` is required here and on `PUT`, may not be before `startTime`, neither timestamp may be in the future, and the shift may not overlap another of the same user (see §7a) |
 | GET | `/time-entries/me` | EMPLOYEE | My own entries for a cycle (optional `?cycle=`, defaults to the current one). Returns the resolved cycle block plus per-entry `hoursInCycle`/`isSplit` |
 | GET | `/time-entries?userId=&cycle=` | ADMIN | Entries for any employee — **same response shape** as `/me`, since both feed the same shared `ShiftList` + `CycleNavigator` |
-| GET | `/time-entries/open` | EMPLOYEE | The caller's open shift, or `null` — what the Clock page's button state is read from |
+| GET | `/time-entries/open` | EMPLOYEE | The caller's open shift, or `null` — what the Clock page's button state is read from. Returned **wrapped** as `{ openShift: … \| null }`: Nest answers a bare `null` with an empty body rather than the JSON literal `null`, and `api/client.ts` calls `res.json()` on every response, so the endpoint whose normal answer is "nothing" would be the one that breaks it |
 | PUT | `/time-entries/:id` | Owner or ADMIN | Edit (startTime, endTime, notes) |
 | DELETE | `/time-entries/:id` | Owner or ADMIN | Delete |
 
@@ -171,6 +171,21 @@ Open shifts (`endTime = null`) contribute **0 hours** — they cannot be split w
 ```
 
 When `?cycle=` is omitted, the backend resolves the cycle that **contains the current moment** — note this is not the current calendar month: on 3 August with a 25th boundary, the current cycle is `2026-07`.
+
+---
+
+## 7a. Time-Entry Write Rules
+
+The spec gives an employee `POST`/`PUT`/`DELETE` over their **own** entries (§4, decisions 2 & 4) — they write the hours they are paid for, which was accepted deliberately. These four rules are what stop an entry from being *impossible* or *double-counted*. They apply to `POST /time-entries` and `PUT /time-entries/:id` (the manual path), never to clock-in/clock-out.
+
+| # | Rule | Why |
+|---|---|---|
+| 1 | `endTime` is **required** — the manual path never leaves a shift open | The form is for shifts that already ended; clock in/out is for live ones. Keeps "at most one open shift" enforced in one place, and stops `PUT` reopening a closed shift so its hours silently vanish |
+| 2 | `endTime` may not be **before** `startTime` → 400 (equal is allowed) | A reversed shift is impossible. Today it would be paid as 0 hours with no error, because `hoursInCycle` clamps at 0 — a safety net, not a validation |
+| 3 | Two shifts of the same user may not **overlap** → 400 | 08:00-16:00 plus 12:00-20:00 pays 16 hours for 12 worked. An open shift occupies `[startTime, ∞)` for this check; on `PUT` the edited row is excluded from its own |
+| 4 | Neither timestamp may be **after `now`** (equal allowed) | Rejects future-dated work, and makes rule 3 hold at the clock-in door for free: if no closed shift reaches `now`, clock-in at `now` cannot land inside one |
+
+**The open-shift block is asymmetric by role.** While the row's owner has an open shift, an **EMPLOYEE** may not `POST` or `PUT` at all — not even on the open row — and unblocks by clocking out. An **ADMIN** is subject only to rule 3. The employee half makes an overlap created by clock-out impossible by construction. The admin half is required, not convenient: clock-out is EMPLOYEE-only and closes the caller's *own* shift, so `PUT` is the only tool for someone else's open shift — otherwise a **deactivated** employee's open shift (they can no longer log in) stays open forever, and the admin is locked out of the ledger while anyone is on shift.
 
 ---
 
@@ -234,6 +249,12 @@ All user-facing text is in English.
 | Set-initial-password: account already activated | "This account has already been activated." |
 | Clock-in: an open shift already exists | "You already have an open shift. Please clock out first." |
 | Clock-out: no open shift | "No open shift to clock out of." |
+| Manual add/edit while the employee has an open shift | "You already have an open shift. Please clock out first." — *the same string as clock-in, deliberately reused: same situation, same required action, and one string instead of two near-identical ones* |
+| Manual add/edit: overlaps another shift (§7a rule 3) | "This shift overlaps an existing shift." |
+| Manual add/edit: end before start (§7a rule 2) | "End time cannot be before start time." |
+| Manual add/edit: timestamp in the future (§7a rule 4) | "Start time cannot be in the future." / "End time cannot be in the future." |
+| Manual add: EMPLOYEE sent a `userId` | "userId can only be set by an admin." |
+| Manual add: ADMIN sent no `userId` | "userId is required when an admin creates a shift." |
 
 > This table is the source of truth for exact wording. The agent does not paraphrase these strings freely — it uses them exactly as written (can store them in a constants file in the frontend, e.g. `messages.ts`). It only covers the cases listed· messages for anything else are written as needed and don't have to be added here.
 

@@ -293,13 +293,104 @@ Test data καθαρίστηκαν — η DB είναι πάλι στην αρχ
 
 **Και προστέθηκε νέο §8b — full-stack tests με πραγματική test DB.** Αρχικά είχα προτείνει να μην γίνει e2e στη Phase 1· ο χρήστης ρώτησε αν καλύπτεται πουθενά «guards + DB + όλα μαζί, αυτοματοποιημένα» και η απάντηση ήταν όχι: το §8 έχει ακριβώς αυτό το εύρος αλλά **χειροκίνητα**, και το §8a είναι ρητά χωρίς βάση. Το κόστος που είχα επικαλεστεί ήταν υπερεκτιμημένο — δεύτερη βάση στο ίδιο container που ήδη τρέχει, και η λίστα του τι ελέγχεται **υπάρχει ήδη γραμμένη** στο §8. Τέσσερα πράγματα δεν καλύπτονται από τίποτα άλλο: ότι τα guards όντως **εκτελούνται** ανά route, ότι το Prisma query είναι σωστό SQL (κρίσιμο στο payroll — mock θα γύριζε ό,τι του πεις), τα DB constraints, και ότι τα migrations εφαρμόζονται από το μηδέν.
 
-**Επόμενο βήμα**: Step 5 — Time Entries module (clock-in/out, χειροκίνητη προσθήκη βάρδιας, CRUD, owner-or-ADMIN στο service, cycle filter με splitting). **Διάβασε πρώτα την επόμενη ενότητα — το βήμα είναι μπλοκαρισμένο σε τρεις αποφάσεις.**
+**Επόμενο βήμα**: Step 5 — Time Entries module. *(Ολοκληρώθηκε — βλ. την επόμενη ενότητα.)*
+
+## Step 5 — Time Entries Module
+Status: ✅ Done
+Ημερομηνία: 2026-08-06 (ξεκίνησε 2026-08-05)
+Αρχεία που προστέθηκαν/άλλαξαν:
+- `backend/src/time-entries/time-entries.service.ts` — clock-in/out, `findOpen`, CRUD, cycle lists· δύο ιδιωτικοί φύλακες (`assertOwnerHasNoOpenShift`, `assertNoOverlap`) + `findOwnedOrThrow` (owner-or-ADMIN μέσα στο Prisma `where`) + `resolveTargetUserId`
+- `backend/src/time-entries/time-entries.controller.ts` — 8 routes, πλήρη Swagger decorators (200/201/204/400/401/403/404)
+- `backend/src/time-entries/time-entries.module.ts` — imports `PrismaModule`, `SettingsModule`, `UsersModule`
+- `backend/src/time-entries/dto/` — `create-time-entry`, `update-time-entry`, `time-entry-response` (+ `CycleTimeEntryDto`), `cycle-entries-response`, `open-shift-response`, `shift-time.validator` (`IsNotInTheFuture`, `IsNotBefore`)
+- `backend/src/time-entries/time-entries.service.spec.ts` (35 tests) + `dto/shift-time.validator.spec.ts` (14 tests)
+- `backend/prisma/migrations/20260806003155_time_entry_single_open_shift/` — **partial unique index** (μπήκε στο `/review`, βλ. παρακάτω)· καμία αλλαγή στο `schema.prisma`
+- `backend/src/users/users.service.ts` — **νέα** `assertEmployeeExists()` (βλ. σημείωση για τα narrow readers)
+- `backend/src/app.module.ts` — import `TimeEntriesModule`
+- `context/build-plan.md` — §5 ξαναγραμμένο (οι 4 write rules, ο κανόνας `userId`, το `PUT`, tests στο βήμα, `{ openShift }`), §8a
+- `context/architecture.md` — **6 νέα invariants**, διόρθωση του δείγματος Payroll (καλούσε `prisma.user` απευθείας), folder structure
+- `context/swifttrack-phase1-final.md` — §6, **νέα §7a** (Time-Entry Write Rules), 6 νέες γραμμές στο §8a
+- **Καμία αλλαγή στο domain model** — ο `TimeEntry` υπάρχει από το Step 1· το μόνο migration είναι το index παραπάνω, που δεν αγγίζει στήλες
+Endpoints/Components:
+- `POST /time-entries/clock-in` (EMPLOYEE) — 201· 400 αν υπάρχει ήδη ανοιχτή
+- `PATCH /time-entries/clock-out` (EMPLOYEE) — χωρίς `:id`, κλείνει τη δική του
+- `GET /time-entries/open` (EMPLOYEE) — `{ openShift: … | null }`
+- `POST /time-entries` (Owner ή ADMIN) — χειροκίνητη προσθήκη κλειστής βάρδιας
+- `GET /time-entries/me` (EMPLOYEE) + `GET /time-entries?userId=&cycle=` (ADMIN) — **ίδιο σχήμα**
+- `PUT /time-entries/:id`, `DELETE /time-entries/:id` (Owner ή ADMIN, 204 στο delete)
+Σημειώσεις:
+
+### Οι 4 αποφάσεις που ξεμπλόκαραν το βήμα (μέσω `/architect`, μία-μία)
+
+Οι τρεις που ήταν παρκαρισμένες, **συν μία τέταρτη** που βρέθηκε διαβάζοντας τους mockups. Πλήρως γραμμένες ως κανόνες στο spec **§7a** — εδώ μόνο το σκεπτικό:
+
+1. **`endTime` υποχρεωτικό σε `POST` και `PUT`** (ο χρήστης επέλεξε το συμμετρικό αντί για το ασύμμετρο που πρότεινα). Ο κανόνας σε μία πρόταση: *η φόρμα είναι το εργαλείο για κλειστές βάρδιες, το clock in/out για ζωντανές.* Αποδεκτό τίμημα: mid-shift διόρθωση απαιτεί πρώτα clock-out. Όφελος: η ξεχασμένη έξοδος διορθώνεται **μόνο** μέσω `PUT` με πραγματικό `endTime`.
+2. **400 μόνο αν `endTime < startTime`** — η μηδενική βάρδια (`start == end`) επιτρέπεται σκόπιμα (0 ώρες, μπορεί να κουβαλά notes). Το `Math.max(0, …)` του `hoursWithinCycle` είναι δίχτυ για τα μαθηματικά, **όχι** επικύρωση: χωρίς αυτόν τον έλεγχο η ανάποδη βάρδια φαίνεται κανονικά στη λίστα και πληρώνει 0 χωρίς κανένα μήνυμα.
+3. **Καμία επικάλυψη → 400**, με την ανοιχτή βάρδια να μετράει ως `[start, ∞)`.
+4. **`userId` στο `CreateTimeEntryDto`** — υποχρεωτικό για ADMIN, απορριπτέο για EMPLOYEE. Χωρίς αυτό, το κουμπί "Add Shift" που ο εγκεκριμένος `ShiftList` κάνει render **και** στο admin route `/shifts/:userId` έγραφε τη βάρδια **στον λογαριασμό του admin**: χωρίς `hourlyRate`, εκτός `GET /users`, ποτέ ορατή, ποτέ πληρωμένη. Ίδια οικογένεια με το `setupCode` του Step 2 και το `?cycle=` του Step 4.
+
+### Ο κανόνας που ο χρήστης απλοποίησε — και γιατί σημαίνει λιγότερο κώδικα
+
+Είχα προτείνει interval math πάνω στο ανοιχτό διάστημα. Ο χρήστης πρότεινε αντ' αυτού: **όσο υπάρχει ανοιχτή βάρδια, η φόρμα δεν δέχεται τίποτα.** Ίδια εγγύηση, ένα boolean αντί για αριθμητική — και αυτό είναι που κάνει τη σύγκρουση από **clock-out** αδύνατη *εκ κατασκευής*: αν τίποτα δεν γράφτηκε όσο η βάρδια ήταν ανοιχτή, το κλείσιμό της δεν μπορεί να καταπιεί τίποτα.
+
+Χρειάστηκε **μία εξαίρεση**, αλλιώς κλειδώνει: το `PUT` είναι το μοναδικό εργαλείο του admin (το clock-out είναι EMPLOYEE-only και κλείνει *τη δική του* βάρδια). Χωρίς αυτήν, ανοιχτή βάρδια **απενεργοποιημένου** υπαλλήλου —που δεν μπορεί καν να κάνει login— μένει ανοιχτή για πάντα. Τελική μορφή: EMPLOYEE μπλοκάρεται ολικά (ξεμπλοκάρει με clock-out), ADMIN υπόκειται μόνο στον έλεγχο σύγκρουσης.
+
+Ο χρήστης πρότεινε επίσης **«τίποτα στο μέλλον»**, που αποδείχθηκε ισχυρότερο απ' όσο φαινόταν: ακυρώνει τον έλεγχο που ήθελα να προσθέσω στο `clock-in`. Ο χρόνος πάει μόνο μπροστά, άρα αν καμία κλειστή βάρδια δεν φτάνει ποτέ το `now`, το clock-in στο `now` δεν μπορεί να πέσει μέσα σε καμία. **Validation στο DTO αντί για extra query.**
+
+### Το εύρημα που βγήκε μόνο επειδή τρέξαμε τον κώδικα
+
+`GET /time-entries/open` χωρίς ανοιχτή βάρδια επέστρεφε **200 με άδειο σώμα**, όχι `null`: ο Nest κάνει `res.send()` για nil result (`RouterResponseController`). Το `api/client.ts` του Step 9 θα κάνει `res.json()` σε κάθε response — δηλαδή θα έσκαγε ακριβώς στο endpoint του οποίου η **φυσιολογική** απάντηση είναι «τίποτα». Λύση: wrapper `{ openShift: … | null }`. Δεν το έπιασε κανένα unit test — το έπιασε το `curl`.
+
+### Πού μπήκε το `assertEmployeeExists` και γιατί όχι public το υπάρχον
+
+Ο χρήστης ρώτησε αν το να κάνω public το `findEmployeeByIdOrThrow` δημιουργεί κενό ασφαλείας. `public` σε provider δεν ανοίγει HTTP route — αλλά η μέθοδος επιστρέφει **ολόκληρη** τη γραμμή `User`, με `password` και `setupCode`. Αυτό το project έχει ήδη φάει δύο φορές αυτό ακριβώς (το `findById()` που αφαιρέθηκε στο Step 2, το DTO reuse του Step 3). Νέο invariant: **cross-service readers στενοί και σκοπο-ονομασμένοι, με ρητό `select`** — όπως ήδη έκανε το `findActiveById()`. Το `findEmployeeByIdOrThrow` έμεινε `private`. Το Step 6 θα πάρει το δικό του `findEmployeeRate`.
+
+### Επαλήθευση (πραγματικά εκτελεσμένη)
+
+**89 unit tests, όλα περνάνε** (`npm test`): 40 από το Step 4 + **49 νέα** (35 στο `time-entries.service.spec.ts`, 14 στο `shift-time.validator.spec.ts`· τα 2 τελευταία μπήκαν στο `/review`). Οι κανόνες 1/2/4 ζουν στα DTOs και δοκιμάζονται μέσα από τις **πραγματικές** κλάσεις DTO (ένας validator κολλημένος σε λάθος property θα περνούσε αν δοκιμαζόταν απομονωμένος)· ο κανόνας 3 και η ασυμμετρία ρόλου στο service με stubbed Prisma.
+
+**63 HTTP checks σε ζωντανό server + πραγματική DB, όλα PASS** — guards ανά route (401/403), το μπλόκο του employee, ο admin που κλείνει την ανοιχτή βάρδια, και οι 4 write rules με τα μηνύματα ελεγμένα αυτούσια. Κρίσιμο πέρασμα: **βάρδια που ξεκινά ακριβώς όταν τελειώνει η προηγούμενη → 201**, δηλαδή το query είναι όντως `gt`/`lt` και όχι `gte`/`lte`. Και το splitting σε πραγματικές γραμμές: η ίδια βάρδια 24 Jul 20:00 → 25 Jul 03:00 δίνει **4h στο 2026-06 και 3h στο 2026-07**, άθροισμα 7h. Μετά τη διόρθωση του wrapper ξανατρέχτηκε το `/open` (κενό → `{"openShift":null}`, με ανοιχτή → το entry).
+
+Test data καθαρίστηκαν — η DB επιβεβαιώθηκε με `psql` στην αρχική seed κατάσταση (1 admin, 0 `TimeEntry`, `AppSettings` 25/24). `npx tsc --noEmit` καθαρό, `npm run lint` καθαρό.
+
+⚠️ **Τι ΔΕΝ απέδειξαν τα tests, σκόπιμα:** με stubbed Prisma το mock επιστρέφει ό,τι του πεις, άρα το boundary case ελέγχεται μόνο ως **σχήμα** του `where`. Ότι τα guards όντως *εκτελούνται* ανά route και ότι το SQL είναι σωστό ανήκουν στο **8b** — γι' αυτό υπάρχει.
+
+### `/review` στο τέλος του Step 5 — 7 ευρήματα, 3 διορθώθηκαν
+
+0 Critical, 3 Important (διορθώθηκαν), 4 Minor (μένουν, βλ. «Ανοιχτά» παρακάτω).
+
+**1. 🟠 Διπλό clock-in μπορούσε να φτιάξει δύο ανοιχτές βάρδιες.** Ο έλεγχος του `clockIn()` ήταν check-then-act: δύο requests κοντά στον χρόνο διάβαζαν και τα δύο «καμία ανοιχτή» πριν γράψει οποιοδήποτε. Δεν είναι θεωρητικό — το Clock In είναι το μεγαλύτερο control της σελίδας σε κινητό και το διπλό πάτημα είναι η πιο κοινή χειρονομία που υπάρχει. Οι συνέπειες δεν ήταν καλλωπιστικές: το `clock-out` κλείνει **μία** (`findFirst`), η δεύτερη έμενε ανοιχτή για πάντα, και ο κανόνας του μπλόκου κλείδωνε τον υπάλληλο έξω από **κάθε** εγγραφή μέχρι να παρέμβει ο admin.
+
+  Λύση σε **δύο στρώματα**, ίδιο μοτίβο με το `findByEmail()` + `P2002` του Step 2: νέο migration `20260806003155_time_entry_single_open_shift` με **partial unique index** (`ON "TimeEntry" ("userId") WHERE "endTime" IS NULL` — χειρόγραφο SQL, το Prisma DSL δεν έχει `WHERE` στο `@@unique`, όπως και το `CHECK` του `AppSettings`), και `P2002` catch στο `clockIn()` που μεταφράζεται στο **ίδιο** §8a μήνυμα ώστε ο καλών να μη μαθαίνει ποιο στρώμα τον σταμάτησε.
+
+**2. 🟠 `GET /time-entries/me` δεν ήταν EMPLOYEE-only** — είχε μόνο `JwtAuthGuard`, ενώ το spec §6 λέει EMPLOYEE και το αδελφό `/open` είχε ήδη `@Roles(Role.EMPLOYEE)`. Δεν διέρρεε τίποτα (ο admin έπαιρνε τη δική του κενή λίστα) αλλά ήταν απόκλιση συμβολαίου + ασυνέπεια μέσα στο ίδιο αρχείο. **Δεν το κάλυπτε κανένα check** — το `/me` είχε δοκιμαστεί μόνο με employee token.
+
+**3. 🟠 Το spec δεν ήξερε για το `{ openShift }` wrapper** — είχα ενημερώσει `build-plan.md` και tracker αλλά όχι το §6, που είναι ακριβώς το αρχείο που θα διαβάσει το Step 10.
+
+**Επαλήθευση των διορθώσεων (πραγματικά εκτελεσμένη):**
+- **Απευθείας SQL**: το index υπάρχει και είναι όντως partial· δεύτερο `INSERT` ανοιχτής βάρδιας για τον ίδιο χρήστη **απορρίπτεται από τη βάση**· κλειστή βάρδια δίπλα του περνάει κανονικά.
+- **8 ταυτόχρονα clock-in**: **1×201 + 7×400** με το αυτούσιο §8a μήνυμα, και **ακριβώς μία** ανοιχτή βάρδια στη βάση.
+- `/me`: admin → **403**, employee → 200, χωρίς token → 401.
+- Regression στα endpoints που ακουμπήθηκαν: όλα πράσινα. DB πίσω σε seed κατάσταση.
+- **89 unit tests** (87 + 2 νέα: η μετάφραση του `P2002` και ότι **δεν** καταπίνονται άσχετα DB errors).
+
+⚠️ **Μάθημα μέτρησης:** η πρώτη εκτέλεση του race test έδειξε «0×201, 2×400» και το ανέφερα ως FAIL. Ήταν **σφάλμα του harness**, όχι του κώδικα: 8 παράλληλες διεργασίες έκαναν `>>` στο ίδιο αρχείο και χάθηκαν γραμμές. Με ξεχωριστό αρχείο ανά request βγήκε το σωστό. Το γράφω γιατί το ίδιο λάθος θα ξαναγίνει στο **8b**, όπου τα concurrency tests είναι ρητά στο scope.
+
+### Ανοιχτά που δημιουργεί αυτό το βήμα
+
+- **4 Minor από το `/review`, συνειδητά αδιόρθωτα:** (α) race στο `update`/`delete` — `findOwnedOrThrow` και μετά ενέργεια με `id`· αν η γραμμή σβηστεί ενδιάμεσα, το `P2025` βγαίνει ως **500 αντί για 404**· (β) `PUT` χωρίς `notes` **σβήνει** τα υπάρχοντα (full-replacement· ο `ShiftForm` στέλνει πάντα και τα τρία, αλλά το Swagger/curl όχι)· (γ) το `DELETE` **δεν** μπλοκάρεται από ανοιχτή βάρδια, άρα ο υπάλληλος μπορεί να τη σβήσει αντί να κάνει clock out — ασφαλές αλλά αδήλωτο, και πετάει την εγγραφή του clock-in· (δ) το `userId` του `CreateTimeEntryDto` φαίνεται προαιρετικό στο Swagger ενώ είναι υποχρεωτικό για ADMIN (το εξηγεί το description).
+- **Αποδεκτό κενό:** ο έλεγχος σύγκρουσης είναι check-then-act· δύο ταυτόχρονα submit μπορούν να περάσουν και τα δύο. Χωρίς DB-level exclusion constraint στη Phase 1 (θα ήθελε `btree_gist` + `tstzrange` + χειρισμό του `NULL endTime`), και **χωρίς φθηνό `P2002`-style catch** να το ζευγαρώσει, σε αντίθεση με το email του Step 2. Blast radius: μία διπλή γραμμή που ο admin σβήνει.
+- **Step 11**: το End Time γίνεται `required` στον `ShiftForm`· το `max` του input μπορεί να μαλακώσει το ρίσκο να πάει το ρολόι του browser μπροστά από του server (τότε βάρδια που τελειώνει «τώρα» παίρνει 400).
+- **Step 10**: ο `ClockButton` διαβάζει `{ openShift }`, όχι σκέτο entry.
+- **Step 6**: χρειάζεται `findEmployeeRate` στο `UsersService` (ήδη τεκμηριωμένο στο δείγμα του architecture.md).
+
+**Επόμενο βήμα**: Step 6 — Payroll module, Stage A (flat rate). Το έδαφος είναι έτοιμο: `hoursWithinCycle()` και το overlap query υπάρχουν και είναι δοκιμασμένα· η μόνη διαφορά από το query της λίστας είναι ότι το payroll παίρνει **μόνο κλειστές** βάρδιες.
 
 ---
 
-# 🛑 ΠΡΙΝ ΤΟ STEP 5 — τρεις αποφάσεις που πρέπει να πάρει ο ΧΡΗΣΤΗΣ
+# ✅ ΛΥΜΕΝΟ (2026-08-05) — οι τρεις αποφάσεις πάρθηκαν
 
-**Προς τον agent: μη γράψεις κώδικα για το `POST /time-entries` και το `PUT /time-entries/:id` πριν απαντηθούν αυτά. Ρώτησε τον χρήστη. Μην τα αποφασίσεις μόνος σου, ακόμα κι αν οι απαντήσεις φαίνονται προφανείς — αφορούν το τι πληρώνεται, και οι τρεις σχετίζονται μεταξύ τους.**
+**Δεν είναι πλέον blocker· μην ξαναρωτήσεις.** Απαντήθηκαν μέσω `/architect` πριν το Step 5, μαζί με μια τέταρτη που προέκυψε από τους mockups. Οι κανόνες ζουν πλέον στο spec **§7a**, στο `build-plan.md` §5 και στα invariants του `architecture.md`· το σκεπτικό στην εγγραφή του Step 5 παραπάνω. Το κείμενο που ακολουθεί μένει **ως ιστορικό** του τι ρωτήθηκε και γιατί.
 
 Προέκυψαν από έλεγχο των context files στο τέλος του Step 4, διασταυρωμένο με τους εγκεκριμένους mockups. Το spec δίνει στον υπάλληλο `POST`/`PUT`/`DELETE` πάνω στις **δικές του** εγγραφές (spec §4, απόφαση 2 & 4) — δηλαδή γράφει μόνος τις ώρες που πληρώνεται. Αυτό ήταν συνειδητά αποδεκτό. Αυτό που **δεν** συζητήθηκε ποτέ είναι τι εμποδίζει μια εγγραφή να είναι *αδύνατη* ή *διπλομετρημένη*.
 

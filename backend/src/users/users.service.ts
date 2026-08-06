@@ -49,6 +49,31 @@ export class UsersService {
     });
   }
 
+  /**
+   * Used by TimeEntriesService before an admin writes hours to someone: it
+   * needs to know an EMPLOYEE with this id exists, and nothing else. `User` has
+   * one owner (see Invariants), so other services ask through here rather than
+   * querying prisma.user — but what they get back is scoped to the question,
+   * with an explicit `select`, so password/setupCode cannot ride along.
+   *
+   * Deactivated employees pass on purpose: an admin must still be able to
+   * repair the history of someone who has left, and their open shift is only
+   * closable through PUT since they can no longer log in to clock out.
+   *
+   * ADMIN ids resolve to 404 for the same reason update/deactivate refuse
+   * them — an admin has no hourlyRate and never clocks in, so a shift written
+   * to their account would never surface and never be paid.
+   */
+  async assertEmployeeExists(id: number): Promise<void> {
+    const employee = await this.prisma.user.findFirst({
+      where: { id, role: Role.EMPLOYEE },
+      select: { id: true },
+    });
+    if (!employee) {
+      throw new NotFoundException(`Employee with id ${id} not found.`);
+    }
+  }
+
   async createEmployee(dto: CreateUserDto): Promise<UserResponseDto> {
     const existing = await this.findByEmail(dto.email);
     if (existing) {
