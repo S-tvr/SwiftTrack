@@ -8,10 +8,12 @@ Instructions for the coding agent. Goal: reliable, controlled coding — no gues
 
 Read in this exact order before writing any code:
 
-1. `swifttrack-phase1-final.md` — the **what** and the **why** (domain model, business decisions, API contract, user flows)
-2. `architecture.md` — the **how** (folder structure, patterns, data flow, invariants)
-3. `build-plan.md` — the **order** of execution (steps 0-14, one at a time)
-4. `progress-tracker.md` — what has **already** been built (see below· created in Step 0 if it doesn't exist)
+All four live in `context/`, not in the repo root.
+
+1. `context/swifttrack-phase1-final.md` — the **what** and the **why** (domain model, business decisions, API contract, user flows)
+2. `context/architecture.md` — the **how** (folder structure, patterns, data flow, invariants)
+3. `context/build-plan.md` — the **order** of execution (steps 0-14, one at a time)
+4. `context/progress-tracker.md` — what has **already** been built (see below· created in Step 0 if it doesn't exist)
 
 Don't start implementing any step before reading all 4. If one is missing, say so explicitly instead of proceeding.
 
@@ -29,7 +31,7 @@ Don't start implementing any step before reading all 4. If one is missing, say s
 
 ## Progress Tracker
 
-File: `progress-tracker.md` (created in Step 0 if it doesn't already exist).
+File: `context/progress-tracker.md` (created in Step 0 if it doesn't already exist).
 
 After completing **each** step of `build-plan.md`, the agent adds an entry:
 
