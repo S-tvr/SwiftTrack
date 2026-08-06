@@ -68,8 +68,12 @@
 │   │   │   └── dto/                       → create/update, time-entry-response, cycle-entries-response, open-shift-response, shift-time.validator(+spec)
 │   │   ├── payroll/
 │   │   │   ├── payroll.module.ts
-│   │   │   ├── payroll.controller.ts      → GET /payroll/me, /payroll/:userId
-│   │   │   └── payroll.service.ts         → flat-rate calc (Stage A), zones/OT later
+│   │   │   ├── payroll.controller.ts      → GET /payroll/me, /payroll/overview, /payroll/:userId
+│   │   │   ├── payroll.service.ts         → per-employee breakdown + team overview
+│   │   │   ├── payroll.service.spec.ts
+│   │   │   ├── rate-zones.util.ts         → pure zone arithmetic — no DB, no DI, integer hundredths
+│   │   │   ├── rate-zones.util.spec.ts
+│   │   │   └── dto/                       → payroll-response (+ zone/day), payroll-overview-response
 │   │   └── settings/
 │   │       ├── settings.module.ts
 │   │       ├── settings.controller.ts     → GET/PUT /settings
@@ -186,10 +190,18 @@ PayrollController → PayrollService
 Fetch TimeEntries where userId + endTime != null + OVERLAPPING the cycle
 (not "starting inside it" — a shift crossing the boundary belongs to both cycles)
         ↓
-Clip each entry to the cycle, sum the clipped hours, apply hourlyRate (Stage A)
-→ zones/overtime layered in later stages
+rate-zones.util.ts: clip each entry to the cycle, then cut it at every zone
+boundary it crosses (08:00 / 17:00 / midnight), accumulate per (date × zone)
+cell, round the cells to 2 decimals
         ↓
-Return breakdown → PayrollBreakdown.tsx renders (shared employee/admin component)
+Zone totals = exact sums of cells· zone pay = round(zoneHours × zoneRate)·
+totalPay = plain sum of the four zone amounts
+        ↓
+Return { zones, days, totals } → PayrollBreakdown renders it, computing nothing
+
+Admin team view: GET /payroll/overview?cycle= runs the same calculation for
+every employee in ONE request (4 queries total, not 4 per person), so the
+overview row and that employee's own page can never disagree.
 ```
 
 ### Team Management (Admin)
@@ -476,46 +488,76 @@ export class AuthService {
 
 ---
 
-## Payroll Calculation Pattern (Stage A)
+## Payroll Calculation Pattern
 
 ```typescript
 // backend/src/payroll/payroll.service.ts
 async getPayrollForCycle(userId: number, cycle?: string) {
+  // Through UsersService, never prisma.user directly — that model has one owner
+  // (see Invariants). And through a reader narrow enough to answer only this
+  // question, so password/setupCode are never loaded to compute a wage.
+  // A non-EMPLOYEE id (the admin's own included) resolves to null → 404.
+  const employee = await this.usersService.findEmployeeRate(userId);
+  if (!employee) throw new NotFoundException(`Employee with id ${userId} not found.`);
+  const hourlyRate = this.requireHourlyRate(employee); // null → loud 500, never 0
+
   // Cycle boundaries come from SettingsService, which owns AppSettings — this
   // service never computes them itself. The cycle wraps across the month boundary,
   // and `cycle` being undefined means "the cycle containing now".
   const { range, cycleDto } = await this.settingsService.resolveCycleRange(cycle);
 
-  // Overlap, not containment: a shift that starts before the cycle and ends
-  // inside it (or vice versa) is relevant to this cycle for the part that falls
-  // within it. `lt`/`gt` (never `lte`/`gte`) against the exclusive boundary is
-  // what makes adjacent cycles fit together with no gap and no double count.
-  const entries = await this.prisma.timeEntry.findMany({
-    where: {
-      userId,
-      endTime: { not: null, gt: range.start },
-      startTime: { lt: range.endExclusive },
-    },
+  const [shifts, openShiftCount] = await Promise.all([
+    // Overlap, not containment: a shift that starts before the cycle and ends
+    // inside it (or vice versa) is relevant to this cycle for the part that falls
+    // within it. `lt`/`gt` (never `lte`/`gte`) against the exclusive boundary is
+    // what makes adjacent cycles fit together with no gap and no double count.
+    // ⚠️ NOT the GET /time-entries query — that one also lists OPEN shifts.
+    this.prisma.timeEntry.findMany({
+      where: {
+        userId: { in: [userId] },
+        endTime: { not: null, gt: range.start },
+        startTime: { lt: range.endExclusive },
+      },
+      select: { startTime: true, endTime: true }, // narrow: pricing needs only these
+    }),
+    // Open shifts have no end and cannot be priced, so their day is missing from
+    // the breakdown entirely. This flag is what lets the page explain the gap.
+    // Matched on startTime and scoped to the cycle: a shift running right now is
+    // no reason to warn about a cycle from three months ago.
+    this.prisma.timeEntry.count({ where: { userId: { in: [userId] }, endTime: null,
+      startTime: { gte: range.start, lt: range.endExclusive } } }),
+  ]);
+
+  // All the arithmetic lives in rate-zones.util.ts — pure, no DB, no DI, and
+  // computed in integer hundredths rather than decimal floats.
+  const days = buildDayZoneHours(shifts, range);      // rounds hours ONCE, per cell
+  const zoneTotals = sumZoneCentiHours(days);         // exact sums of those cells
+
+  const zones = PAY_ZONES.map(({ zone, label }) => {
+    const rate = zoneRateCentiIsk(hourlyRate, zone);  // exact — never rounded
+    return { zone, label,
+      hours: centiToNumber(zoneTotals[zone]),
+      rate:  centiToNumber(rate),
+      pay:   zonePayIsk(zoneTotals[zone], rate) };    // the ONLY money rounding
   });
 
-  // Each entry contributes only the hours that fall inside this cycle.
-  const totalHours = entries.reduce(
-    (sum, e) => sum + hoursWithinCycle(e.startTime, e.endTime, range),
-    0,
-  );
-  // Through UsersService, never prisma.user directly — that model has one owner
-  // (see Invariants). And through a reader narrow enough to answer only this
-  // question, so password/setupCode are never loaded to compute a wage.
-  const { hourlyRate } = await this.usersService.findEmployeeRate(userId);
-  // ISK has no decimals — round the final pay amount to the nearest whole krona.
-  const totalPay = Math.round(totalHours * (hourlyRate ?? 0));
   return {
-    totalHours,
-    totalPay,
     ...cycleDto, // cycle/prevCycle/nextCycle/cycleStart/cycleEnd — the backend is
-  };            // the single source of truth; the frontend only displays these
+                 // the single source of truth; the frontend only displays these
+    userId: employee.id, name: employee.name, hourlyRate,
+    totalHours: centiToNumber(days.reduce((s, d) => s + d.totalCentiHours, 0)),
+    totalPay: zones.reduce((s, z) => s + z.pay, 0),   // plain sum, never re-rounded
+    hasOpenShift: openShiftCount > 0,
+    zones,
+    days: days.map(toDayDto),
+  };
 }
 ```
+
+`getOverview(cycle?)` runs the **same** `summarise()` helper over every employee,
+after one batched query for the team's shifts (`userId: { in: ids }`) — never
+`findEmployeeRate()` in a loop, which would turn fifteen employees into fifteen
+round trips on a page that should cost one.
 
 ---
 
@@ -538,11 +580,20 @@ Rules the AI agent (Claude Code) must never violate:
 - All user-facing text (page titles, buttons, badges, error/success messages) is in **English**, regardless of what language this document or the spec uses for internal notes. Exact copy for every user-facing string lives in spec §8a — the agent uses that wording verbatim (e.g. stored in a `frontend/src/lib/messages.ts` constants file) rather than paraphrasing it. §8a is not exhaustive: for a case it doesn't cover, the agent writes a sensible message inline and does not need to add a row to §8a.
 - Every controller endpoint that accepts a request body uses a DTO validated with `class-validator`, under a global `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })`. Any field not declared on the DTO (e.g. a `password` sent to `POST /users`) is stripped/rejected by the framework itself — this is never enforced only by documentation or by the service layer choosing not to read the field.
 - All `TimeEntry` timestamps are stored and compared in UTC. The app targets Iceland only (no DST, UTC year-round) — no timezone conversion logic is ever introduced.
-- `hourlyRate` and every computed pay amount are Icelandic króna (ISK) and are always whole numbers (`Int`) — never `Decimal` or `Float`. Intermediate hour calculations may be fractional, but `totalPay` is rounded to the nearest whole krona as the final step of the payroll calculation, never left unrounded and never rounded earlier in the pipeline.
+- `hourlyRate` and every **pay amount** are Icelandic króna (ISK) and are always whole numbers (`Int`) — never `Decimal` or `Float`. The single exception is a **zone's rate** (`hourlyRate` × zone factor), which carries hundredths: it is ISK *per hour*, a multiplier and not a payment, and rounding it would make the Rate column stop reproducing the Pay column beside it.
+- **There are exactly three rounding points in the payroll pipeline, and no others** (spec §4 decision 5d): (1) hours, to 2 decimals, per **cell** — one date × one zone, the finest figure ever displayed· (2) never on a zone's rate· (3) a zone's **pay**, to whole ISK. Everything above a rounded value is an exact **sum** of rounded values — `totalHours` sums the cells, `totalPay` sums the four zone amounts, `totalCost` sums the employees' `totalPay`. `totalPay` is therefore never itself rounded: rounding it again is exactly what would make the Pay column stop adding up to it.
+- The rounded value is always the **canonical** one, never a display-only copy of something more precise: the 2-decimal hours are what get multiplied. Every figure the user sees is a figure the calculation actually used.
+- **`GET /payroll` is the only endpoint that reports hours.** `GET /time-entries` carries `isSplit` but **no hours figure** (spec §4, decision 5f) — under rate zones a single number per shift is not what anyone is paid, and a second hours figure would round at a different unit (per shift vs per cell) and be able to disagree with the payroll breakdown. One number, one owner, nothing to reconcile. Do not add an "hours" field back to the shift list· if a sanity check is wanted there it is an explicit **Duration** (`end − start`), which is a property of the shift and not a payroll figure.
+- All payroll arithmetic is done in **integer hundredths** (centihours, centi-ISK), never in decimal floats — `2450 * 1.33` in IEEE doubles is not exactly `3258.5`, and a wage must not depend on which way that lands. Conversion to a decimal number happens once, on the way out.
+- The four rate zones and their percentages are **hardcoded constants** in `rate-zones.util.ts`, never `AppSettings` fields. Payroll is recomputed on every request and never frozen, so an admin-editable percentage would silently rewrite every past cycle· changing one is a developer action requiring a deploy. (The same property already applies to `hourlyRate` — see spec §13, gap 1.)
+- Zone hours are accumulated across **all** of a user's shifts before the cell is rounded — never rounded per shift and then summed, which would let two short shifts on the same day each lose up to 18 seconds.
+- `NIGHT` and `WEEKEND` are returned as separate zones even though they share a rate. A client can always merge two rows and can never split one, and a future change to either percentage must not be a change to the response shape.
+- The payroll `zones[]` array is rendered by the frontend **as a list**, never as hardcoded columns/rows — a new zone must appear on the page with no frontend change. This is the condition the four-zone decision was taken under.
+- `PayrollDayDto.date` is a bare `YYYY-MM-DD` and must be formatted **as UTC** on the client. `new Date("2026-07-25")` read in a negative-offset timezone prints the previous day, which would put a Saturday's weekend hours on a row labelled Friday.
 - `AppSettings.cycleStartDay`/`cycleEndDay` default to 25/24, meaning a cycle wraps across the month boundary (e.g. 25 Jun → 24 Jul) — a cycle never resolves to a same-month start/end range.
 - `cycleStartDay` is restricted to **11–25** and `cycleEndDay` must be exactly `cycleStartDay - 1` (10–24). Enforced by `class-validator` on `UpdateSettingsDto`, so it holds for any caller — a restricted `<select>` in the admin UI (Step 13) makes the mistake impossible *by accident*, the DTO makes it impossible *at all*, and the two are layers rather than duplicates (the same reasoning as `findByEmail()` + `P2002` in `createEmployee`). Two properties follow and are the reason for the range: consecutive cycles are **contiguous**, so no shift falls into a gap between cycles or into two of them at once· and every allowed day exists in every month, so day-of-month **clamping is never needed** for 28/29/30/31-day months. Because the range is fully determined by `cycleStartDay`, the arithmetic reads only that field — `cycleEndDay` is stored and validated but never computed with, so the two can never disagree about where a boundary is.
 - **The cycle's end boundary is exclusive everywhere inside the backend, and inclusive only on the way out.** `computeCycleRange()` returns `{ start, endExclusive }`, and every Prisma filter compares against `endExclusive` with `lt` — never `lte`. `endExclusive` is midnight, which is simultaneously the next cycle's `start`, so adjacent cycles fit together with no gap and no overlap: that single instant is what makes shift splitting exact. Only the response DTO carries `cycleEnd = endExclusive - 1ms` (e.g. `23:59:59.999`), which exists purely so the UI can print "25 Jul – 24 Aug" without doing date arithmetic. `cycleEnd` never appears in a query and `endExclusive` never appears in a DTO — the names are what keep them apart.
-- **A shift that crosses a cycle boundary is split, never assigned wholesale to one cycle.** Its hours are apportioned to each cycle it overlaps (`hoursWithinCycle()` — the intersection of the shift with the cycle), so the sum across all cycles always equals the hours actually worked: no hour is lost at a boundary and none is paid twice. This applies identically to the payroll total and to the per-entry hours shown in the shift list, so the Hours column always adds up to the total the employee is paid. Consequently, cycle queries select entries that **overlap** the range (`startTime < endExclusive AND endTime > start`), not entries whose `startTime` falls inside it, and the same entry legitimately appears in two cycles with different `hoursInCycle` values. Open shifts (`endTime = null`) cannot be split — they contribute 0 hours and are listed under the cycle containing their `startTime`. **This makes the shift-list query deliberately different from the payroll query, and they must not be shared.** Payroll takes closed shifts overlapping the cycle· the list takes those *plus* open shifts matched on `startTime`, because `endTime: { not: null }` would drop them and the approved `ShiftList` renders an "Open" badge for exactly those — an employee who forgot to clock out needs a screen on which to find and fix it. For the same reason `GET /time-entries/open` exists separately: an open shift started in the previous cycle is filtered out of the current one, so the Clock page cannot learn its button state from the list.
+- **A shift that crosses a cycle boundary is split, never assigned wholesale to one cycle.** Its hours are apportioned to each cycle it overlaps (the intersection of the shift with the cycle, done in `rate-zones.util.ts`), so the sum across all cycles always equals the hours actually worked: no hour is lost at a boundary and none is paid twice. Consequently, cycle queries select entries that **overlap** the range (`startTime < endExclusive AND endTime > start`), not entries whose `startTime` falls inside it, and the same entry legitimately appears in two cycles — flagged with `isSplit`, which is what tells the reader why. Open shifts (`endTime = null`) cannot be split — they contribute 0 hours and are listed under the cycle containing their `startTime`. **This makes the shift-list query deliberately different from the payroll query, and they must not be shared.** Payroll takes closed shifts overlapping the cycle· the list takes those *plus* open shifts matched on `startTime`, because `endTime: { not: null }` would drop them and the approved `ShiftList` renders an "Open" badge for exactly those — an employee who forgot to clock out needs a screen on which to find and fix it. For the same reason `GET /time-entries/open` exists separately: an open shift started in the previous cycle is filtered out of the current one, so the Clock page cannot learn its button state from the list.
 - The backend is the single source of truth for pay-cycle date boundaries. `resolveCycleRange()` lives only in `SettingsService`, which owns the `AppSettings` row it derives from; `TimeEntriesService` and `PayrollService` inject `SettingsService` rather than resolving cycles themselves, the same way `AuthService` goes through `UsersService` for every `User` query. The date arithmetic itself lives in `cycle.util.ts` as pure functions (`cycle`, `cycleStartDay` → `{ start, endExclusive }`) with no DB and no Nest, so it can be unit-tested standalone. Every response that involves a cycle (time-entries list, payroll breakdown) returns the same block: `cycle`, `prevCycle`, `nextCycle`, `cycleStart`, `cycleEnd`. The frontend never computes cycle boundaries itself — the ◀▶ `CycleNavigator` sends back the `prevCycle`/`nextCycle` key it was handed rather than doing month arithmetic, so not even a month rollover is implemented twice.
 - **`?cycle=` is optional on every cycle-aware endpoint· omitting it means "the cycle containing now", and that default is resolved in `SettingsService`, never by a caller.** The rule is `now.getUTCDate() >= cycleStartDay ? this month : the previous month` — which is *not* the current calendar month: on 3 August with a 25th boundary the current cycle is `2026-07`, and the obvious `now.toISOString().slice(0, 7)` would return `2026-08`, a cycle that has not started yet, showing the employee an empty page for work they have done. Three call sites need this default (time entries, personal payroll, the admin payroll overview), each of which would otherwise need its own copy of both the settings read and the comparison. Because the resolved `cycle` key is echoed back in the response, the client always knows which cycle it was actually given.
 - `/time-entries/clock-in` and `/time-entries/clock-out` are EMPLOYEE-only — the admin never clocks in/out and has no Clock page/ClockButton in their UI. Admin lands on the Team page after login instead.

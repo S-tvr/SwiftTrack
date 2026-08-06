@@ -6,11 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UsersService } from '../users/users.service';
-import {
-  hoursWithinCycle,
-  isSplitAcrossCycle,
-  type CycleRange,
-} from '../settings/cycle.util';
+import { isSplitAcrossCycle, type CycleRange } from '../settings/cycle.util';
 import { CreateTimeEntryDto } from './dto/create-time-entry.dto';
 import { UpdateTimeEntryDto } from './dto/update-time-entry.dto';
 import { CycleEntriesResponseDto } from './dto/cycle-entries-response.dto';
@@ -315,7 +311,6 @@ export class TimeEntriesService {
   ): CycleTimeEntryDto {
     return {
       ...this.toResponseDto(entry),
-      hoursInCycle: hoursWithinCycle(entry.startTime, entry.endTime, range),
       isSplit: isSplitAcrossCycle(entry.startTime, entry.endTime, range),
     };
   }

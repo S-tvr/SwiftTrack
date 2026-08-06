@@ -56,9 +56,9 @@ export function IsNotInTheFuture(
  * allowed: a zero-length entry is harmless (it contributes 0 hours) and can
  * still carry notes, while a reversed one is impossible.
  *
- * Reversed shifts must be caught here rather than left to the arithmetic:
- * `hoursWithinCycle()` clamps at 0, so an unvalidated reversed shift would sit
- * in the employee's list with real times on it and quietly pay nothing.
+ * Reversed shifts must be caught here rather than left to the arithmetic: the
+ * payroll clipping clamps at 0, so an unvalidated reversed shift would sit in
+ * the employee's list with real times on it and quietly pay nothing.
  */
 export function IsNotBefore(
   property: string,

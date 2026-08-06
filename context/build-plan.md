@@ -62,7 +62,7 @@ It never automatically moves to the next step without this confirmation, even if
   - `GET /settings` (Both)
   - `PUT /settings` (ADMIN) — updates cycleStartDay/cycleEndDay. Both fields required· `cycleStartDay` 11–25 and `cycleEndDay` exactly `cycleStartDay - 1`, enforced by `class-validator` (custom `@IsDayBefore`), otherwise 400. See spec §4 decision 5a for why the range is restricted — contiguous cycles, and no day-of-month clamping ever needed
   - `resolveCycleRange()` lives here, not in `PayrollService`. The date arithmetic itself is a **pure function** (`cycle`, `cycleStartDay` → `{ start, endExclusive }`) with no DB access, in `cycle.util.ts`· `SettingsService` reads the singleton row and calls it. `TimeEntriesService` and `PayrollService` inject `SettingsService` instead of resolving cycles themselves — same pattern as `AuthService` going through `UsersService` for every `User` query
-  - `cycle.util.ts` also owns `hoursWithinCycle()` (the shift/cycle intersection used for splitting), `shiftCycleKey()` (◀▶ prev/next), and `resolveCurrentCycleKey()` (the `?cycle=` omitted default). All pure, all consumed by steps 5 and 6 — one implementation each, for the same reason `resolveCycleRange()` moved here
+  - `cycle.util.ts` also owns `isSplitAcrossCycle()`, `shiftCycleKey()` (◀▶ prev/next), and `resolveCurrentCycleKey()` (the `?cycle=` omitted default). All pure, all consumed by steps 5 and 6 — one implementation each, for the same reason `resolveCycleRange()` moved here. *(It originally owned `hoursWithinCycle()` too· that went in step 6 when the shift list stopped reporting hours and left it with no callers — the shift/cycle clipping now happens per (date × zone) in `rate-zones.util.ts`.)*
   - **Unit tests for `cycle.util.ts` are written in this step, not deferred to 8a.** The functions have no HTTP surface until step 5, so the alternative would be a throwaway verification script· step 8a extends these and adds the payroll-level tests
   - A missing `AppSettings` row (migrations run without the seed) fails loudly with a 500 naming the fix — never a silent `upsert` to defaults, which would move the payroll boundary by up to two weeks with no signal
   - **Why this moved ahead of Time Entries:** Settings owns `AppSettings` and depends on nothing beyond Prisma and the guards, while **both** Time Entries (`?cycle=` filter) and Payroll need cycle boundaries. In the original order, step 4 would have had to improvise cycle maths that step 6 would then write a second time — exactly what the "single source of truth for cycle boundaries" invariant exists to prevent. Only 4 and 5 swap· steps 6+ are untouched.
@@ -75,9 +75,9 @@ It never automatically moves to the next step without this confirmation, even if
   - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) and `GET /time-entries?userId=&cycle=` (ADMIN) — **the same response shape**, because both feed the same `ShiftList` component with the same `CycleNavigator` (employee at `/shifts`, admin at `/shifts/:userId`). The admin route needs `?cycle=` for exactly the reason the employee one does: without it the ◀▶ has no key to send and no dates to print
     ```
     { cycle, prevCycle, nextCycle, cycleStart, cycleEnd,
-      entries: [ { id, startTime, endTime, notes, hoursInCycle, isSplit } ] }
+      entries: [ { id, startTime, endTime, notes, isSplit } ] }
     ```
-    `hoursInCycle` is the entry's hours **within this cycle** and `isSplit` marks one that extends beyond it — both straight from `cycle.util.ts` (step 4), so the Hours column adds up to what payroll pays (spec §4 decision 5b)
+    `isSplit` marks a shift that extends beyond this cycle — it is what explains the same row reappearing when the ◀▶ moves to the neighbouring cycle. ⚠️ **No hours figure** (spec §4, decision 5f): under rate zones one number per shift is not what anyone is paid, and a second hours figure would round at a different unit than payroll's cells and be able to disagree with it. Hours live only in `GET /payroll`
   - ⚠️ **The list query is NOT the payroll query.** Payroll takes closed shifts overlapping the cycle. The list must additionally show **open** shifts (`endTime = null`), which `endTime: { not: null }` would silently drop — and the approved `ShiftList` renders a red **"Open"** badge for exactly those, so an employee who forgot to clock out would have no screen on which to find and fix it. Open shifts cannot overlap-match (they have no end), so they are selected by `startTime` instead, per the invariant in architecture.md:
     ```ts
     where: { userId, OR: [
@@ -85,14 +85,14 @@ It never automatically moves to the next step without this confirmation, even if
       { endTime: null, startTime: { gte: start, lt: endExclusive } },         // open: by startTime
     ]}
     ```
-    An open shift reports `hoursInCycle: 0` and `isSplit: false` — already the behaviour of the step-4 functions, covered by their tests
+    An open shift reports `isSplit: false` — it has no end, so it cannot be split
   - `GET /time-entries/open` (EMPLOYEE) — the caller's open shift, or `null`, **wrapped as `{ openShift }`**. Needed by step 10: `ClockButton` must render "Clock In" or "Clock Out" on page load, and it cannot read that off the list, because an open shift started in the *previous* cycle is filtered out of the current one. Without this the button renders the wrong label and clock-in then fails with "You already have an open shift". The wrapper is not decoration: Nest answers a bare `null` return with an **empty body** rather than the JSON literal `null`, so the step-9 `api/client.ts` doing `res.json()` on every response would throw on precisely the endpoint whose normal answer is "nothing"
   - `PUT /time-entries/:id` (Owner or ADMIN) — DTO accepts `startTime`/`endTime`/`notes` only, **never `userId`**: unlike `POST`, this would *move* an existing shift between people. Not a `PartialType` of the create DTO — `startTime`/`endTime` are both required (`notes` optional), which matches what `ShiftForm` sends anyway and keeps one rule instead of two
   - `DELETE /time-entries/:id` (Owner or ADMIN)
   - **Tests are written in this step, not deferred to 8a** (same reasoning as `cycle.util.spec.ts` in step 4: the four write rules interlock, and a rule proved only by hand is a snapshot). Two levels: the cross-field validators as pure specs (rules 2 and 4), and `time-entries.service.spec.ts` with **stubbed Prisma** (rules 1 and 3, the role asymmetry, the `userId` rules, clock-in/out against the verbatim §8a strings, owner-or-ADMIN resolving to 404, and the list response shape). ⚠️ What this deliberately does **not** prove: a stub returns whatever it was told, so the boundary case that matters most — a shift ending exactly when the next begins must **not** collide — is asserted against the shape of the `where` clause (`gt`/`lt`, never `gte`/`lte`) and is only really proved by **8b** against real SQL
   - **The four write rules — decided, no longer open.** Each one guessed wrong changes what people get paid, so they are stated here rather than left to the implementation:
     1. **`endTime` is required on `POST` and `PUT`.** The manual form is the tool for *closed* shifts; clock in/out is the tool for *live* ones. Nothing the form touches stays open, so the "at most one open shift" rule needs enforcing in exactly one place (clock-in) instead of three. Consequence accepted: an open shift cannot be edited while it is open — the employee clocks out first, then corrects it. Consequence for step 11: End Time becomes `required` in `ShiftForm`
-    2. **`endTime` may not be *before* `startTime`** → 400. Equal is allowed (a zero-length entry is harmless — 0 hours — and can carry notes). Reversed is impossible, not unusual, and today `hoursWithinCycle`'s `Math.max(0, …)` would silently pay it as 0 with no error anywhere: that clamp is a safety net for the arithmetic, never a substitute for validation
+    2. **`endTime` may not be *before* `startTime`** → 400. Equal is allowed (a zero-length entry is harmless — 0 hours — and can carry notes). Reversed is impossible, not unusual, and the payroll clipping's `Math.max(0, …)` would silently pay it as 0 with no error anywhere: that clamp is a safety net for the arithmetic, never a substitute for validation
     3. **No two shifts of the same user may overlap** → 400. Two entries 08:00-16:00 and 12:00-20:00 pay 16 hours for 12 worked. Nobody is in two shifts at once, so a collision is always an error, never a valid case. An **open** shift occupies `[startTime, ∞)` for this check. On `PUT` the row being edited is excluded (`id: { not: id }`), or every edit collides with itself
     4. **`startTime`/`endTime` may not be *after* `now`** (equal is fine, so writing the minute that just passed does not race). This is what makes rule 3 airtight at the clock-in door for free: if no closed shift can ever reach `now`, then clock-in at `now` can never land inside one, and no extra query is needed there
   - **The open-shift block is asymmetric by role, deliberately.** When the row's owner has an open shift: an **EMPLOYEE** may not `POST` or `PUT` at all (not even on the open row) — clock-out is the one way to unblock, and it is always available to them. An **ADMIN** is subject only to the collision rule. Both halves are load-bearing: clock-out is EMPLOYEE-only and closes *the caller's own* shift, so `PUT` is the admin's only tool — without the exception, an open shift belonging to a **deactivated** employee (who can no longer log in at all) would stay open forever, and the admin would be locked out of the whole ledger for as long as anyone happened to be on shift. The check always reads the **row owner's** state, never the caller's
@@ -101,12 +101,17 @@ It never automatically moves to the next step without this confirmation, even if
   - Clock-in/clock-out error copy is already fixed in spec §8a — use it verbatim
   - Nothing extra is needed to keep a deactivated employee out: `JwtStrategy` re-checks `isActive` on every request (see architecture.md § Invariants), so a token issued before deactivation stops working everywhere at once — this module included.
 
-- [ ] **6. Payroll module — Stage A (flat rate)**
-  - `GET /payroll/me?cycle=`
-  - `GET /payroll/:userId?cycle=` (ADMIN)
-  - Logic: only entries with `endTime != null`, **overlapping** the cycle· each entry contributes only the hours that fall inside it (`hoursWithinCycle()` from step 4 — spec §4 decision 5b, §7)
-  - `totalPay` always rounded to an integer (ISK, `Math.round` at the end — never in between)
-  - Response includes the resolved cycle block (`cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`) — the backend is the single source of truth for cycle boundaries, the frontend consumes them ready-made
+- [ ] **6. Payroll module — rate zones**
+  - `GET /payroll/me?cycle=` (EMPLOYEE), `GET /payroll/:userId?cycle=` (ADMIN) — **identical shape**, both feed the same shared `PayrollBreakdown`
+  - `GET /payroll/overview?cycle=` (ADMIN) — the whole team in one request
+  - **Not a flat rate.** Four zones (spec §4 decision 5c, §7): Mon–Fri 08:00–17:00 base, 17:00–24:00 +33%, 00:00–08:00 +45%, Sat/Sun all day +45%. They tile the week exactly once, so surcharges never stack. A shift is cut at every zone boundary it crosses, on top of the cycle clipping from step 4
+  - `rate-zones.util.ts` — all of it pure, no DB and no DI, in the shape of `cycle.util.ts`. Computed in **integer hundredths**, never decimal floats
+  - **Three rounding points and no others** (spec §4 decision 5d): hours to 2 decimals per *cell* (date × zone), a zone's rate never, a zone's pay to whole ISK. `totalHours`/`totalPay`/`totalCost` are exact **sums** — never rounded again, which is what makes every column add up to the figure beneath it
+  - Response carries the resolved cycle block, `hourlyRate`, `totalHours`, `totalPay`, `hasOpenShift`, the four `zones` (label, hours, rate, pay) and `days` (row per **date**, column per zone, hours only — no money). Only dates with hours
+  - `hasOpenShift` is **cycle-scoped**, matched on `startTime`: open shifts are unpayable so their day is absent from `days`, and this flag is the only thing that explains the gap
+  - `UsersService.findEmployeeRate()` (single) and `findAllEmployeeRates()` (batch, for the overview) — narrow readers with explicit `select`. **Never `findEmployeeRate()` in a loop**: fifteen employees would become fifteen round trips
+  - A `null` `hourlyRate` fails loudly with a 500 naming the fix — never a silent 0, which would drop that person's wages out of the team's cost
+  - **Tests are written in this step**, as in steps 4 and 5 — `rate-zones.util.spec.ts` (zone boundaries, cross-midnight, Fri→Sat and Sun→Mon handovers, cross-cycle clipping, the rounding rules) and `payroll.service.spec.ts` with stubbed Prisma (404s, who appears on the overview, the query shapes, and that the overview row equals that employee's own page)
 
 - [ ] **7. Swagger**
   - `@ApiTags`, `@ApiOperation`, `@ApiResponse` on every controller — built in with each step, not at the end
@@ -121,6 +126,10 @@ It never automatically moves to the next step without this confirmation, even if
     - `POST /users` with `password` in the body (must be rejected by the ValidationPipe)
     - Cycle boundary: a shift exactly on the 25th or the 24th of the month — correct cycle
     - A shift crossing the boundary (e.g. 24 Aug 20:00 → 25 Aug 03:00) — appears in both cycles, hours split 4/3, and the two parts sum to the full shift
+    - A shift crossing a **zone** boundary (e.g. Tue 22:00 → Wed 06:00) — 2h at +33% on one date, 6h at +45% on the next, on two separate rows of the day table
+    - Payroll columns add up: `Σ zones[].pay === totalPay`, `Σ days[].totalHours === totalHours`, `Σ rows[].totalPay === totalCost`
+    - `GET /payroll/overview` — an active employee with no hours is listed at 0· a deactivated employee with hours in the cycle is still listed and still counted in `totalCost`· a deactivated employee with nothing in the cycle is not
+    - `GET /payroll/:userId` on the admin's own id → 404
     - `PUT /settings` with a non-contiguous or out-of-range day pair (e.g. `{25, 20}`, `{10, 9}`, `{26, 25}`) — must be rejected with 400
     - CORS: a request from the frontend origin passes through normally
     - Error messages (login/set-initial-password) match the spec §8a wording exactly, in English
@@ -132,7 +141,7 @@ It never automatically moves to the next step without this confirmation, even if
   All of these use the pattern established in `settings.service.spec.ts`: **stubbed Prisma, no database**, so they stay fast and need no fixtures.
 
   - `cycle.util.spec.ts` already exists from step 4 (boundaries, February, splitting, open shifts, prev/next keys, the omitted-`?cycle=` default) — extend rather than re-create. The 28/29/30/31 clamping cases from the original plan no longer apply: the 11–25 restriction means every allowed day exists in every month (spec §4 decision 5a)
-  - Tests for `getPayrollForCycle()`: correct hour total, correct ISK rounding, entries outside the cycle are excluded, open shifts (`endTime = null`) are excluded, and a shift crossing the boundary contributes its clipped hours to **each** of the two cycles (the two parts summing to its full length)
+  - `rate-zones.util.spec.ts` and `payroll.service.spec.ts` **already exist from step 6** — extend rather than re-create, exactly as with `cycle.util.spec.ts` and `time-entries.service.spec.ts`. They already cover the zone boundaries, the cross-midnight and cross-cycle splits, the three rounding points, the 404s and who appears on the overview. What is worth adding here: entries outside the cycle excluded, and a shift crossing the cycle boundary contributing its clipped hours to **each** of the two cycles (the parts summing to its full length)
   - Tests for `AuthService`: the order of checks in `login()` (`isActive` → `password !== null` → bcrypt compare) and in `setInitialPassword()` (`isActive` → already activated → code matches → not expired), each asserted against the **exact** §8a wording — those strings are binding and otherwise break silently. Plus: a rejected `set-initial-password` attempt does **not** consume the setupCode
   - Tests for `UsersService`: `updateEmployee`/`deactivate` never touch an ADMIN row (404 instead)· `activateAccount` clears `setupCode` **and** `setupCodeExpiresAt` together· `toProfileDto` never carries `setupCode`, while `toResponseDto` always does for a pending employee· duplicate email yields 409 from both the explicit check and the `P2002` catch
   - `time-entries.service.spec.ts` and the validator specs **already exist from step 5** (clock-in refuses while an open shift exists· clock-out with no open shift fails· the owner-or-ADMIN filter resolves someone else's row to a 404· the four write rules and the role asymmetry) — extend rather than re-create, exactly as with `cycle.util.spec.ts`
@@ -155,7 +164,7 @@ It never automatically moves to the next step without this confirmation, even if
   - ⚠️ The global `ValidationPipe` is registered in `main.ts`, **not** in `AppModule` — a testing app does not inherit it. It must be applied explicitly in the test bootstrap, or every validation assertion passes falsely
   - ⚠️ Set a `FRONTEND_URL` distinct from `http://localhost:5173` for the run, so a CORS assertion tests the configured origin rather than the hardcoded fallback (the step 1 lesson)
 
-  **Scope: the checklist in §8 becomes code** — role restrictions per route, the activation flow end to end, double clock-in, clock-out with no open shift, login while inactive/unactivated with the exact §8a strings, `password` in `POST /users` rejected by the pipe, the cycle boundary and the split shift against real rows, `PUT /settings` validation, CORS. Roughly 15-20 tests.
+  **Scope: the checklist in §8 becomes code** — role restrictions per route, the activation flow end to end, double clock-in, clock-out with no open shift, login while inactive/unactivated with the exact §8a strings, `password` in `POST /users` rejected by the pipe, the cycle boundary and the split shift against real rows, the zone split across midnight, the payroll columns adding up, who appears on `/payroll/overview`, `PUT /settings` validation, CORS. Roughly 20-25 tests.
 
   Step 8 then keeps only what a human should actually do: read the Swagger UI, sanity-check the shape of responses, and try the things nobody thought to list.
 
@@ -173,21 +182,29 @@ It never automatically moves to the next step without this confirmation, even if
   - `Footer` — empty placeholder
 
 - [ ] **10. Clock Page** (EMPLOYEE only — admin never sees this, lands on Team instead)
-  - `ClockButton` first on the page
-  - `MonthSummary` below it (hours, estimated pay)
+  - `ClockButton` first on the page· reads `{ openShift }` from `GET /time-entries/open` (wrapped, see step 5) to know which label to render on load
+  - ⚠️ **Open decision, to be taken with the page in front of us:** whether `MonthSummary` stays at all. Keeping it means two figures — hours and pay for the current cycle — read straight from `GET /payroll/me`, computing nothing. Dropping it makes the page a single-purpose button and, more usefully, makes it **independent of the Payroll module**: the Clock page would then need only the two clock endpoints and `/time-entries/open`. Nothing about the backend depends on the answer — `/payroll/me` exists either way
 
 - [ ] **11. Shift History**
   - `ShiftList` — shared component, takes a `userId` prop· employee (`/shifts`, userId locked) + admin (`/shifts/:userId`)
+  - ⚠️ **The mockup's "Hours" column goes** (and with it the `hoursBetween` mock helper). The API no longer returns an hours figure per shift — spec §4, decision 5f. Columns are Date / Start / End / Notes / Open + a **split** marker from `isSplit`, which is what explains a shift appearing in two cycles. If the page feels like it needs a number, it is a **Duration** (`end − start`), labelled as such — never "Hours", which is a payroll word
   - `ShiftForm` (add/edit/delete)
   - `CycleNavigator` (◀▶) — consumes `cycleStart`/`cycleEnd` from the backend response, computes nothing itself
 
 - [ ] **12. Payroll Breakdown**
-  - `PayrollBreakdown` — one component, reused: employee (`/payroll`, userId locked) + admin (`/payroll/:userId`)
+  - ⚠️ **The step-0 mockup is a draft and gets replaced**, not extended. It renders one Date/Hours/Pay table computed in the browser (`hoursBetween`, `isWithinCycle`, `Math.round` per row) — all of which is now backend work and all of which must go
+  - **Two components**, both reused for employee (`/payroll`, userId locked) and admin (`/payroll/:userId`):
+    - a **summary** — `Zone | Hours | Rate | Total Pay`, one row per zone plus a Total row (spec §8a)
+    - a **day table** — `Date | Day | Evening | Night | Weekend | Total`, row per date, hours only, no money
+  - Both render straight from the response: **no arithmetic, no `Math.round`, no date maths**. That includes the Total rows — print `totalHours`/`totalPay`/`day.totalHours` as sent, never re-add the column. The cells are decimals, and summing them in JS disagrees with the server's figure about a third of the time (`1.99 + 22.35 + 2.92` → `27.259999999999998`) `mocks/data.ts` helpers (`hoursBetween`, `isWithinCycle`, `getMockCycle`) are mock-only and must not survive into a real component
+  - The zone columns/rows are generated **from the `zones[]` array**, never hardcoded — a fifth zone must appear with no frontend change (architecture.md § Invariants)
+  - `date` is formatted **as UTC** — `new Date("2026-07-25")` in a negative-offset browser prints the previous day
+  - Show the `hasOpenShift` warning: without it, a day missing because someone forgot to clock out looks like a bug in the app
 
 - [ ] **13. Admin — Team, Payroll Overview & Settings**
   - `TeamPage` — first page after admin login. List, create, edit hourlyRate, click → employee's ShiftHistoryPage
   - `TeamPage` — badge per employee **"Active" / "Pending"** (from the `hasActivated` returned by the backend· see spec §8a)
-  - `PayrollOverviewPage` — list of employees, total monthly cost, open-shifts indicator, cycle nav, click → employee's PayrollPage
+  - `PayrollOverviewPage` — list of employees, total monthly cost, open-shifts indicator, cycle nav, click → employee's PayrollPage. Fed by **one** call to `GET /payroll/overview?cycle=`· the mockup's per-employee `reduce` and its client-side `hasOpenShift` both go. Rows arrive sorted and already include any deactivated employee with hours in the cycle
   - `SettingsPage` — cycleStartDay/cycleEndDay. ⚠️ The step-0 mockup has two free number inputs (1–31)· it becomes a **single** `<select>` of 11–25 with the end day rendered beside it as derived text ("Cycle ends on the 24th of the following month"). The request still sends both fields — the admin simply cannot produce an invalid pair. The backend validation stays regardless (see step 4)
 
 - [ ] **13a. Client-side validation polish** (do this last, after all forms exist)

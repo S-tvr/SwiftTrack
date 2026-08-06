@@ -2,7 +2,6 @@ import { BadRequestException } from '@nestjs/common';
 import {
   computeCycleRange,
   formatCycleKey,
-  hoursWithinCycle,
   isSplitAcrossCycle,
   parseCycleKey,
   resolveCurrentCycleKey,
@@ -134,85 +133,13 @@ describe('resolveCurrentCycleKey', () => {
   });
 });
 
-describe('hoursWithinCycle', () => {
-  const july = computeCycleRange('2026-07', DEFAULT_START_DAY); // [25 Jul, 25 Aug)
-  const august = computeCycleRange('2026-08', DEFAULT_START_DAY); // [25 Aug, 25 Sep)
-
-  it('returns the full length for a shift entirely inside the cycle', () => {
-    expect(
-      hoursWithinCycle(
-        utc('2026-08-03T08:00:00.000Z'),
-        utc('2026-08-03T16:30:00.000Z'),
-        july,
-      ),
-    ).toBe(8.5);
-  });
-
-  it('splits a boundary-crossing shift across both cycles, losing nothing', () => {
-    const start = utc('2026-08-24T20:00:00.000Z');
-    const end = utc('2026-08-25T03:00:00.000Z');
-
-    expect(hoursWithinCycle(start, end, july)).toBe(4);
-    expect(hoursWithinCycle(start, end, august)).toBe(3);
-    // The whole point: the parts sum to the shift, so no hour is lost at a
-    // boundary and none is paid twice.
-    expect(
-      hoursWithinCycle(start, end, july) + hoursWithinCycle(start, end, august),
-    ).toBe(7);
-  });
-
-  it('counts an open shift as zero — it cannot be split without an end', () => {
-    expect(hoursWithinCycle(utc('2026-08-03T08:00:00.000Z'), null, july)).toBe(
-      0,
-    );
-  });
-
-  it('returns zero for a shift entirely outside the cycle', () => {
-    expect(
-      hoursWithinCycle(
-        utc('2026-09-01T08:00:00.000Z'),
-        utc('2026-09-01T16:00:00.000Z'),
-        july,
-      ),
-    ).toBe(0);
-  });
-
-  it('treats the exclusive boundary as belonging to the next cycle', () => {
-    // Ends exactly at the boundary — wholly in July, nothing in August.
-    const endsAtBoundary = {
-      start: utc('2026-08-24T22:00:00.000Z'),
-      end: utc('2026-08-25T00:00:00.000Z'),
-    };
-    expect(
-      hoursWithinCycle(endsAtBoundary.start, endsAtBoundary.end, july),
-    ).toBe(2);
-    expect(
-      hoursWithinCycle(endsAtBoundary.start, endsAtBoundary.end, august),
-    ).toBe(0);
-
-    // Starts exactly at the boundary — wholly in August.
-    const startsAtBoundary = {
-      start: utc('2026-08-25T00:00:00.000Z'),
-      end: utc('2026-08-25T02:00:00.000Z'),
-    };
-    expect(
-      hoursWithinCycle(startsAtBoundary.start, startsAtBoundary.end, july),
-    ).toBe(0);
-    expect(
-      hoursWithinCycle(startsAtBoundary.start, startsAtBoundary.end, august),
-    ).toBe(2);
-  });
-
-  it('clips a shift that swallows the whole cycle to the cycle length', () => {
-    expect(
-      hoursWithinCycle(
-        utc('2026-06-01T00:00:00.000Z'),
-        utc('2026-10-01T00:00:00.000Z'),
-        july,
-      ),
-    ).toBe(31 * 24); // 25 Jul -> 25 Aug
-  });
-});
+/*
+ * `hoursWithinCycle` had its own describe block here. It went with the function
+ * (see the note in cycle.util.ts): the shift list no longer reports hours, so
+ * nothing called it. The clipping behaviour it covered did not go untested —
+ * payroll does its own clipping, and rate-zones.util.spec.ts asserts it against
+ * the same boundary cases.
+ */
 
 describe('isSplitAcrossCycle', () => {
   const july = computeCycleRange('2026-07', DEFAULT_START_DAY);

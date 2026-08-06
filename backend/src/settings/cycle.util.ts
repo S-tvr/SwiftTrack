@@ -26,7 +26,6 @@ export interface CycleRange {
 }
 
 const CYCLE_KEY_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
-const MS_PER_HOUR = 3_600_000;
 
 /** `"2026-07"` → `{ year: 2026, month: 7 }`. `month` is 1-based, not a JS month index. */
 export function parseCycleKey(cycle: string): { year: number; month: number } {
@@ -94,35 +93,23 @@ export function resolveCurrentCycleKey(
     : shiftCycleKey(thisMonth, -1);
 }
 
-/**
- * The hours of one shift that fall inside one cycle — the intersection of
- * [startTime, endTime) with [start, endExclusive).
- *
- * A shift lying entirely inside the cycle yields its full length; one crossing
- * the boundary yields only the part on this side of it, so the same shift
- * contributes its remainder to the neighbouring cycle and the two parts sum to
- * the whole. Fractional hours are intentional — ISK rounding happens once, at
- * the end of the payroll calculation.
+/*
+ * `hoursWithinCycle()` used to live here. It is gone on purpose, not by
+ * oversight: its only caller was `GET /time-entries`, which no longer reports
+ * an hours figure at all. Under rate zones a single "hours" number per shift is
+ * not the number anyone is paid for, so the shift list stopped carrying one and
+ * this function lost its last consumer. Payroll does its own clipping in
+ * `rate-zones.util.ts`, per (date × zone) rather than per shift.
  */
-export function hoursWithinCycle(
-  startTime: Date,
-  endTime: Date | null,
-  range: CycleRange,
-): number {
-  // An open shift has no end to clip against, so it cannot be split — it
-  // counts for nothing until someone closes it.
-  if (endTime === null) return 0;
-
-  const from = Math.max(startTime.getTime(), range.start.getTime());
-  const to = Math.min(endTime.getTime(), range.endExclusive.getTime());
-  return Math.max(0, to - from) / MS_PER_HOUR;
-}
 
 /**
- * Whether this shift extends beyond this cycle in either direction — i.e. the
- * UI should mark it as split, because the hours shown are less than the
- * shift's full length. A shift ending exactly at `endExclusive` is not split:
- * it ends at the boundary, entirely inside.
+ * Whether this shift extends beyond this cycle in either direction — it began
+ * before the cycle opened, or ends after it closes.
+ *
+ * This is what the shift list marks as split, and it is the only thing that
+ * explains the same shift showing up again when the ◀▶ navigator moves to the
+ * neighbouring cycle. A shift ending exactly at `endExclusive` is not split: it
+ * ends at the boundary, entirely inside.
  */
 export function isSplitAcrossCycle(
   startTime: Date,

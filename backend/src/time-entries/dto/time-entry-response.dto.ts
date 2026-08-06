@@ -32,22 +32,21 @@ export class TimeEntryResponseDto {
 }
 
 /**
- * The same shift as seen from inside one pay cycle. Both fields come straight
- * from `cycle.util.ts`, so the Hours column in the UI adds up to what payroll
- * actually pays (spec §4 decision 5b).
+ * The same shift as seen from inside one pay cycle.
+ *
+ * ⚠️ Deliberately carries **no hours figure**. It used to report `hoursInCycle`,
+ * back when payroll was a flat rate and one shift's hours times one rate was
+ * that shift's pay. Under rate zones that is no longer true — a shift running
+ * 12:00-20:15 is 5.00 h at the base rate and 3.25 h at +33% — so a single
+ * "Hours" number here would invite exactly the wrong sum, and would be a second
+ * hours figure able to disagree with the payroll breakdown. Hours and money
+ * live in one place: `GET /payroll` (spec §4, decisions 5c and 5e).
  */
 export class CycleTimeEntryDto extends TimeEntryResponseDto {
   @ApiProperty({
-    example: 7.5,
-    description:
-      'Hours of this shift that fall INSIDE this cycle — not the shift’s full length. A shift crossing the boundary reports only its part on this side, and 0 for an open shift.',
-  })
-  hoursInCycle!: number;
-
-  @ApiProperty({
     example: false,
     description:
-      'True when the shift extends beyond this cycle in either direction, i.e. hoursInCycle is less than its full length. Always false for an open shift, which cannot be split.',
+      'True when the shift extends beyond this cycle in either direction — it started before this cycle opened, or ends after it closes. This is what explains the same shift appearing again when the ◀▶ navigator moves to the neighbouring cycle. Always false for an open shift, which cannot be split.',
   })
   isSplit!: boolean;
 }

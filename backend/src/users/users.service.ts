@@ -74,6 +74,48 @@ export class UsersService {
     }
   }
 
+  /**
+   * Used by PayrollService for a single employee's breakdown: the name that
+   * goes on the page and the rate the hours are multiplied by, and nothing
+   * else. Another narrow, purpose-named reader with an explicit `select` —
+   * `User` has one owner (see Invariants), so other services ask through here,
+   * but what comes back is scoped to the question and can never carry
+   * password/setupCode into a wage calculation.
+   *
+   * Deactivated employees resolve normally: someone who left mid-cycle still
+   * worked those hours and still has to appear on the payroll for it.
+   *
+   * ADMIN ids resolve to null — an admin has no hourlyRate and never clocks in,
+   * so `GET /payroll/:userId` on one is a 404, not an empty payslip.
+   */
+  async findEmployeeRate(
+    id: number,
+  ): Promise<{ id: number; name: string; hourlyRate: number | null } | null> {
+    return this.prisma.user.findFirst({
+      where: { id, role: Role.EMPLOYEE },
+      select: { id: true, name: true, hourlyRate: true },
+    });
+  }
+
+  /**
+   * The same question for the whole team, in one query — used by the admin
+   * payroll overview. Deliberately a batch reader rather than findEmployeeRate()
+   * in a loop: fifteen employees would otherwise be fifteen round trips to the
+   * database on a page that should cost one.
+   *
+   * Returns every employee, active or not, with `isActive` so the caller can
+   * apply its own rule about who belongs on the page for a given cycle.
+   */
+  async findAllEmployeeRates(): Promise<
+    { id: number; name: string; hourlyRate: number | null; isActive: boolean }[]
+  > {
+    return this.prisma.user.findMany({
+      where: { role: Role.EMPLOYEE },
+      select: { id: true, name: true, hourlyRate: true, isActive: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   async createEmployee(dto: CreateUserDto): Promise<UserResponseDto> {
     const existing = await this.findByEmail(dto.email);
     if (existing) {

@@ -483,7 +483,7 @@ describe('TimeEntriesService', () => {
       });
     });
 
-    it('reports clipped hours and isSplit for a shift crossing the boundary', async () => {
+    it('marks a shift crossing the boundary as split', async () => {
       const { service, findMany } = makeService();
       findMany.mockResolvedValueOnce([
         entry({
@@ -494,22 +494,29 @@ describe('TimeEntriesService', () => {
 
       const { entries } = await service.findCycleEntries(EMPLOYEE.userId);
 
-      // 20:00 → midnight falls in this cycle; the remaining 3h in the next.
-      expect(entries[0].hoursInCycle).toBe(4);
+      // The last 3h fall in the next cycle, which is why the same row shows up
+      // again when the navigator moves forward — this flag is what says so.
       expect(entries[0].isSplit).toBe(true);
     });
 
-    it('reports an open shift as 0 hours and not split', async () => {
+    it('reports an open shift as not split', async () => {
       const { service, findMany } = makeService();
       findMany.mockResolvedValueOnce([entry({ endTime: null })]);
 
       const { entries } = await service.findCycleEntries(EMPLOYEE.userId);
 
-      expect(entries[0]).toMatchObject({
-        endTime: null,
-        hoursInCycle: 0,
-        isSplit: false,
-      });
+      expect(entries[0]).toMatchObject({ endTime: null, isSplit: false });
+    });
+
+    it('carries no hours figure at all — hours live only in the payroll response', async () => {
+      // Under rate zones one number per shift is not what anyone is paid, so
+      // this list deliberately stopped reporting one (see CycleTimeEntryDto).
+      const { service, findMany } = makeService();
+      findMany.mockResolvedValueOnce([entry()]);
+
+      const { entries } = await service.findCycleEntries(EMPLOYEE.userId);
+
+      expect(entries[0]).not.toHaveProperty('hoursInCycle');
     });
 
     it('404s on the admin route before listing, rather than returning an empty cycle', async () => {
