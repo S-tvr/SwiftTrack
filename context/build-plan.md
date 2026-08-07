@@ -114,7 +114,11 @@ It never automatically moves to the next step without this confirmation, even if
   - **Tests are written in this step**, as in steps 4 and 5 — `rate-zones.util.spec.ts` (zone boundaries, cross-midnight, Fri→Sat and Sun→Mon handovers, cross-cycle clipping, the rounding rules) and `payroll.service.spec.ts` with stubbed Prisma (404s, who appears on the overview, the query shapes, and that the overview row equals that employee's own page)
 
 - [ ] **7. Swagger**
-  - `@ApiTags`, `@ApiOperation`, `@ApiResponse` on every controller — built in with each step, not at the end
+  - `@ApiTags`, `@ApiOperation`, `@ApiResponse` on every controller — built in with each step, not at the end. This step is therefore a **completeness sweep**, not new work: the decorators have been written inside each step since step 2, and what step 7 does is find where that slipped
+  - It slipped unevenly, and the pattern is worth knowing: the three most recent modules (`settings`, `time-entries`, `payroll`) were near-complete, while the two oldest (`users`, `auth`) had **~17 undeclared status codes** between them — `users` had five routes documenting nothing but 200/201. The sweep is doc-only: no endpoint, DTO or behaviour changes
+  - **Why it gates step 8 rather than being cosmetic:** step 8's manual sweep is executed *from the Swagger UI*, and 8b is written from step 8's checklist. A 409 that is not written there is a 409 nobody tries by hand and nobody turns into a test — exactly the finding `/review` raised against the payroll routes at the end of step 6
+  - Conventions fixed here, recorded as invariants in architecture.md: **401 is declared once per controller class** (`@ApiResponse` is a `ClassDecorator` too, and the explorer merges class-level into every operation), **403 stays per route** because it is not uniform, and **no 500 is ever declared**
+  - `persistAuthorization: true` in the `SwaggerModule.setup()` options — step 8 is driven from this UI, and without it every page refresh discards the bearer token
 
 - [ ] **8. Full check of the backend before the frontend**
   - Full check of all endpoints via Swagger UI or Postman. **The checklist below is executed by hand here and turned into automated tests in 8b** — 8 is the first point where the system exists as a system, 8b is what stops that check from being a one-off snapshot

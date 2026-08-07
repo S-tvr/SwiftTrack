@@ -42,6 +42,8 @@ const CYCLE_QUERY = {
 
 @ApiTags('time-entries')
 @ApiBearerAuth()
+// 401 once for the whole controller — see architecture.md § Invariants.
+@ApiResponse({ status: 401, description: 'Missing or invalid token.' })
 @Controller('time-entries')
 export class TimeEntriesController {
   constructor(private readonly timeEntriesService: TimeEntriesService) {}
@@ -54,9 +56,12 @@ export class TimeEntriesController {
     description:
       'Writes startTime = now, endTime = null. The admin never clocks in — they have no Clock page. Fails if a shift is already open.',
   })
-  @ApiResponse({ status: 201, type: TimeEntryResponseDto })
+  @ApiResponse({
+    status: 201,
+    type: TimeEntryResponseDto,
+    description: 'The newly opened shift, with `endTime: null`.',
+  })
   @ApiResponse({ status: 400, description: 'An open shift already exists.' })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   clockIn(@CurrentUser() user: JwtPayload): Promise<TimeEntryResponseDto> {
     return this.timeEntriesService.clockIn(user.userId);
@@ -70,9 +75,12 @@ export class TimeEntriesController {
     description:
       "Takes no id — it closes the caller's own open shift at now, and fails if there is none.",
   })
-  @ApiResponse({ status: 200, type: TimeEntryResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: TimeEntryResponseDto,
+    description: 'The shift just closed, with `endTime` set to now.',
+  })
   @ApiResponse({ status: 400, description: 'No open shift to close.' })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   clockOut(@CurrentUser() user: JwtPayload): Promise<TimeEntryResponseDto> {
     return this.timeEntriesService.clockOut(user.userId);
@@ -86,8 +94,12 @@ export class TimeEntriesController {
     description:
       'What the Clock page reads its button state from. It cannot use the list instead: an open shift started in the previous cycle is filtered out of the current one, and the button would render the wrong label. The entry is wrapped in { openShift } so the "not clocked in" answer is still valid JSON — a bare null leaves the body empty.',
   })
-  @ApiResponse({ status: 200, type: OpenShiftResponseDto })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
+  @ApiResponse({
+    status: 200,
+    type: OpenShiftResponseDto,
+    description:
+      'Always an object: `{ openShift: … }` when a shift is open, `{ openShift: null }` when not. Never an empty body.',
+  })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   findOpen(@CurrentUser() user: JwtPayload): Promise<OpenShiftResponseDto> {
     return this.timeEntriesService.findOpen(user.userId);
@@ -102,9 +114,13 @@ export class TimeEntriesController {
       'Same response shape as the admin route below, because both feed the same ShiftList and CycleNavigator. Includes open shifts, which is what the "Open" badge is rendered from. EMPLOYEE-only: an admin has no shifts of their own and reaches an employee\'s history through the route below.',
   })
   @ApiQuery(CYCLE_QUERY)
-  @ApiResponse({ status: 200, type: CycleEntriesResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: CycleEntriesResponseDto,
+    description:
+      'The resolved cycle block plus the shifts touching it — open ones included. No hours figure per shift: hours live only in GET /payroll (spec §4, decision 5f).',
+  })
   @ApiResponse({ status: 400, description: 'Malformed cycle key.' })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   findMine(
     @CurrentUser() user: JwtPayload,
@@ -123,12 +139,16 @@ export class TimeEntriesController {
   })
   @ApiQuery({ name: 'userId', required: true, example: 2 })
   @ApiQuery(CYCLE_QUERY)
-  @ApiResponse({ status: 200, type: CycleEntriesResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: CycleEntriesResponseDto,
+    description:
+      "That employee's shifts for the cycle — the same shape as /time-entries/me, since both feed the same ShiftList.",
+  })
   @ApiResponse({
     status: 400,
     description: 'Missing userId, or a malformed cycle key.',
   })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   @ApiResponse({ status: 404, description: 'No such employee.' })
   findForEmployee(
@@ -145,13 +165,16 @@ export class TimeEntriesController {
     description:
       'Distinct from clock-in: explicit times, and always closed. userId is required for an ADMIN and rejected for an EMPLOYEE. Rejected if either timestamp is in the future, if endTime precedes startTime, or if the shift overlaps another of the same user.',
   })
-  @ApiResponse({ status: 201, type: TimeEntryResponseDto })
+  @ApiResponse({
+    status: 201,
+    type: TimeEntryResponseDto,
+    description: 'The created shift — always closed.',
+  })
   @ApiResponse({
     status: 400,
     description:
       'Validation failed, the shift overlaps another, or the employee has an open shift.',
   })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 404, description: 'No such employee.' })
   create(
     @CurrentUser() user: JwtPayload,
@@ -167,13 +190,17 @@ export class TimeEntriesController {
     description:
       'Also the route through which a forgotten clock-out is repaired with its real end time. A row belonging to someone else is a 404, not a 403 — the caller learns nothing about rows that are not theirs.',
   })
-  @ApiResponse({ status: 200, type: TimeEntryResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: TimeEntryResponseDto,
+    description:
+      'The updated shift. Full replacement: omitting `notes` clears it.',
+  })
   @ApiResponse({
     status: 400,
     description:
       'Validation failed, the shift overlaps another, or the employee has an open shift.',
   })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({
     status: 404,
     description: 'No such shift, or not the caller’s.',
@@ -189,9 +216,13 @@ export class TimeEntriesController {
   @Delete(':id')
   @HttpCode(204)
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Delete a shift (Owner or ADMIN)' })
-  @ApiResponse({ status: 204, description: 'Deleted.' })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
+  @ApiOperation({
+    summary: 'Delete a shift (Owner or ADMIN)',
+    description:
+      'Unlike POST and PUT, this is not blocked while the owner has an open shift — an employee may delete an open shift instead of clocking out of it. Safe (nothing unpayable is lost) but it discards the clock-in record rather than correcting it. A row belonging to someone else is a 404, not a 403.',
+  })
+  @ApiResponse({ status: 204, description: 'Deleted. No response body.' })
+  @ApiResponse({ status: 400, description: 'Non-integer id.' })
   @ApiResponse({
     status: 404,
     description: 'No such shift, or not the caller’s.',

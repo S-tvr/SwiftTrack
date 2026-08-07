@@ -22,7 +22,12 @@ async function bootstrap() {
     .build();
   const swaggerDocument = () =>
     SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api', app, swaggerDocument);
+  SwaggerModule.setup('api', app, swaggerDocument, {
+    // Keeps the pasted bearer token across page reloads. The step-8 sweep is
+    // driven entirely from this UI, and without it every refresh means logging
+    // in again and re-authorizing before the next request.
+    swaggerOptions: { persistAuthorization: true },
+  });
 
   await app.listen(process.env.PORT ?? 3000);
 }

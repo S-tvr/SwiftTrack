@@ -33,6 +33,8 @@ const CYCLE_QUERY = {
 
 @ApiTags('payroll')
 @ApiBearerAuth()
+// 401 once for the whole controller — see architecture.md § Invariants.
+@ApiResponse({ status: 401, description: 'Missing or invalid token.' })
 @Controller('payroll')
 export class PayrollController {
   constructor(private readonly payrollService: PayrollService) {}
@@ -50,9 +52,13 @@ export class PayrollController {
       'The admin has no payroll of their own — they never clock in and have no hourlyRate.',
   })
   @ApiQuery(CYCLE_QUERY)
-  @ApiResponse({ status: 200, type: PayrollResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: PayrollResponseDto,
+    description:
+      "The caller's breakdown for the resolved cycle: the four zones with hours/rate/pay, and a row per date with hours only. Render `zones[]` as a list, never as hardcoded columns.",
+  })
   @ApiResponse({ status: 400, description: 'Malformed cycle key.' })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   getMyPayroll(
     @CurrentUser() user: JwtPayload,
@@ -70,9 +76,13 @@ export class PayrollController {
       'One request for the whole team: hours, pay and an open-shift flag per employee, plus the total cost. Every active employee appears, plus any deactivated one with hours in this cycle.',
   })
   @ApiQuery(CYCLE_QUERY)
-  @ApiResponse({ status: 200, type: PayrollOverviewResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: PayrollOverviewResponseDto,
+    description:
+      "One row per employee plus the team's `totalCost`. Each row equals that employee's own page exactly — both come from the same calculation.",
+  })
   @ApiResponse({ status: 400, description: 'Malformed cycle key.' })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   getOverview(
     @Query('cycle') cycle?: string,
@@ -89,12 +99,16 @@ export class PayrollController {
       'Identical shape to /payroll/me — both feed the same shared PayrollBreakdown component. A deactivated employee resolves normally: they still worked the hours.',
   })
   @ApiQuery(CYCLE_QUERY)
-  @ApiResponse({ status: 200, type: PayrollResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: PayrollResponseDto,
+    description:
+      "That employee's breakdown — byte-identical in shape to /payroll/me.",
+  })
   @ApiResponse({
     status: 400,
     description: 'Malformed cycle key, or a userId that is not an integer.',
   })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   @ApiResponse({
     status: 404,

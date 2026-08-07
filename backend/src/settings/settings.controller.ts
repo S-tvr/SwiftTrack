@@ -14,6 +14,8 @@ import { UpdateSettingsDto } from './dto/update-settings.dto';
 
 @ApiTags('settings')
 @ApiBearerAuth()
+// 401 once for the whole controller — see architecture.md § Invariants.
+@ApiResponse({ status: 401, description: 'Missing or invalid token.' })
 @Controller('settings')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
@@ -25,8 +27,11 @@ export class SettingsController {
     description:
       'Available to both roles — an employee needs the cycle days to make sense of their own shift and payroll pages.',
   })
-  @ApiResponse({ status: 200, type: SettingsResponseDto })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
+  @ApiResponse({
+    status: 200,
+    type: SettingsResponseDto,
+    description: 'The current cycle days.',
+  })
   getSettings(): Promise<SettingsResponseDto> {
     return this.settingsService.getSettings();
   }
@@ -39,12 +44,16 @@ export class SettingsController {
     description:
       'cycleStartDay must be 11-25 and cycleEndDay exactly cycleStartDay - 1, so consecutive cycles are contiguous and no shift falls between them or into two at once.',
   })
-  @ApiResponse({ status: 200, type: SettingsResponseDto })
+  @ApiResponse({
+    status: 200,
+    type: SettingsResponseDto,
+    description:
+      'The updated cycle days. Takes effect immediately on every cycle-aware response — payroll is recomputed per request, so past cycles are re-cut at the new boundary too.',
+  })
   @ApiResponse({
     status: 400,
     description: 'Day out of range, or the two days are not contiguous.',
   })
-  @ApiResponse({ status: 401, description: 'Missing or invalid token.' })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   updateSettings(@Body() dto: UpdateSettingsDto): Promise<SettingsResponseDto> {
     return this.settingsService.updateSettings(dto);
