@@ -4,6 +4,8 @@ node_modules/
 # Environment variables
 .env
 .env.local
+# Local copy for the e2e suite; .env.test.example is committed in its place.
+.env.test
 
 # Build outputs
 dist/

@@ -245,11 +245,14 @@ Admin-only extra buttons/actions inside these shared components are shown condit
 
 ---
 
-## 8a. UI Copy (English — binding)
+## 8a. UI Copy (English)
 
-All user-facing text is in English.
+All user-facing text is in English. This section has **two halves that carry different weight** — the distinction is deliberate, not an oversight:
 
-### Page titles
+- **UI copy — binding.** Page titles, buttons, links, badges, rate-zone labels and payroll column headers are used exactly as written. Two reasons they stay a contract: the rate-zone labels are produced by the **backend** (`zones[].label`) and printed verbatim by the client, so a label and its `rateFactorHundredths` drifting apart would make the page misstate a wage; and the payroll column headers are the only text contract the not-yet-built pages of steps 12–13 have.
+- **Messages — not binding.** The error/feedback table below is a **record of the wording currently in the code**, not a rule the code must match. The frontend maps status codes to its own text (a `ValidationPipe` message is never shown to a user in any case), so no user ever reads a backend string and improving one needs no spec change. What is binding about these cases is **behaviour, not wording** — which check runs in which order, and which status code comes back. That lives in §7a and in the invariants of `architecture.md`.
+
+### Page titles — binding
 | Page | UI Title |
 |---|---|
 | Login / Account Activation | Login / Account Activation |
@@ -260,7 +263,7 @@ All user-facing text is in English.
 | Payroll Overview | Payroll Overview |
 | Settings | Settings |
 
-### Buttons / links / badges
+### Buttons / links / badges — binding
 | Element | English text |
 |---|---|
 | Login page link for account activation | **Activate your account** |
@@ -271,7 +274,7 @@ All user-facing text is in English.
 | Payroll summary columns | **Zone** / **Hours** / **Rate** / **Total Pay**, with a **Total** row |
 | Payroll day-table columns | **Date** / **Day** / **Evening** / **Night** / **Weekend** / **Total**, with a **Total** row |
 
-### Messages (errors / feedback)
+### Messages (errors / feedback) — **not** binding, recorded wording
 | Case | English message |
 |---|---|
 | Login: account not activated (`password === null`) | "This account hasn't been activated yet. Please activate it first." |
@@ -288,7 +291,13 @@ All user-facing text is in English.
 | Manual add: EMPLOYEE sent a `userId` | "userId can only be set by an admin." |
 | Manual add: ADMIN sent no `userId` | "userId is required when an admin creates a shift." |
 
-> This table is the source of truth for exact wording. The agent does not paraphrase these strings freely — it uses them exactly as written (can store them in a constants file in the frontend, e.g. `messages.ts`). It only covers the cases listed· messages for anything else are written as needed and don't have to be added here.
+> **This table describes, it does not prescribe.** It lists the wording each case carries in the code today, so a reader can see it without grepping — it is not a contract the implementation must satisfy. An agent may improve any of these strings, and adding a row is optional for a case not listed.
+>
+> ⚠️ **This is a rule about the documentation, not about the tests.** The unit and e2e specs assert these messages **verbatim**, deliberately: that is what makes changing one a visible, deliberate act rather than something that drifts unnoticed. What the relaxation buys is that this file no longer has to be updated in lockstep — the test is the contract, this table is the description of it.
+>
+> What must not change without a decision is the **behaviour** behind them: the order of checks in `login()`/`setInitialPassword()`, the status code each case returns, and that login names the real cause (not activated / no longer active) instead of a generic invalid-credentials answer — all of which live in `architecture.md` § Invariants.
+>
+> Two of these strings are load-bearing in a way the wording is not, and both are already enforced by the code rather than by this table: `You already have an open shift. Please clock out first.` is a **single constant** reused by clock-in and the manual write path deliberately (same situation, same required action), and the surcharge in a rate-zone label must keep matching its factor — but that label belongs to the **binding** half above, not to this one.
 
 ---
 
