@@ -26,6 +26,30 @@
 
 ---
 
+## Stack Traps
+
+Four places where this project is on a **current** version whose API differs from what most examples, tutorials and training data describe. Do not write these from memory — the first two fail **silently**, which is worse than a compile error.
+
+**1. shadcn here is built on Base UI, not Radix.** shadcn changed its default primitive library to Base UI in July 2026, and this project is on it: there is **no `@radix-ui/*` package installed at all**, and the components import from `@base-ui/react/*` and carry `data-slot` attributes (`frontend/src/components/ui/dialog.tsx` is the reference). Consequences when copying Radix-era shadcn code:
+
+| Radix (wrong here) | Base UI |
+|---|---|
+| `asChild` | the `render` prop |
+| `onOpenChange` and similar | different prop names — check the component |
+| `data-[state=open]:` in class names | **silently does nothing** |
+
+The last row is the dangerous one: no error, no warning, the styling or animation simply never applies. New components are pulled from the registry (`npx shadcn@latest add …`), which installs the Base UI version — never hand-written from a remembered example.
+
+**2. Tailwind v4 is CSS-first, and there is no config file.** `frontend/src/index.css` starts with `@import "tailwindcss"` and defines theme tokens in `@theme inline`. **`tailwind.config.js` does not exist and must not be created** — v4 does not read one by default, so an agent adding a colour there will find it silently absent. Also: no `@tailwind base/components/utilities` directives (that is v3), no `content: []` array to maintain (sources are detected automatically), and `@apply` is discouraged in favour of CSS variables.
+
+**3. `@hookform/resolvers` must be ≥ 5.1 for zod v4.** Earlier versions support zod 3 only. There is a known type error on the boundary — `Resolver<input<T>, any, output<T>>' is not assignable to 'Resolver<output<T>, any, output<T>>'` — arising from zod v4's change to input/output type handling; the current resolver detects the schema version at runtime and handles both. Recorded so nobody debugs it from zero.
+
+**4. In a Vitest test, mock `fetch` — not the wrapper you are testing.** Mocking `request()` to test `client.ts` proves only that the mock behaves as written, and hides precisely the bugs worth catching: a wrong header, a malformed URL, a mishandled status. Relatedly, jsdom implements **no layout** — anything depending on real dimensions, scroll position or computed CSS belongs in Playwright (step 13b), not in a Vitest spec, where it will pass or fail for the wrong reason.
+
+**5. React Router is used in declarative mode.** `App.tsx` uses `<BrowserRouter>` + `<Routes>`, not `createBrowserRouter`. Route `loader`/`action` APIs are therefore **not available** — data loading goes through `useApiQuery`, and converting to a data router is not a step anyone is asked to take.
+
+---
+
 ## Folder Structure
 
 ```
@@ -85,19 +109,26 @@
 └── frontend/
     ├── src/
     │   ├── main.tsx
-    │   ├── App.tsx                        → Router setup
+    │   ├── App.tsx                        → Router setup (BrowserRouter + Routes — declarative, NOT createBrowserRouter)
     │   ├── context/
-    │   │   └── AuthContext.tsx            → user + token, localStorage
+    │   │   └── AuthContext.tsx            → user in state, ONLY the token in localStorage· isBootstrapping
+    │   ├── hooks/
+    │   │   └── useApiQuery.ts             → the single read hook: { data, error, isLoading, refetch } + ignore-flag cleanup
+    │   ├── lib/
+    │   │   ├── messages.ts                → every user-visible string: UI copy + ERRORS (code → text)
+    │   │   ├── datetime.ts                → the ONLY date/time door — always { timeZone: "UTC" }, plus toIsoUtc()
+    │   │   └── utils.ts                   → cn() (shadcn)
     │   ├── api/
-    │   │   ├── client.ts                  → fetch wrapper, Authorization header
+    │   │   ├── client.ts                  → fetch wrapper: auth header, timeout, ApiError{status,code}, 401 rule
     │   │   ├── auth.ts
     │   │   ├── users.ts
     │   │   ├── timeEntries.ts
-    │   │   └── payroll.ts
+    │   │   ├── payroll.ts
+    │   │   └── settings.ts
     │   ├── pages/
     │   │   ├── LoginPage.tsx              → has "Activate account" link
     │   │   ├── SetInitialPasswordPage.tsx → email + setupCode + new password
-    │   │   ├── ClockPage.tsx              → EMPLOYEE only — clock in/out + month summary
+    │   │   ├── ClockPage.tsx              → EMPLOYEE only — the clock button, nothing else
     │   │   ├── ShiftHistoryPage.tsx       → shared component, employee (/shifts) + admin (/shifts/:userId)
     │   │   ├── PayrollPage.tsx            → shared component, employee (/payroll) + admin (/payroll/:userId)
     │   │   ├── TeamPage.tsx               → admin only — first page after admin login
@@ -107,22 +138,27 @@
     │       ├── layout/
     │       │   ├── Header.tsx             → logo left, username + menu right
     │       │   ├── Footer.tsx             → empty placeholder
-    │       │   └── ProtectedRoute.tsx     → role-aware route guard
+    │       │   ├── ProtectedRoute.tsx     → role-aware route guard
+    │       │   └── TimezoneNotice.tsx     → bar shown only when getTimezoneOffset() !== 0
     │       ├── clock/
-    │       │   ├── ClockButton.tsx
-    │       │   └── MonthSummary.tsx
+    │       │   └── ClockButton.tsx
     │       ├── shifts/
     │       │   ├── ShiftList.tsx          → shared, takes userId prop
-    │       │   ├── ShiftForm.tsx
+    │       │   ├── ShiftForm.tsx          → dialog, add/edit
     │       │   └── CycleNavigator.tsx
     │       ├── payroll/
-    │       │   ├── PayrollBreakdown.tsx   → shared, takes userId prop
+    │       │   ├── PayrollSummary.tsx     → Zone | Hours | Rate | Total Pay + Total row
+    │       │   ├── PayrollDayTable.tsx    → Date | <zone per column> | Total, hours only
     │       │   └── PayrollOverview.tsx    → admin — team totals + open-shift flags
     │       └── team/
     │           ├── EmployeeList.tsx
     │           └── EmployeeForm.tsx
-    └── test/
+    └── e2e/                               → Playwright (step 13b)
 ```
+
+> ⚠️ **Two step-0 files do not appear above, deliberately.** `components/clock/MonthSummary.tsx` is **deleted** in step 9/10 (its flat-rate pay calculation is wrong under four rate zones), and `mocks/data.ts` dies once the last of its **13** importers is detached. `components/payroll/PayrollBreakdown.tsx` is **replaced** by the two components listed above — not extended.
+>
+> Vitest specs live beside the file they test (`datetime.spec.ts` next to `datetime.ts`), matching the backend's convention. `e2e/` is the only separate test folder.
 
 ### Component Breakdown
 
@@ -130,21 +166,56 @@
 >
 > Responsive design: the app must work well on desktop, tablet, and mobile (browser) — Tailwind breakpoints (sm/md/lg) are used wherever the layout needs it, especially in lists/tables that need to adapt to a small screen.
 
+> ⚠️ **All five forms use `react-hook-form` + `zod` + shadcn's `Form`, from step 9 onward** — never a `useState` per field. The step-0 mockups use the older pattern and are converted as each is wired, rather than left for a cleanup pass at the end: the API's validation rules have been fixed and tested since the backend closed, so there is nothing to wait for and writing each form twice buys nothing. Two consequences worth stating: the native browser validation bubble is gone (it is unstyled *and* rendered in the **browser's** language, which would put the only non-English sentence in the app in front of a user), and every form carries **two** kinds of error — field-level from zod, before any request, and request-level from the API's error `code`.
+
 #### LoginPage.tsx
-State: `email`, `password`, `error`, `isSubmitting`
+Form: `email`, `password` (zod schema, `useForm`)
 Logic: submit → `api/auth.ts` `login()` → `AuthContext.login()` → redirect ADMIN→`/team`, EMPLOYEE→`/clock`
-Contains: 2 fields, submit button, error area, link to `/activate` (text: "Activate your account" — see spec §8a)
+Contains: 2 fields, submit button, request-error area above the button, link to `/activate` (text: "Activate your account" — see spec §8a).
+Also renders the **session-expired** message when the redirect here came from an auto-logout — otherwise being thrown out mid-session reads as a glitch rather than an explanation.
 
 #### SetInitialPasswordPage.tsx
-State: `email`, `setupCode`, `newPassword`, `confirmPassword`, `error`, `isSubmitting`
-Logic: submit → client-side password match check → `api/auth.ts` `setInitialPassword()` → redirect `/login` with success message
-Contains: 4 fields, submit button, error area, link back to `/login`
+Form: `email`, `setupCode`, `newPassword`, `confirmPassword` (zod schema, with the match check as a schema refinement rather than hand-written logic)
+Logic: submit → `api/auth.ts` `setInitialPassword()` → redirect `/login` with a success message
+Contains: 4 fields, submit button, request-error area, link back to `/login`
 
 #### Layout: Header.tsx / Footer.tsx
 Every protected page (both roles) is wrapped by `Header` (logo "SwiftTrack" on the left, username + menu on the right — dropdown with role-specific links + logout) and `Footer` (empty placeholder, filled in Phase 2).
 
 #### Shared-page pattern: ShiftHistoryPage / PayrollPage
-Both pages follow the same pattern: an employee route with no param (`/shifts`, `/payroll` — always the same), an admin route with a `:userId` param (`/shifts/:userId`, `/payroll/:userId` — whichever employee they selected). Both routes load the same page component, which passes the correct `userId` (either `"me"` or the route param) to the same shared component (`ShiftList`, `PayrollBreakdown`). Admin-only actions inside these are shown conditionally based on `user.role`, with no separate component per role.
+Both pages follow the same pattern: an employee route with no param (`/shifts`, `/payroll` — always the same), an admin route with a `:userId` param (`/shifts/:userId`, `/payroll/:userId` — whichever employee they selected). Both routes load the same page component, which passes the correct `userId` (either `"me"` or the route param) to the same shared components (`ShiftList`· `PayrollSummary` + `PayrollDayTable`). Admin-only actions inside these are shown conditionally based on `user.role`, with no separate component per role.
+
+Both also read `?cycle=` from the URL rather than component state — see the frontend invariant. That is what carries the cycle through the admin's drill-down from Payroll Overview into one employee's breakdown.
+
+#### ClockPage.tsx (EMPLOYEE only)
+State: the open shift from `GET /time-entries/open` (read as `data.openShift` — the response is wrapped), plus in-flight/error state for the button.
+Logic: the label is decided by whether an open shift exists — **never** read from the shift list, which filters out a shift started in the previous cycle. Clock In → `POST /time-entries/clock-in`· Clock Out → `PATCH /time-entries/clock-out` (no `:id`)· `refetch()` after either. The client sends **no timestamp** — the server writes `now`, which is why this path is immune to a wrong or foreign clock.
+Contains: the button and nothing else. Disabled while a request is in flight. Failure renders beside the button, and stays — "you already have an open shift" is an instruction, not a notification.
+
+#### ShiftHistoryPage.tsx
+State: the cycle response (entries + cycle block), `?cycle=` from `useSearchParams`, and the add/edit dialog's open state.
+Logic: `GET /time-entries/me?cycle=` or `GET /time-entries?userId=&cycle=`· `refetch()` after add/edit/delete. The ◀▶ sends back the `prevCycle`/`nextCycle` key it was handed and navigates with `replace`.
+Contains: `CycleNavigator`, `ShiftList` (Date / Start / End / Notes / Open + split marker — **no hours or duration column**), `ShiftForm` in a dialog. Edit/Delete are disabled where the response says this caller may not edit the row, and **Add Shift is disabled when `canWrite` is `false`**. Delete confirms first.
+
+#### PayrollPage.tsx
+State: the payroll response, `?cycle=` from the URL.
+Logic: `GET /payroll/me?cycle=` or `GET /payroll/:userId?cycle=`. **Renders only** — no arithmetic of any kind, including the Total rows.
+Contains: `PayrollSummary` (row per zone, generated from `zones[]`, never hardcoded), `PayrollDayTable` (row per date, hours only), the `hasOpenShift` warning, and an empty state for a cycle with no hours.
+
+#### TeamPage.tsx (ADMIN only)
+State: the employee list, the "show deactivated" toggle, the create/edit dialog, and the setup-code dialog shown after a successful create.
+Logic: `GET /users` returns EMPLOYEE rows including deactivated ones. Three badge states from the pair `isActive`/`hasActivated` — a deactivated employee has a password, so a two-badge design would show them as "Active". Create → `POST /users`, then the code dialog. `PUT /users/:id` for name/hourlyRate. `DELETE` (deactivate, confirmed) and `PATCH /users/:id/reactivate`. `POST /users/:id/reset-setup-code` from a pending row.
+Contains: `EmployeeList`, `EmployeeForm`, the toggle **with its count**, and the setup-code dialog carrying the code and its expiry **date**. Clicking a row → `/shifts/:userId`.
+
+#### PayrollOverviewPage.tsx (ADMIN only)
+State: the overview response, `?cycle=` from the URL.
+Logic: **one** call to `GET /payroll/overview?cycle=`. Rows arrive sorted, already include any deactivated employee with hours in the cycle, and carry their own totals — the page adds nothing up, `totalCost` included.
+Contains: `PayrollOverview`, `CycleNavigator`, per-employee open-shift indicator. Clicking a row → `/payroll/:userId?cycle=<the same cycle>`.
+
+#### SettingsPage.tsx (ADMIN only)
+State: `cycleStartDay` via react-hook-form.
+Logic: `GET /settings`, `PUT /settings` (both fields sent). The end day is **derived text**, not an input.
+Contains: a single `<select>` of 11–25, the derived line beside it, and an explicit save confirmation — ⚠️ this is the one page where a successful save changes nothing on screen, so without it the admin cannot tell it worked.
 
 ---
 
@@ -159,6 +230,8 @@ Both pages follow the same pattern: an employee route with no param (`/shifts`, 
 | `frontend/src/api/`           | All HTTP calls to the backend. Nothing else calls `fetch` directly.                     |
 | `frontend/src/components/`    | UI only. No API calls, no business logic — receive data via props.                      |
 | `frontend/src/context/`       | Global client state (auth) only.                                                        |
+| `frontend/src/hooks/`         | `useApiQuery` — every read goes through it. No page writes its own `useEffect` + fetch.  |
+| `frontend/src/lib/`           | `datetime.ts` owns every date format/parse· `messages.ts` owns every user-visible string. |
 
 ---
 
@@ -260,7 +333,17 @@ UserResponseDto (see Invariants: setupCode never crosses into a self-facing
 response). The JWT itself carries only { userId, role }, so without the user
 object the frontend could not render the Header's username.
         ↓
-Frontend: AuthContext stores { user, token } in localStorage
+Frontend: AuthContext stores ONLY the accessToken in localStorage.
+The user object lives in React state — from this response at login, and from
+GET /users/me when a tab is opened. Nothing user-shaped is persisted, so
+nothing persisted can disagree with the server (notably `role`, which decides
+which pages render and would otherwise be editable in devtools).
+        ↓
+On boot with a stored token: AuthContext holds rendering behind
+`isBootstrapping` and calls GET /users/me. 200 → user resolved.
+401 → clear and go to /login. Network error → retry state, token KEPT.
+Cost is one request per tab opened, not per navigation — the context
+mounts above the router.
         ↓
 Every subsequent request: api/client.ts attaches Authorization: Bearer <token>
         ↓
@@ -268,6 +351,12 @@ Backend: JwtAuthGuard validates token on all protected routes
          JwtStrategy.validate() re-reads the user via UsersService.findActiveById()
          and rejects if they were deactivated or deleted after the token was issued
          RolesGuard + @Roles('ADMIN') restricts admin-only routes
+        ↓
+A 401 on a request that CARRIED a token means the session is dead:
+api/client.ts clears it and redirects to /login. A 401 on a request that
+carried NO token (login, set-initial-password) is a normal domain answer
+and goes back to the form. The discriminator is the header, never a list
+of endpoints someone has to remember to keep updated.
 ```
 
 ---
@@ -579,7 +668,7 @@ Rules the AI agent (Claude Code) must never violate:
 - `POST /auth/login` never succeeds while `user.isActive` is `false` — and, as above, it says so rather than answering generically. This check is separate from, and in addition to, the `password !== null` check, and it runs **first**: an account that is both deactivated and never activated is told it is deactivated, rather than sent down an activation path that login would reject anyway.
 - All user-facing text is in **English**, regardless of what language this document or the spec uses for internal notes. Beyond that, spec §8a splits into two halves that are **not** equally binding, and the split is deliberate:
   - **UI copy is binding and used verbatim** — page titles, buttons, links, badges, the rate-zone labels and the payroll column headers, stored in `frontend/src/lib/messages.ts` rather than written inline. The rate-zone labels are the sharp case: they are produced by the **backend** (`PAY_ZONES[].label` in `rate-zones.util.ts`) and printed unchanged by the client, so a label that stops matching its `rateFactorHundredths` makes the page misstate a wage. Changing a percentage means changing both, in one place, in the same commit.
-  - **Error/feedback messages are not binding *as documentation*.** §8a records the wording currently in the code so it can be read without grepping· it does not constrain it. No user ever reads a backend string — `api/client.ts` maps status codes to the frontend's own text, and `ValidationPipe` output is never surfaced at all — so an API message may be improved without a spec change, and a case §8a does not list needs no new row. ⚠️ **The tests are a different matter: they assert these messages verbatim, and that stays.** The relaxation removes the obligation to keep a *document* in lockstep, not the regression net — changing a message should be a deliberate edit that turns a test red, not a silent drift. What is binding beyond the wording is the **behaviour**: the order of the checks, the status code returned, and the distinguishability required by the two `login` invariants above.
+  - **Error/feedback messages are not binding *as documentation*.** §8a records the wording currently in the code so it can be read without grepping· it does not constrain it. No user ever reads a backend string — `api/client.ts` maps the exception's **`code`** to the frontend's own text (see the error-code invariant below), and `ValidationPipe` output is never surfaced at all — so an API message may be improved without a spec change, and a case §8a does not list needs no new row. ⚠️ **The tests are a different matter: they assert these messages verbatim, and that stays.** The relaxation removes the obligation to keep a *document* in lockstep, not the regression net — changing a message should be a deliberate edit that turns a test red, not a silent drift. What is binding beyond the wording is the **behaviour**: the order of the checks, the status code returned, and the distinguishability required by the two `login` invariants above.
 - Every controller endpoint that accepts a request body uses a DTO validated with `class-validator`, under a global `ValidationPipe({ whitelist: true, forbidNonWhitelisted: true })`. Any field not declared on the DTO (e.g. a `password` sent to `POST /users`) is stripped/rejected by the framework itself — this is never enforced only by documentation or by the service layer choosing not to read the field.
 - **`@ApiResponse({ status: 401 })` is declared once on the controller class, never per method.** Every route in `users`, `settings`, `time-entries` and `payroll` sits behind `JwtAuthGuard`, so the missing/invalid-token answer is identical on all of them; `@ApiResponse` is a `ClassDecorator` as well as a `MethodDecorator`, and the explorer merges class-level responses into every operation (`{...classResponses, ...methodResponses}`, so a method-level entry for the same status wins). This mirrors `@ApiBearerAuth()`, which already sits on the class for the same reason. **403 deliberately stays per route**: it is *not* uniform. Five routes carry no `RolesGuard` and therefore cannot produce a 403 at all, and they are two different categories that must not be conflated — the **both-roles** routes (`GET /users/me`, `GET /settings`), which are simply unrestricted by role, and the **owner-or-ADMIN** routes (`POST`/`PUT`/`DELETE /time-entries`), where access is decided by row ownership inside the service and someone else's row resolves to a **404, never a 403** (see the owner-or-ADMIN invariant above). A class-level 403 would therefore document a response those five can never return. Its wording also differs by role ("Not an ADMIN." vs "Not an EMPLOYEE."), which a single shared declaration could not express. `AuthController` is excluded entirely: its routes are unauthenticated, and its 401 means "invalid credentials", not "missing token".
 - **Swagger documents only what a route can actually return, verified against the service — and never a 500.** The three deliberate `InternalServerErrorException`s (missing `AppSettings` row, out-of-range stored `cycleStartDay`, `null hourlyRate`) are *designed* refusals that name their own fix in the message, not part of the API contract: no client codes against them, two of the three are unreachable without hand-editing the database, and the industry convention is to document 2xx, the client-actionable 4xx, and at most **one generic** server error. The "run the seed" guidance belongs in the README, not on seven operations. (`DocumentBuilder.addGlobalResponse()` exists if a generic 500 is ever wanted — one declaration, not per route.) By the same rule, a status that exists in the code but cannot be reached is not declared: `GET /users/me` can throw 404 in `findUserByIdOrThrow`, but `JwtStrategy` has already answered 401 for a missing user and `DELETE` is soft, so no row ever disappears.
@@ -623,3 +712,20 @@ Rules the AI agent (Claude Code) must never violate:
 - Every user-facing response that carries an unactivated employee includes their `setupCode`. The admin has no other channel to obtain it, and spec §5 requires them to hand it to the employee out of band — so omitting it from `GET /users`/`POST /users` breaks account activation entirely. It is naturally `null` for activated employees (cleared on activation) and for admins (never issued).
 - `setupCode` is generated with a CSPRNG (`randomInt` from `node:crypto`), never `Math.random()` — it is the only secret gating access to an unactivated account.
 - Uniqueness of `User.email` is enforced at **both** layers: the service checks `findByEmail()` first so the common case returns a clean 409 without depending on driver error codes, and the surrounding `create()` catches Prisma `P2002` so a concurrent double-submit races into the same 409 instead of an unhandled 500. Neither layer alone is sufficient — the check has a TOCTOU window, and the catch alone would put the happy path at the mercy of Prisma-specific error codes.
+
+### Frontend invariants
+
+*(Added 2026-08-26, when steps 9–13 were rewritten against the finished API. Each exists because a second implementation of the same thing is how this codebase acquires a bug nobody can see.)*
+
+- **Every domain exception carries a stable `code`, and the client keys its text off that — never off the status, and never off `message`.** A status is too coarse: `400` already means four different things on `POST /time-entries` (open shift exists / shifts overlap / time in the future / end before start), and a status-keyed map collapses them into one sentence that does not tell the user what to fix. [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) says the same — the status is *advisory*, the discriminator belongs in the body — and we take its substance without its ceremony (`type` URIs, `application/problem+json`), since this API has exactly one known client. The backend's `message` exists for tests, Swagger and logs; the user's sentence lives in `messages.ts` as `ERRORS: Record<ErrorCode, string>`, whose exhaustiveness the compiler enforces. The two wordings are free to differ and to change independently — the `code` is the only thing both sides agree on.
+- **Only the access token is persisted. The user object is never written to `localStorage`.** It comes from the login response at login and from `GET /users/me` when a tab opens, behind an `isBootstrapping` state. Persisting the user would make storage a second source of truth for `role`, which decides which pages render and is editable by hand — and would leave one hole in the "deactivation takes effect immediately" property that `JwtStrategy` enforces on every request.
+- **Auto-logout fires only for a 401 on a request that carried an `Authorization` header.** A 401 from `/auth/login` or `/auth/set-initial-password` means "wrong credentials" and belongs in the form; clearing the session there would wipe the form before the user could read why it failed. The discriminator is whether the header was sent, never a list of endpoints someone must remember to update as routes are added. **A network failure is not a 401** — no response means no logout: keep the token, show the error, offer a retry.
+- **`frontend/src/lib/datetime.ts` is the only place a date or time is formatted or parsed.** No component calls `new Date`, `toLocaleString` or `toLocaleDateString`. Every formatter passes `{ timeZone: "UTC" }`, matching the backend end to end. A `datetime-local` value is converted by **appending `":00.000Z"`** — ⚠️ **never `new Date(value).toISOString()`**, which reads it as local time and shifts it by the developer's offset, moving the shift into a different rate zone and changing someone's pay. That bug compiles, looks right, and no backend test can see it.
+- **The UTC rule is stated to the user rather than hidden**, but only when it matters: `TimezoneNotice` renders in the layout when `new Date().getTimezoneOffset() !== 0`, and nowhere else. In Iceland UTC *is* the wall clock, so the notice would be pure noise; outside it, a shift clocked at 15:00 local displays as 12:00 and looks like the app lost three hours. Zone and offset come from the **browser**, never from IP — the right question is "does your clock differ from UTC", and one IP needs two different answers in Athens depending on the month. Offsets are not always whole hours (India +5:30, Nepal +5:45).
+- **Every read goes through `hooks/useApiQuery`.** It owns the ignore-flag cleanup, without which three fast clicks on ◀ can resolve out of order and leave one cycle's data under another cycle's header — and without which React 19's StrictMode double-invocation looks like a backend bug. Writes are explicit: the page calls `refetch()` afterwards.
+- **`?cycle=` lives in the URL (`useSearchParams`), and the ◀▶ navigates with `replace`, not `push`.** The URL is what carries the cycle through the admin's drill-down from Payroll Overview into one employee's breakdown — with component state, they click a July figure and land in August. `replace` is what stops five clicks on ◀ from filling the history so that Back walks cycles instead of leaving the page.
+- **The frontend performs no arithmetic on payroll figures.** No `Math.round`, no summing a column, no recomputing a total — `totalHours`, `totalPay`, `totalCost` and `day.totalHours` are printed as sent. The server's totals are exact sums of rounded parts; a browser re-sum is a second, competing answer that disagrees about a third of the time (`1.99 + 22.35 + 2.92` → `27.259999999999998`). The same rule forbids a duration column in the shift list: a **split** shift appears in two cycles carrying its full `startTime`/`endTime`, so a computed duration would show its whole length twice — reintroducing the double-count that splitting exists to prevent.
+- **Which routes each role may reach is written down, never inferred.** `/clock`, `/shifts` and `/payroll` are EMPLOYEE-only (the endpoints behind them are `…/me` routes); `/shifts/:userId`, `/payroll/:userId`, `/team`, `/payroll-overview` and `/settings` are ADMIN-only; `/login` and `/activate` are public. `ProtectedRoute` enforces it, and a wrong-role visit redirects to that role's home rather than rendering a blank page. This is spelled out because generated authorization defaults to permissive — a 2026 review of AI-built codebases found IDOR in four of six, and missing role boundaries in most of them. The server is the real defence and already holds it; this keeps the UI from disagreeing with it.
+- **Old cycles are read-only for an EMPLOYEE and open to an ADMIN** (step 8c). `POST`/`PUT`/`DELETE /time-entries` refuse an employee's write outside the current or previous cycle, so a paid cycle stops moving. The admin exemption mirrors the open-shift asymmetry above and for the same reason: they are the only actor who can repair a genuine historical error, including the forgotten open shift of a deactivated employee who can no longer log in to close it. The list response reports this at **two** levels, because the client cannot derive either without resolving cycle boundaries, which the invariant above forbids: per entry, whether **the caller** may edit that row· and once per response, `canWrite` — whether they may create a shift in this cycle at all. The second is not redundant, since a `POST` has no row to carry a flag. ⚠️ `canWrite` is a **sibling of `entries`, never a member of the shared cycle block**: those five fields describe the cycle and are the same for everyone, while this one describes the caller and changes with the token — which is what keeps "every cycle-aware response carries the same block" true and keeps a meaningless field off the payroll response.
+- **Every string a user reads comes from `frontend/src/lib/messages.ts`** — labels, buttons, badges and error text alike, never written inline in JSX. This is the same rule the binding half of §8a already imposes on UI copy, extended to the `ERRORS` map.
+- **No new frontend dependency without a decision.** Settled and closed for Phase 1: native `fetch` (no axios — the whole value of an HTTP client concentrates in the one wrapper we write anyway, and the interceptor pattern's killer feature is silent token refresh, which this project deliberately does not have), no TanStack Query (its central benefit is a shared cache across components requesting the same data, and no two pages here share an endpoint), and no toast library. The approved additions are `zod`, `react-hook-form`, `@hookform/resolvers`, `vitest`, `@playwright/test`, and shadcn components pulled from the registry.

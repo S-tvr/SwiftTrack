@@ -116,6 +116,8 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | POST | `/users` | ADMIN | Create a new employee (name, email, hourlyRate — **no** password). Generates setupCode + 3-day expiry |
 | PUT | `/users/:id` | ADMIN | Edit (name, hourlyRate) |
 | DELETE | `/users/:id` | ADMIN | Soft delete — sets `isActive = false`, doesn't actually delete |
+| PATCH | `/users/:id/reactivate` | ADMIN | Sets `isActive = true`. **Added in step 8c**, because deactivation was otherwise irreversible through the API: `PUT` accepts only name/hourlyRate, and a fresh `POST` collides with the unique email — the only remedy was editing the database by hand, for the routine case of a seasonal employee returning. EMPLOYEE rows only, like `PUT`/`DELETE` |
+| POST | `/users/:id/reset-setup-code` | ADMIN | Issues a fresh 4-digit code and a fresh 3-day expiry for a still-pending employee· refuses once the account is activated. **Added in step 8c**, closing a guaranteed dead end rather than an edge case: the code is issued exactly once in `createEmployee`, lives 3 days, and had no regeneration path — so anyone who did not activate in time was locked out permanently, while the expiry message told them to *"contact your admin"*, who had no tool |
 
 ### Time Entries
 | Method | Endpoint | Auth | Description |
@@ -123,8 +125,8 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | POST | `/time-entries/clock-in` | EMPLOYEE | Starts a new entry (startTime = now, endTime = null) |
 | PATCH | `/time-entries/clock-out` | EMPLOYEE | Closes the current open entry (endTime = now) |
 | POST | `/time-entries` | Owner or ADMIN | Manually add a forgotten/missing shift — explicit `startTime`, `endTime`, `notes`, plus `userId` when an ADMIN calls (rejected from an EMPLOYEE, who always writes to themselves). Distinct from clock-in, which always writes `startTime = now, endTime = null`. Always produces a **closed** shift: `endTime` is required here and on `PUT`, may not be before `startTime`, neither timestamp may be in the future, and the shift may not overlap another of the same user (see §7a) |
-| GET | `/time-entries/me` | EMPLOYEE | My own entries for a cycle (optional `?cycle=`, defaults to the current one). Returns the resolved cycle block plus per-entry `isSplit`. **No hours figure** — see §4, decision 5f |
-| GET | `/time-entries?userId=&cycle=` | ADMIN | Entries for any employee — **same response shape** as `/me`, since both feed the same shared `ShiftList` + `CycleNavigator` |
+| GET | `/time-entries/me` | EMPLOYEE | My own entries for a cycle (optional `?cycle=`, defaults to the current one). Returns the resolved cycle block· a response-level **`canWrite`** (may the caller create a shift in this cycle at all — there is no row for a `POST` to hang a flag on)· and per entry `isSplit` plus a boolean saying whether the caller may still edit that row. Both flags come from §7a rule 5, and the client may not derive either — resolving cycle boundaries is the backend's job. ⚠️ `canWrite` sits **beside** `entries`, not inside the cycle block: the block describes the *cycle*, this describes the *caller*. **No hours figure** — see §4, decision 5f |
+| GET | `/time-entries?userId=&cycle=` | ADMIN | Entries for any employee — **same response shape** as `/me`, since both feed the same shared `ShiftList` + `CycleNavigator`. Both flags are therefore present here too, and are always `true` for an admin |
 | GET | `/time-entries/open` | EMPLOYEE | The caller's open shift, or `null` — what the Clock page's button state is read from. Returned **wrapped** as `{ openShift: … \| null }`: Nest answers a bare `null` with an empty body rather than the JSON literal `null`, and `api/client.ts` calls `res.json()` on every response, so the endpoint whose normal answer is "nothing" would be the one that breaks it |
 | PUT | `/time-entries/:id` | Owner or ADMIN | Edit (startTime, endTime, notes) |
 | DELETE | `/time-entries/:id` | Owner or ADMIN | Delete |
@@ -205,7 +207,7 @@ When `?cycle=` is omitted, the backend resolves the cycle that **contains the cu
 
 ## 7a. Time-Entry Write Rules
 
-The spec gives an employee `POST`/`PUT`/`DELETE` over their **own** entries (§4, decisions 2 & 4) — they write the hours they are paid for, which was accepted deliberately. These four rules are what stop an entry from being *impossible* or *double-counted*. They apply to `POST /time-entries` and `PUT /time-entries/:id` (the manual path), never to clock-in/clock-out.
+The spec gives an employee `POST`/`PUT`/`DELETE` over their **own** entries (§4, decisions 2 & 4) — they write the hours they are paid for, which was accepted deliberately. Rules 1–4 are what stop an entry from being *impossible* or *double-counted*, and apply to `POST /time-entries` and `PUT /time-entries/:id` (the manual path), never to clock-in/clock-out. **Rule 5 is different in scope** — it applies to `DELETE` as well, and it is about *when* a shift may be written rather than what a valid one looks like.
 
 | # | Rule | Why |
 |---|---|---|
@@ -213,6 +215,9 @@ The spec gives an employee `POST`/`PUT`/`DELETE` over their **own** entries (§4
 | 2 | `endTime` may not be **before** `startTime` → 400 (equal is allowed) | A reversed shift is impossible. Without this it would be paid as 0 hours with no error anywhere, because the payroll clipping clamps at 0 — a safety net for the arithmetic, not a validation |
 | 3 | Two shifts of the same user may not **overlap** → 400 | 08:00-16:00 plus 12:00-20:00 pays 16 hours for 12 worked. An open shift occupies `[startTime, ∞)` for this check; on `PUT` the edited row is excluded from its own |
 | 4 | Neither timestamp may be **after `now`** (equal allowed) | Rejects future-dated work, and makes rule 3 hold at the clock-in door for free: if no closed shift reaches `now`, clock-in at `now` cannot land inside one |
+| 5 | An **EMPLOYEE** may only `POST`/`PUT`/`DELETE` within the **current or previous** cycle. An **ADMIN** has no cycle limit *(added in step 8c)* | Once a cycle is paid, its record should stop moving. All three verbs, not just `DELETE`: editing a July shift from 8 hours to 2, or adding a new one to July, corrupts a paid cycle exactly as deleting it does — locking one door reads as protection while leaving two open. The admin exemption mirrors the open-shift asymmetry below and exists for the same reason: they are the only actor who can repair a genuine historical error, including the forgotten open shift of a deactivated employee who can no longer log in to close it |
+
+⚠️ **Accepted consequence of rule 5**, recorded rather than discovered later: an error an employee finds **after** the window is permanent for them — a wrong time, a wrong date, a forgotten shift. There is no correcting-entry mechanism (the accounting answer to a closed period), so only an admin can fix it. The window spans one to two months, which covers the realistic discovery time, since people notice payroll errors when they are paid.
 
 **The open-shift block is asymmetric by role.** While the row's owner has an open shift, an **EMPLOYEE** may not `POST` or `PUT` at all — not even on the open row — and unblocks by clocking out. An **ADMIN** is subject only to rule 3. The employee half makes an overlap created by clock-out impossible by construction. The admin half is required, not convenient: clock-out is EMPLOYEE-only and closes the caller's *own* shift, so `PUT` is the only tool for someone else's open shift — otherwise a **deactivated** employee's open shift (they can no longer log in) stays open forever, and the admin is locked out of the ledger while anyone is on shift.
 
@@ -226,14 +231,14 @@ Every page (for both roles) includes a **Header** (logo "SwiftTrack" on the left
 | # | Page | Content |
 |---|---|---|
 | 1 | Login / Account Activation | Login with email+password· separate link/page for activation (email + setupCode + new password) |
-| 2 | **Clock** (main page, **employee only** — admin has no clock in/out) | 1) Large **Clock In / Clock Out** button (first on the page) 2) Below: month summary (hours, estimated pay) |
+| 2 | **Clock** (main page, **employee only** — admin has no clock in/out) | The large **Clock In / Clock Out** button, and nothing else. ⚠️ The step-0 mockup's month summary is **removed** (decision of 2026-08-26): it computed pay as `hours × hourlyRate`, which under four rate zones is materially wrong for anyone working evenings or weekends. A summary may return later as two figures read straight from `GET /payroll/me` plus the `hasOpenShift` warning — see build-plan §10 |
 | 3 | Shift History | List of entries, add a forgotten shift, edit/delete, ◀▶ arrows to navigate cycles |
 | 4 | Payroll Breakdown | **Shared page with the admin** (see below) — breakdown for the selected cycle. **Two components**: a summary (one line per rate zone — label, hours, rate, pay — plus the total) and a day-by-day table (row per date, column per zone, hours only). ⚠️ The step-0 mockup was a **draft** and is superseded: it rendered a Date/Hours/Pay table computed in the browser· see §7 and §4 decision 5e |
 
 ### Admin, additionally
 | # | Page | Content |
 |---|---|---|
-| 5 | Team | **First/main page after login for the admin** (no Clock/clock in-out). List of employees with an **"Active"/"Pending"** badge (see §8a), create new, edit hourlyRate. Clicking an employee → goes to that **specific employee's** Shift History |
+| 5 | Team | **First/main page after login for the admin** (no Clock/clock in-out). List of employees with a badge — **three** states, not two: Active / Pending / Deactivated (see §8a). ⚠️ A deactivated employee still has a password, so `hasActivated` is `true` and a two-badge design shows them as "Active" while they cannot log in at all. Deactivated rows are **hidden behind a toggle that shows a count**, and their action button is **Reactivate**. Create new, edit hourlyRate. Clicking an employee → goes to that **specific employee's** Shift History |
 | 6 | Payroll Overview | List of employees, total monthly cost, indicator for open shifts per employee, ◀▶ arrows to navigate cycles. Clicking an employee → goes to that **specific employee's** Payroll Breakdown. Fed by **one** call to `GET /payroll/overview?cycle=` — the page adds nothing up itself |
 | 7 | Settings | cycleStartDay / cycleEndDay |
 
@@ -269,12 +274,43 @@ All user-facing text is in English. This section has **two halves that carry dif
 | Login page link for account activation | **Activate your account** |
 | Badge for an activated employee | **Active** |
 | Badge for a not-yet-activated employee | **Pending** |
+| Badge for a deactivated employee (`isActive === false`) | **Deactivated** — ⚠️ the third state, and the one a two-badge design gets wrong: a deactivated employee has a password, so `hasActivated` is `true` and they would otherwise render as "Active" |
+| Team page toggle for deactivated employees | **Show deactivated (N)** — the count is **not** optional. Without it the toggle is invisible, and an admin whose seasonal employee returns creates a new account, hits `409 email already exists`, and has no way to see that the account is there but hidden |
+| Action on a deactivated employee's row | **Reactivate** (replaces Deactivate — never an action guaranteed to fail) |
+| Action on a pending employee's row | **New code** (re-issues the setup code and its 3-day expiry) |
 | Clock in/out button | **Clock In** / **Clock Out** |
 | Rate-zone labels (Payroll Breakdown) | **Day** / **Evening +33%** / **Night +45%** / **Weekend +45%** — returned by the API as `zones[].label` and printed **verbatim**· the client never derives a percentage of its own |
 | Payroll summary columns | **Zone** / **Hours** / **Rate** / **Total Pay**, with a **Total** row |
 | Payroll day-table columns | **Date** / **Day** / **Evening** / **Night** / **Weekend** / **Total**, with a **Total** row |
 
+### Client-owned copy — the frontend's own text, not the backend's
+
+Everything below lives in `frontend/src/lib/messages.ts` and is written by the client. It has no backend counterpart, so this table is the only record of it.
+
+**The timezone notice** — a thin bar in the layout, rendered **only when `new Date().getTimezoneOffset() !== 0`**. In Iceland UTC *is* the wall clock, so it never appears there; outside it, a shift clocked at 15:00 local displays as 12:00 and looks like the app lost three hours. The zone and the difference are filled in by the browser:
+
+> **All times are in Iceland time (UTC).** Your device (Europe/Athens) is 3 hours ahead.
+
+The sentence is a template, not a constant — the same device shows *"3 hours ahead"* in August and *"2 hours ahead"* in January, which is precisely why the trigger is the offset and not the country. ⚠️ Offsets are not always whole hours (India +5:30, Nepal +5:45): format minutes, never `offset / 60`.
+
+**Beside the time fields in `ShiftForm`** — static, no interpolation. This one guards the only path where a user's own clock can reach the data:
+
+> Enter times in Iceland time (UTC), not your local time.
+
+**Error text keyed by the exception's `code`** (see build-plan §8c). These three have no backend equivalent at all:
+
+| Case | English message |
+|---|---|
+| Rate limited (429) — the framework's `"ThrottlerException: Too many requests"` is never shown | "Too many attempts. Please wait a minute and try again." |
+| No response from the server (network failure — **not** a 401, and never a logout) | "Could not reach the server. Check your connection and try again." |
+| Shown on `/login` after an auto-logout, so being thrown out reads as an explanation rather than a glitch | "Your session has expired. Please sign in again." |
+
+**Open, to be written with the page in front of you** (recorded here so nobody treats them as oversights): the wording and styling of the two confirmation dialogs (deleting a shift, deactivating an employee — both must state that the action cannot be undone, and the deactivation one must say that shifts and payroll history are kept), the setup-code dialog shown after creating an employee (must show the code **and its expiry date** — a date is actionable, "3 days" is arithmetic), and the colour/icon/exact placement of error messages.
+
 ### Messages (errors / feedback) — **not** binding, recorded wording
+
+*(These are the **backend's** strings — a record of what the API says, read by tests, Swagger and logs. No user ever sees them: the client renders its own text keyed by the exception's `code`.)*
+
 | Case | English message |
 |---|---|
 | Login: account not activated (`password === null`) | "This account hasn't been activated yet. Please activate it first." |
@@ -341,13 +377,16 @@ volumes:
 5. Time Entries module (clock-in/out, manual add, CRUD, owner or admin permissions)
 6. Payroll module — rate zones (§7) + the admin team overview
 7. Swagger docs (built into each step, with decorators)
-8. **Full check before touching React** — the manual Postman/Swagger sweep (8), the service unit tests (8a) and the full-stack tests against a real database (8b). All three gate step 9· see `build-plan.md` for what each one covers and why they are not the same check three times
-9. Frontend: Auth (Login + SetInitialPasswordPage) + Auth Context + Header/Footer
-10. Frontend: Clock Page (clock in/out first, summary after)
+8. **Full check before touching React** — the manual Postman/Swagger sweep (8), the service unit tests (8a), the full-stack tests against a real database (8b), and **8c**: error codes, the two recovery endpoints (`reactivate`, `reset-setup-code`) and the cycle lock of §7a rule 5. All four gate step 9· see `build-plan.md` for what each one covers and why they are not the same check four times
+9. Frontend: Auth (Login + SetInitialPasswordPage) + Auth Context + Header/Footer + the four shared doors (`api/client.ts`, `useApiQuery`, `lib/datetime.ts`, `lib/messages.ts`)
+10. Frontend: Clock Page — **the clock in/out button and nothing else**· the step-0 month summary is removed (see §8)
 11. Frontend: Shift History (shared component, employee + admin)
-12. Frontend: Payroll Breakdown (shared component, employee + admin)
+12. Frontend: Payroll Breakdown (shared component, employee + admin) — replaces the step-0 draft with two components
 13. Frontend: Admin — Team, Payroll Overview, Settings
+13b. Frontend E2E (Playwright) — after 13, because the flows do not exist before it
 14. README (build/deploy instructions)
+
+⚠️ Steps 9–13b were rewritten on 2026-08-26 against the finished API· the per-page specifications live in `build-plan.md`, and the reasoning in `progress-tracker.md` under that date. There is **no step 13a** — the client-side validation pass it described became a rule applied from step 9 onward (every form uses react-hook-form + zod from the start), since the validation rules have been known since the backend closed.
 
 ---
 

@@ -1,6 +1,8 @@
 # Build Plan — SwiftTrack (Phase 1)
 
-Development order. Each step must be completed (and working) before the next one starts. We don't move on to the rest of the frontend (steps 9+) before the entire backend is verified — that means all the way through **step 8b**: the manual sweep (8), the service unit tests (8a) and the full-stack tests against a real database (8b). Exception: step 0, which is built first of all, before even Docker/backend.
+Development order. Each step must be completed (and working) before the next one starts. We don't move on to the rest of the frontend (steps 9+) before the entire backend is verified — the manual sweep (8), the service unit tests (8a), the full-stack tests against a real database (8b), and **8c**, the API changes the frontend plan turned out to need. Exception: step 0, which is built first of all, before even Docker/backend.
+
+⚠️ **Steps 9–13b were rewritten on 2026-08-26**, after the backend was complete, to describe the API that actually exists rather than the one imagined in step 0 — and to be followed by an agent that has not seen the earlier steps. **Step 13a (client-side validation polish) was removed** in the same pass: it existed to defer form validation until the rules were known, and the rules have been known since the backend closed, so its content became a rule applied from step 9 onward instead of a cleanup pass at the end. The reasoning for every decision is in `progress-tracker.md` under that date.
 
 ---
 
@@ -179,49 +181,275 @@ It never automatically moves to the next step without this confirmation, even if
 
   Step 8 then keeps only what a human should actually do: read the Swagger UI, sanity-check the shape of responses, and try the things nobody thought to list.
 
+- [ ] **8c. Error codes, two recovery endpoints, and cycle locking**
+
+  **Why this exists and why it is here.** Four decisions taken while aligning the frontend plan (session of 2026-08-26) need the API to change. None of them is a bug fix — the backend works. They are here rather than in Phase 2 for one reason: **no frontend consumes this API yet**, so each is a one-sided change today and a two-sided one later. That is the same argument that put 8b ahead of step 9.
+
+  It is a **backend** step deliberately. Folding backend work into a frontend step would quietly break the rule that no frontend step starts before the backend is complete.
+
+  Additive throughout: no existing message, status code or response field changes, so the 175 unit and 81 e2e tests stay green. Estimated a day.
+
+  **1. Error codes on every domain exception.** **25 `throw` sites** gain a stable machine-readable `code` alongside the `message` they already carry — counted, not estimated: `auth` 10, `users` 5, `time-entries` 8, `settings` 1, `payroll` 1. The other three of the 28 in `src/` are the deliberate `InternalServerErrorException`s (2 in `settings`, 1 in `payroll`), which are **not** part of the API contract and get no code — Swagger does not declare them either. `jwt.strategy.ts`'s 401 is guard-level, not domain, and is likewise excluded. The shape becomes:
+  ```json
+  { "statusCode": 400, "code": "SHIFT_OVERLAP", "message": "This shift overlaps an existing shift." }
+  ```
+  The frontend maps **`code` → its own text** and never displays `message` (see architecture.md § Invariants). Why not the HTTP status alone: `400` already means at least four different things on `POST /time-entries` — an open shift exists, the shifts overlap, the time is in the future, the end precedes the start — and a status-keyed map collapses them into one sentence that tells the user nothing about what to fix. [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) is the standard answer here and says the same thing: the status is *advisory*, the discriminator belongs in the body. We take its substance (a stable identifier) without its ceremony (`type` URIs, `application/problem+json`) — this API has exactly one known client.
+
+  This is less new than it sounds: `time-entries.service.ts` already throws `BadRequestException(OPEN_SHIFT_EXISTS)`, a shared constant introduced in step 5. The constant already holds the name; the step exposes it.
+
+  ⚠️ The `ValidationPipe`'s own 400s are framework-generated and carry no `code`. That is expected — they are never shown to a user (architecture.md § Invariants), and the client treats a missing `code` as an unmapped failure.
+
+  **2. `PATCH /users/:id/reactivate` (ADMIN).** Sets `isActive = true` on an EMPLOYEE row. Today deactivation is **irreversible through the API**: `PUT /users/:id` accepts only `name`/`hourlyRate`, and a fresh `POST /users` collides with the unique email. The only remedy is hand-editing the database — for a case (a seasonal employee returning) that is routine rather than exotic in the target market. ADMIN rows stay untouchable, via `findEmployeeByIdOrThrow`, exactly as `PUT`/`DELETE` already are.
+
+  **3. `POST /users/:id/reset-setup-code` (ADMIN).** Issues a fresh 4-digit code and a fresh 3-day expiry for a still-pending employee. This closes a **guaranteed** dead end, not an edge case: the code lives 3 days, is issued exactly once in `createEmployee`, and has no regeneration path — so an employee hired on a Friday who sets up on Tuesday is locked out permanently. The expiry message already says *"Please contact your admin"*, pointing at someone who currently has no tool. Refuses on an already-activated account (`password !== null`) — a code is never re-issued for an account that no longer needs one.
+
+  **4. Old cycles are read-only for EMPLOYEEs.** `POST`, `PUT` and `DELETE /time-entries` refuse when the entry falls outside the **current or previous** cycle. Once a cycle is paid, its record should not move.
+
+  - **All three writes, not just `DELETE`.** Editing a July shift from 8 hours to 2, or adding a new one to July, corrupts a paid cycle exactly as deleting does. Locking one door and leaving two open is worse than locking none, because it reads as protection.
+  - **ADMIN is exempt.** Deliberate, and it mirrors the open-shift asymmetry already in §5: the admin is the only actor who can repair a genuine historical error, and locking them out strands, among other things, the forgotten open shift of a deactivated employee — who cannot log in to clock out. That case is already a documented reason the admin needs `PUT` at all.
+  - **The list response must say so, at two levels.** `GET /time-entries/me` and `GET /time-entries` add **(a)** a per-entry boolean reporting whether **the caller** may edit that row, and **(b)** a response-level `canWrite` reporting whether the caller may create a shift in this cycle at all. Both are always `true` for an ADMIN, which keeps one response shape for both routes, as §5 requires.
+
+    The second one is not redundant: a `POST` has **no row** to hang a per-entry flag on. Without it an employee navigating ◀ to an old cycle sees "Add Shift", fills the form, and gets a 400 they had no way to anticipate — and the frontend cannot grey the button out on its own, because deciding whether a cycle is writable means resolving cycle boundaries client-side, which an invariant forbids.
+
+    ⚠️ **`canWrite` is a sibling of `entries`, not a member of the shared cycle block.** The block's five fields (`cycle`, `prevCycle`, `nextCycle`, `cycleStart`, `cycleEnd`) are facts about the *cycle* — identical no matter who asks. `canWrite` is a fact about the *caller*, and changes with the token. Keeping it outside is what lets spec §7's "every cycle-aware response carries the same block" stay true, and keeps a meaningless field off the payroll response.
+  - `TimeEntriesService` already injects `SettingsService`, so the boundary is available without new plumbing.
+  - ⚠️ Accepted consequence, recorded rather than discovered later: **an error found after the window is permanent for the employee.** There is no correcting-entry mechanism (the accounting answer to a closed period), so a wrong time, a wrong date or a forgotten shift older than one cycle can only be fixed by an admin. The window spans one to two months, which covers the realistic discovery time — people notice payroll errors when they are paid.
+
+  **Tests**: unit for the cycle-boundary refusal on all three writes and the role asymmetry; e2e for the two new endpoints, for the refusal, and for the new list field. Swagger documents both endpoints and the new field; error codes are documented per operation, which is what makes step 8's manual sweep able to see them.
+
 ---
 
 ## Frontend
 
-- [ ] **9. Auth & Layout**
-  - `LoginPage` — with link **"Activate your account"** (see spec §8a)
-  - `SetInitialPasswordPage` — email + setupCode + new password
-  - `AuthContext` (user + token, localStorage)
-  - `api/client.ts` — fetch wrapper with Authorization header
-  - `ProtectedRoute` (role-aware)
-  - `Header` — logo on the left, username + menu on the right (on every protected page)
-  - `Footer` — empty placeholder
+### Read this before any frontend step
 
-- [ ] **10. Clock Page** (EMPLOYEE only — admin never sees this, lands on Team instead)
-  - `ClockButton` first on the page· reads `{ openShift }` from `GET /time-entries/open` (wrapped, see step 5) to know which label to render on load
-  - ⚠️ **Open decision, to be taken with the page in front of us:** whether `MonthSummary` stays at all. Keeping it means two figures — hours and pay for the current cycle — read straight from `GET /payroll/me`, computing nothing. Dropping it makes the page a single-purpose button and, more usefully, makes it **independent of the Payroll module**: the Clock page would then need only the two clock endpoints and `/time-entries/open`. Nothing about the backend depends on the answer — `/payroll/me` exists either way
+Steps 9–13 are written to be built by an agent that has **not** seen the previous step. Everything below applies to all of them.
+
+**Where the mockups stand.** Step 0 built all eight screens with fake data, and they were approved as a **visual specification**. They are kept and rewired, not rebuilt — with the classification below. The reason is specific to how this project is being built: the best-documented failure of AI-generated frontends is *inconsistency between independently generated files* ("as if ten developers worked without talking to each other"). Eight screens that already agree with each other are the only thing enforcing one visual language across eight separately-built steps.
+
+| | Files |
+|---|---|
+| **Untouched** | `components/ui/*`, `index.css`, Vite/Tailwind config |
+| **Markup stays, data source changes** (mocks → API) | `Header`, `ClockButton`, `ShiftList`, `EmployeeList`, `CycleNavigator`, `PayrollOverview`, `TeamPage`, `ShiftHistoryPage`, `PayrollPage`, `App.tsx` |
+| **Visual structure stays, internals rewritten** (`useState` → react-hook-form + zod) | `LoginPage`, `SetInitialPasswordPage`, `ShiftForm`, `EmployeeForm`, `SettingsPage` |
+| **Replaced** | `PayrollBreakdown` → two components (step 12) |
+| **Deleted** | `MonthSummary` (step 10), `mocks/data.ts` (when its last importer goes) |
+
+⚠️ **`mocks/data.ts` is imported by 13 files today** — including `App.tsx` and `Header.tsx`. Every frontend step detaches its own; the file is deleted only when the last one does. A step is not finished while a file it owns still imports from `@/mocks/data`.
+
+**Four doors, and nothing goes around them.** Each exists because a second implementation of the same thing is how this codebase gets a bug that nobody can see:
+
+| Door | Rule |
+|---|---|
+| `api/` | Every HTTP call. **No component or page ever calls `fetch`.** |
+| `hooks/useApiQuery` | Every read. **No page writes its own `useEffect` + `fetch`.** |
+| `lib/datetime.ts` | Every date/time format and parse. **No component calls `new Date`, `toLocaleString` or `toLocaleDateString`.** |
+| `lib/messages.ts` | Every string a user reads — labels and error text alike. **Nothing written inline in JSX.** |
+
+**Never, in any frontend step:**
+- No `axios` — native `fetch`, wrapped once in `api/client.ts`
+- No TanStack Query or other server-state library
+- No toast library (see step 11 for the one recorded place to reconsider)
+- No arithmetic on payroll figures — no `Math.round`, no summing a column, no recomputing a total. Print what the server sent
+- No cycle-boundary maths — the backend returns `cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`, the client echoes them back
+- No new dependency without asking, with the exceptions already approved here: `zod`, `react-hook-form`, `@hookform/resolvers`, `vitest`, `@playwright/test`, and shadcn components pulled from the registry
+
+**⚠️ Four things this stack does differently from what most examples show.** They are written out in architecture.md § Stack Traps. Read that section before writing a component — it covers Base UI vs Radix, Tailwind v4's CSS-first config, the zod/resolver version floor, and where to mock in a Vitest test. Getting the first two wrong fails **silently**.
+
+**Routes and roles — explicit, never inferred.** AI-generated authorization defaults to permissive (a 2026 review found IDOR in four of six generated codebases), so this table is the contract, not a hint:
+
+| Route | Who |
+|---|---|
+| `/login`, `/activate` | public |
+| `/` | redirect — ADMIN → `/team`, EMPLOYEE → `/clock` |
+| `/clock`, `/shifts`, `/payroll` | **EMPLOYEE only** |
+| `/shifts/:userId`, `/payroll/:userId` | **ADMIN only** |
+| `/team`, `/payroll-overview`, `/settings` | **ADMIN only** |
+
+The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time-entries/me`, `/payroll/me`) are. An admin has no shifts and no `hourlyRate`.
+
+**After building any component, run the `imprint` skill** — it records the visual patterns worth keeping in `ui-registry.md`, so the next step matches this one instead of inventing a second dialect. Read that file before styling anything new.
+
+**A frontend step is done when:** the happy path works against the real backend· loading, error and empty states all exist· role restrictions match the table above· no file it owns still imports `@/mocks/data`· every string comes from `messages.ts`· `npx tsc -b` and `npm run lint` are clean· and its Vitest specs pass.
+
+**⚠️ Parked for whoever sets up tooling** (not part of any step): a `.mcp.json` with the **shadcn MCP** (browse/install registry components — steps 9–13 need `form`, `select`, `alert-dialog`, `switch`, none of which are installed) and the **Playwright MCP** (drives a real browser, so an agent can look at the page it just built instead of assuming). Both are local `npx` servers; neither needs an account.
+
+---
+
+- [ ] **9. Auth & Layout**
+
+  Establishes four patterns every later step copies. Build them properly here and steps 10–13 are mostly wiring.
+
+  **`api/client.ts`** — the single `fetch` wrapper.
+  - Attaches `Authorization: Bearer <token>` when a token exists
+  - `AbortSignal.timeout(...)` for a request ceiling — no manual `AbortController` plumbing needed
+  - Throws a typed `ApiError` carrying `status` and the response's **`code`** (from step 8c). **It never reads `message`** — backend wording is for tests, Swagger and logs, never for a screen
+  - Handles `204` (no body) without trying to parse JSON
+  - ⚠️ **Auto-logout fires only when the failed request carried a token.** `401` on `/auth/login` means "wrong password" and belongs in the form; `401` on a request that sent a token means the session is dead — clear it and redirect to `/login`. The discriminator is *"did we send an `Authorization` header?"*, never a list of endpoints someone must remember to update
+  - ⚠️ **A network failure is not a `401`.** No response means no logout — keep the token, show the error, offer a retry
+
+  **`AuthContext`**
+  - **Only the token is persisted**, in `localStorage`. The user object is never stored — it comes from the login response at login, and from `GET /users/me` on boot
+  - On mount: no token → done. Token → call `GET /users/me` and hold rendering behind an `isBootstrapping` state until it answers. `401` → clear and go to `/login`. Network error → error state with retry, **token kept**
+  - Why verify instead of trusting storage: `role` decides which pages render, and a stored role is user-editable — the app would draw admin pages for anyone who edits one word in devtools (no data leaks, the API still answers 403, but it is a screen nobody should see). It also keeps the name fresh and closes the one hole left in the "deactivation takes effect immediately" rule, which the backend already enforces per request. Cost is one request per **tab open**, not per navigation — the context mounts above the router
+  - `login()` stores the token and sets the user from the response — no follow-up `GET /users/me`
+  - `logout()` clears the token and the user
+
+  **`hooks/useApiQuery`** — returns `{ data, error, isLoading, refetch }`.
+  - Takes a fetcher and a dependency array; refetches when the deps change
+  - ⚠️ **Carries the ignore-flag cleanup.** Clicking ◀ three times fast can resolve out of order and leave the page showing one cycle's data under another cycle's header. The same flag also explains the doubled requests React 19 StrictMode makes in development
+  - Writes do **not** go through it — after any write the page calls `refetch()` explicitly
+
+  **`ProtectedRoute`** — role-aware, per the table above. Unauthenticated → `/login`. Wrong role → that role's home (`/team` or `/clock`), never a blank screen.
+
+  **`lib/datetime.ts`** — the only place dates are formatted or parsed.
+  - Every formatter passes `{ timeZone: "UTC" }`. The backend is UTC end to end (`cycle.util.ts`, `rate-zones.util.ts`) because the app targets Iceland, which stays on UTC all year
+  - `toIsoUtc(value)` converts a `datetime-local` value by **appending `":00.000Z"`**. ⚠️ **Never `new Date(value).toISOString()`** — that reads the value as local time and shifts it by the developer's offset, which moves the shift into a different rate zone and changes someone's pay. It looks correct and no backend test can catch it
+  - `formatDate` for the payroll `date` string, which is a bare `YYYY-MM-DD` and prints as the previous day in a negative-offset browser
+
+  **`TimezoneNotice`** — a thin bar in `AppLayout`, so it appears on every protected page.
+  - Rendered **only when `new Date().getTimezoneOffset() !== 0`**. Invisible in Iceland; visible to anyone developing or travelling elsewhere
+  - Zone and difference come from the **browser** (`Intl.DateTimeFormat().resolvedOptions().timeZone`), never from IP or an external service. The correct question is "does your clock differ from UTC", not "which country" — Athens needs a different sentence in January than in August, and one IP cannot express that
+  - Not dismissible — someone who dismisses it then types a shift three hours wrong
+  - ⚠️ Offsets are not always whole hours (India +5:30, Nepal +5:45). Format minutes, never `offset / 60`
+
+  **`Header` / `Footer` / `AppLayout`** — reads the real user from `AuthContext`. ⚠️ [`Header.tsx`](../frontend/src/components/layout/Header.tsx) and [`App.tsx`](../frontend/src/App.tsx) currently import `currentUser` from `@/mocks/data`; the `VIEW_AS_ADMIN` constant and both imports die here.
+
+  **`LoginPage` / `SetInitialPasswordPage`** — the first two forms, and they set the pattern: **react-hook-form + zod + shadcn `Form`**, from the very first one. Field-level errors (zod, before any request) render under the field; request-level errors (from the `code`) render above the submit button. `LoginPage` keeps its **"Activate your account"** link.
+
+  **New error copy in `messages.ts`** (and recorded in spec §8a): the `429` text (deferred here from step 3 — the framework's `"ThrottlerException: Too many requests"` is never shown), a network-failure message, and a **session-expired** message shown on `/login` after an auto-logout, so being thrown out reads as an explanation rather than a glitch.
+
+  **Vitest, in this step**: `toIsoUtc` and the formatters (including a shift crossing midnight and a month boundary), and `client.ts`'s decision logic — 401-with-token logs out, 401-without-token does not, a network error does not. ⚠️ **Mock `fetch`, not `request()`** — mocking the wrapper you are testing proves only that the mock works, and hides a wrong header or a malformed URL.
+
+- [ ] **10. Clock Page** (EMPLOYEE only — the admin has no clock and lands on Team instead)
+
+  **The page is the button. Nothing else.**
+
+  **`ClockButton`**
+  - On load, reads `GET /time-entries/open` → `{ openShift }` to decide its label. ⚠️ It **cannot** read this from the shift list: a shift started in the *previous* cycle is filtered out of the current one, so the button would render "Clock In" for someone already clocked in, and the clock-in would then fail
+  - The response is deliberately **wrapped** — a bare `null` return makes Nest send an empty body, which `res.json()` would choke on. Read `data.openShift`, not `data`
+  - Clock In → `POST /time-entries/clock-in` (empty body). Clock Out → `PATCH /time-entries/clock-out` (no `:id` — it closes the caller's own open shift)
+  - ⚠️ **The client never sends a time.** The server writes `startTime = now` and `endTime = now` itself. This is why clock in/out is immune to a wrong clock or a foreign timezone — and why nothing here needs `lib/datetime.ts` except display
+  - After either call, `refetch()` the open-shift query so the label follows the truth rather than an assumption
+  - Disable the button while a request is in flight — it is the largest control on the page and a double-tap on mobile is the exact scenario the backend's partial unique index exists to survive
+  - Failure renders **next to the button**, not as something that disappears: "you already have an open shift" is an instruction, and the user has to act on it
+
+  **`MonthSummary.tsx` is deleted.** Its `Math.round(totalHours * hourlyRate)` is a flat-rate calculation, which under four rate zones is materially wrong for anyone working evenings or weekends — it cannot be rewired, only replaced. Deleting it also makes this step **independent of step 12**: the Clock page needs only the two clock endpoints and `/time-entries/open`.
+
+  ⚠️ **Parked deliberately, revisit after step 13 with the app in daily use:** whether a summary returns. If it does, it is **`totalHours` and `totalPay` read straight from `GET /payroll/me` with no arithmetic**, plus the `hasOpenShift` warning — because while someone is clocked in, their current shift is unpayable and absent from the figure, and without that line the number looks wrong. It would be an **independent** query: if `/payroll/me` fails, the summary shows an error and the **button keeps working**. The button is the function of this page; a summary is information.
 
 - [ ] **11. Shift History**
-  - `ShiftList` — shared component, takes a `userId` prop· employee (`/shifts`, userId locked) + admin (`/shifts/:userId`)
-  - ⚠️ **The mockup's "Hours" column goes** (and with it the `hoursBetween` mock helper). The API no longer returns an hours figure per shift — spec §4, decision 5f. Columns are Date / Start / End / Notes / Open + a **split** marker from `isSplit`, which is what explains a shift appearing in two cycles. If the page feels like it needs a number, it is a **Duration** (`end − start`), labelled as such — never "Hours", which is a payroll word
-  - `ShiftForm` (add/edit/delete)
-  - `CycleNavigator` (◀▶) — consumes `cycleStart`/`cycleEnd` from the backend response, computes nothing itself
+
+  One page, two routes: employee at `/shifts` (their own, always), admin at `/shifts/:userId`. Same components, same response shape — the admin route differs only in which endpoint it calls and in showing the employee's name.
+
+  **Data**: `GET /time-entries/me?cycle=` (employee) or `GET /time-entries?userId=&cycle=` (admin). Identical shape by design.
+
+  **`?cycle=` lives in the URL**, via `useSearchParams` — not component state.
+  - Refresh keeps your place, and `/payroll/3?cycle=2026-07` is a link an admin can send
+  - It is also what lets step 13's overview drill-down land on the cycle the admin was looking at, instead of resetting to the current one
+  - ⚠️ **`replace`, not `push`.** Five clicks on ◀ otherwise leave five history entries, and Back walks the user cycle by cycle instead of leaving the page
+  - Omit the parameter entirely on first load — the backend resolves "the cycle containing now", which is **not** the current calendar month
+  - A malformed value (someone edits the address bar) is a failed load: page-body error with Retry
+
+  **`ShiftList`** — columns **Date / Start / End / Notes / Open**, plus a marker driven by `isSplit`.
+  - ⚠️ **No hours or duration column.** The API deliberately returns no hours figure (spec §4, decision 5f), and the frontend must not compute one: a **split** shift appears in *both* cycles with its full `startTime`/`endTime`, so a duration column would show 7h twice for one 7-hour shift — reintroducing exactly the double-count that splitting exists to prevent. The clipped portion is not in this response and cannot be derived without cycle maths, which is forbidden. Hours live on the Payroll page, per zone, once
+  - The red **"Open"** badge marks `endTime === null` — this list is the only screen where someone who forgot to clock out can find it
+  - The split marker is what explains the same shift appearing in the neighbouring cycle
+  - Times are rendered through `lib/datetime.ts` (UTC), never `toLocaleString`
+  - Edit and Delete are **disabled** when the per-entry field from step 8c says this caller may not edit the row, with a short explanation. Always enabled for an admin
+  - **Add Shift is disabled when the response's `canWrite` is `false`** — an employee looking at a closed cycle. Read the flag· never work it out from the dates on screen
+
+  **`ShiftForm`** — a dialog, for add and edit.
+  - `POST /time-entries` / `PUT /time-entries/:id`. react-hook-form + zod
+  - **Two `datetime-local` inputs** — date *and* time at both ends. When the start is set, **prefill the end's date to the same day**. Same-day shifts then need no extra typing, and an overnight shift forces the user to move the end date explicitly, which is the point: they see that it crosses midnight instead of the form guessing for them. A single-date-plus-two-times layout cannot express `20:00 → 03:00` without inferring "+1 day", and that inference makes a zero-length shift (which the API allows) impossible to enter
+  - Values are converted with `toIsoUtc()` — append `Z`, never `new Date(...)`
+  - **End Time is required.** The manual path always writes a *closed* shift; clock in/out owns live ones
+  - Inline hint beside the time fields: times are Iceland time (UTC), not local
+  - **`userId`**: required when an admin submits (the employee whose page this is), rejected when an employee does. Without it on the admin route the shift is written to the admin's own account, which has no `hourlyRate` and appears on no page — invisible and never paid
+  - zod catches end-before-start and future times before any request, so the `400` that does arrive is almost always an overlap
+  - ⚠️ On edit, send **all three** fields. `PUT` is a full replacement — omitting `notes` **erases** existing notes. There is an e2e test asserting this; do not "optimise" the form to send only changed fields
+  - Delete asks for confirmation first. It is permanent — there is no soft delete and no restore for time entries. The dialog names the shift being deleted and says it cannot be undone. *(Wording and dialog styling are open.)*
+
+  **`CycleNavigator`** (◀▶) — sends back the `prevCycle`/`nextCycle` key it was given and prints `cycleStart`/`cycleEnd` as received. **It computes nothing** — not even a month rollover.
+
+  ⚠️ **Recorded revisit — the one real case for a toast.** `ShiftForm` is a dialog that closes on success, so it cannot show its own confirmation. And a shift saved into a *different* cycle than the one on screen produces **no visible change at all**: the dialog closes, the list is identical, and it looks like nothing happened. If an inline message at the top of the list reads poorly here, adding `sonner` is a decision to take at this point — not an improvisation mid-step.
+
+  **Vitest**: `toIsoUtc` round-trips for an overnight shift and one crossing a month boundary.
 
 - [ ] **12. Payroll Breakdown**
-  - ⚠️ **The step-0 mockup is a draft and gets replaced**, not extended. It renders one Date/Hours/Pay table computed in the browser (`hoursBetween`, `isWithinCycle`, `Math.round` per row) — all of which is now backend work and all of which must go
-  - **Two components**, both reused for employee (`/payroll`, userId locked) and admin (`/payroll/:userId`):
-    - a **summary** — `Zone | Hours | Rate | Total Pay`, one row per zone plus a Total row (spec §8a)
-    - a **day table** — `Date | Day | Evening | Night | Weekend | Total`, row per date, hours only, no money
-  - Both render straight from the response: **no arithmetic, no `Math.round`, no date maths**. That includes the Total rows — print `totalHours`/`totalPay`/`day.totalHours` as sent, never re-add the column. The cells are decimals, and summing them in JS disagrees with the server's figure about a third of the time (`1.99 + 22.35 + 2.92` → `27.259999999999998`) `mocks/data.ts` helpers (`hoursBetween`, `isWithinCycle`, `getMockCycle`) are mock-only and must not survive into a real component
-  - The zone columns/rows are generated **from the `zones[]` array**, never hardcoded — a fifth zone must appear with no frontend change (architecture.md § Invariants)
-  - `date` is formatted **as UTC** — `new Date("2026-07-25")` in a negative-offset browser prints the previous day
-  - Show the `hasOpenShift` warning: without it, a day missing because someone forgot to clock out looks like a bug in the app
+
+  Same two-route pattern: `/payroll` (employee, own) and `/payroll/:userId` (admin). `?cycle=` in the URL, exactly as step 11.
+
+  **Data**: `GET /payroll/me?cycle=` or `GET /payroll/:userId?cycle=`.
+
+  ⚠️ **The step-0 `PayrollBreakdown` is a draft and is replaced, not extended.** It renders one Date/Hours/Pay table computed in the browser (`hoursBetween`, `isWithinCycle`, `Math.round` per row) — all of which is backend work now, and all of which produces different numbers than the server under four rate zones.
+
+  **Two components**, both shared by the two routes:
+  - **Summary** — `Zone | Hours | Rate | Total Pay`, one row per zone plus a **Total** row
+  - **Day table** — `Date | Day | Evening | Night | Weekend | Total`, one row per date, **hours only, no money**
+
+  **The rules that make this page correct:**
+  - ⚠️ **No arithmetic. None.** Print `totalHours`, `totalPay` and each `day.totalHours` **as sent** — never re-add the column. The cells are decimals, and summing them in JavaScript disagrees with the server's figure about a third of the time (`1.99 + 22.35 + 2.92` → `27.259999999999998`). The server's totals are exact sums of rounded parts; a browser re-sum is a second, competing answer
+  - **Zone columns and rows are generated from the `zones[]` array**, never hardcoded. A fifth zone must appear with no frontend change — that was the condition the four-zone decision was taken under
+  - Zone **labels come from the response** (`zones[].label`) and are printed verbatim. The client never composes its own "+33%" — a label that stops matching its factor would make the page misstate a wage
+  - ⚠️ **`date` is formatted as UTC**, through `lib/datetime.ts`. `new Date("2026-07-25")` in a negative-offset browser prints the 24th, which would move a Saturday's weekend hours onto a row labelled Friday
+  - Show the **`hasOpenShift`** warning when set. It is the only thing explaining a day missing from the table because someone forgot to clock out — without it, that gap reads as a bug
+  - Only dates with hours appear. An empty cycle is an **empty state**, not a blank table
+
+  The mock helpers `hoursBetween`, `isWithinCycle` and `getMockCycle` are mock-only and must not survive into a real component.
 
 - [ ] **13. Admin — Team, Payroll Overview & Settings**
-  - `TeamPage` — first page after admin login. List, create, edit hourlyRate, click → employee's ShiftHistoryPage
-  - `TeamPage` — badge per employee **"Active" / "Pending"** (from the `hasActivated` returned by the backend· see spec §8a)
-  - `PayrollOverviewPage` — list of employees, total monthly cost, open-shifts indicator, cycle nav, click → employee's PayrollPage. Fed by **one** call to `GET /payroll/overview?cycle=`· the mockup's per-employee `reduce` and its client-side `hasOpenShift` both go. Rows arrive sorted and already include any deactivated employee with hours in the cycle
-  - `SettingsPage` — cycleStartDay/cycleEndDay. ⚠️ The step-0 mockup has two free number inputs (1–31)· it becomes a **single** `<select>` of 11–25 with the end day rendered beside it as derived text ("Cycle ends on the 24th of the following month"). The request still sends both fields — the admin simply cannot produce an invalid pair. The backend validation stays regardless (see step 4)
 
-- [ ] **13a. Client-side validation polish** (do this last, after all forms exist)
-  - `zod` + `react-hook-form` (+ shadcn's `Form` component) across all forms: Login, Set Initial Password, ShiftForm, EmployeeForm, Settings
-  - Replaces the native browser validation tooltip (unstyled, e.g. missing `@` in email) with styled in-app error messages
-  - Replaces the current per-field `useState` pattern in each form with `useForm` + a Zod schema per form
+  **`TeamPage`** — where an admin lands after login. Data: `GET /users`, which returns EMPLOYEE rows only (never the admin) and **includes deactivated ones**.
+
+  ⚠️ **Three states, not two.** The response carries both `isActive` and `hasActivated`, and the mockup's two badges get the third case wrong: a deactivated employee still has a password, so `hasActivated` is `true` and they render as **"Active"** — while being unable to log in at all.
+
+  | `isActive` | `hasActivated` | Badge |
+  |---|---|---|
+  | `true` | `false` | **Pending** |
+  | `true` | `true` | **Active** |
+  | `false` | either | **third badge — deactivated** |
+
+  - **Deactivated employees are hidden by default**, behind a toggle that **shows a count** — `Show deactivated (3)`. The list only ever grows: nobody is deleted, so mixing them in degrades the page permanently, while a filter is ten lines. ⚠️ The count is not decoration: without it the toggle is invisible, and an admin whose seasonal employee returns will try to create a new account, hit `409 email already exists`, and have no way to understand why. Their account is there — just not on screen
+  - On a deactivated row, **Deactivate becomes Reactivate** (`PATCH /users/:id/reactivate`, step 8c) — never an action that is guaranteed to fail
+  - Deactivating asks for confirmation, and the dialog says what actually happens: they can no longer sign in, their shifts and payroll history are kept, and it cannot be undone from the app. *(Wording open.)*
+  - Clicking an employee → their `/shifts/:userId`
+  - Editing `hourlyRate` and `name` → `PUT /users/:id` (those two fields only)
+
+  **Creating an employee — the setup code is the whole onboarding mechanism.** It is four digits, lives **3 days**, and is the only way in.
+  - `POST /users` → **a dialog opens showing the code and its expiry date**. Creating an account is really two actions — make the row, then hand the code over out of band — and without this moment the second one is invisible: the form closes and the admin thinks they are finished
+  - Print the **date** ("Valid until 29 August"), not a duration. A date is actionable; "3 days" is arithmetic
+  - The code **also stays in the list** on every pending row, with its expiry, so it survives a dialog closed too quickly and so an admin can see one about to lapse and chase it
+  - A **New code** button on pending rows → `POST /users/:id/reset-setup-code` (step 8c)
+
+  **`PayrollOverviewPage`** — one call to `GET /payroll/overview?cycle=`, `?cycle=` in the URL as in steps 11–12.
+  - Rows arrive **sorted**, already include any deactivated employee with hours in the cycle, and carry their own totals. The mockup's per-employee `reduce` and its client-side `hasOpenShift` both go
+  - `totalCost` is printed **as sent** — never re-added from the rows
+  - Clicking an employee → `/payroll/:userId?cycle=<same cycle>`. ⚠️ Carrying the cycle is the whole reason it lives in the URL: without it the admin drills into a number they saw in July and lands in August
+  - The open-shift indicator comes from the response
+
+  **`SettingsPage`** — `GET /settings`, `PUT /settings`.
+  - ⚠️ The mockup's two free number inputs (1–31) become **one `<select>` of 11–25**, with the end day beside it as derived **text** ("Cycle ends on the 24th of the following month"). The request still sends both fields; the admin simply cannot produce an invalid pair. Backend validation stays regardless — the two are layers, not duplicates
+  - ⚠️ **Saving changes nothing visible on screen** — same page, same values. This page needs an explicit confirmation more than any other, or the admin clicks Save three times
+
+  ⚠️ **Note the deliberate difference between the two admin pages:** Payroll Overview *shows* deactivated employees (when they have hours in the cycle), Team *hides* them by default. Not an inconsistency — Overview is one cycle's payroll, Team is a staff roster. Do not "fix" one to match the other.
+
+- [ ] **13b. Frontend E2E (Playwright)**
+
+  **What this layer catches that nothing else does**, measured on this project rather than assumed: during 8b, deleting `@Roles(Role.EMPLOYEE)` from `clock-in` turned **1 e2e test red while all 175 unit tests passed**. The frontend has the same class of wiring — a route guard, a button calling an endpoint, a table sending a `userId` — and no unit test can see any of it. jsdom has no layout and no real browser behaviour, so the native `datetime-local` input and real `localStorage` are only exercised here.
+
+  **Roughly 30–35 tests**, grouped: auth and routing (login per role landing correctly, wrong password, deactivated, unactivated, activation end to end, expired code, EMPLOYEE typing `/team` being blocked, no token redirecting, **refresh preserving the session**, deactivation mid-session logging out)· clock (in, out, refresh while clocked in, double clock-in)· shifts (add with the **correct UTC time**, edit, delete with confirmation, cancelling that confirmation, ◀▶ changing cycle **and URL**, overlap surfacing, a locked cycle disabling the buttons, a split shift in both cycles)· payroll (zones and totals, **drill-down carrying the cycle**, the `hasOpenShift` warning)· team (create → code dialog, code and expiry in the list, new code, deactivate, the hidden-with-count toggle, reactivate, editing a rate)· settings.
+
+  ⚠️ **Breadth across screens, not depth on rules.** The business rules are already proven against a real database by the 81 backend e2e tests. A Playwright test submitting an overlapping shift is testing *the backend's rule* through six layers of UI — and would fail only in cases where the backend suite already failed. **One** overlap test proves the whole path; a second with different times exercises identical frontend code and adds nothing but maintenance. The one exception is **dates and times**, where different values run through genuinely different arithmetic in a real browser widget — depth is warranted there and nowhere else.
+
+  **Setup** — the same shape as 8b, and reusing its infrastructure rather than inventing new:
+  - Runs against `swifttrack_test` with the existing `_test`-suffix guard, `prisma migrate deploy` + seed, truncation between tests
+  - Three processes: Postgres, backend, frontend. Playwright's `webServer` can start the last one
+  - `storageState` to log in once and reuse the session — which works because the app persists only a token and rebuilds the user from `GET /users/me`
+  - ⚠️ **Build the harness first and prove it with a handful of smoke tests, then write the rest** — exactly as 8b did. This project has **five recorded measurement errors and all five were the harness, never the code**; a red result against a brand-new harness is ambiguous
+  - There is no CI here — the backend's 256 tests are run by hand, and so are these
+
+  **Why after step 13**: the flows do not exist earlier. "Admin edits an employee's rate" cannot be written before Team is wired.
 
 - [ ] **14. README**
   - Build/deploy instructions, seed script instructions
@@ -231,6 +459,8 @@ It never automatically moves to the next step without this confirmation, even if
     - **"Settings not initialised. Run `npx prisma db seed`."** — this message is the deliberate alternative to documenting a 500 in Swagger (step 7, decision Δ reversed). The setup instruction belongs here, in the README, and nowhere else
     - **`npm run seed:demo`** — demo data for local development: 5 employees covering every UI state (active, pending, deactivated-with-hours, clocked-in) and ~150 shifts across three cycles. Separate from `prisma db seed` on purpose, since that one runs in production deploys and inside the e2e `globalSetup`. ⚠️ Document that it **deletes all EMPLOYEE rows and their time entries** before rebuilding, and that it refuses to run against a `*_test` database
     - **The e2e suite's prerequisites**: copy `.env.test.example` to `.env.test`, and create the database once with `docker compose exec db psql -U swifttrack -d postgres -c "CREATE DATABASE swifttrack_test;"`. `globalSetup` runs the migrations and the seed, but does **not** create the database itself — that needs a connection to `postgres` with create rights
+    - **Step 13b's prerequisites** on top of those: `npx playwright install` (browser binaries are not in `node_modules`), and the fact that a run needs **three** processes up — Postgres, backend, frontend
+    - **`.mcp.json` (optional, but worth documenting for anyone building with an agent)**: the **shadcn MCP** lets an agent browse and install registry components instead of hand-writing them, and the **Playwright MCP** gives it a real browser so it can look at the page it just built. Both are local `npx` servers and need no account. Not required by any step — recorded so the next person does not have to rediscover them
 
 ---
 
@@ -239,6 +469,6 @@ It never automatically moves to the next step without this confirmation, even if
 Before a module is considered "done":
 1. The happy path works
 2. Role restrictions (ADMIN vs EMPLOYEE) work, where applicable
-3. It has Swagger decorators
+3. It has Swagger decorators *(backend steps only — the frontend has its own checklist under § Read this before any frontend step, which adds loading/error/empty states, detaching from `@/mocks/data`, and clean `tsc -b` + lint)*
 4. It follows the invariants in `architecture.md` (e.g. `userId` explicit in every service query)
 5. Every piece of text the user sees is in English. **UI copy** (titles, buttons, links, badges, rate-zone labels, payroll column headers) comes from spec §8a **verbatim**, via `frontend/src/lib/messages.ts` — never paraphrased, never written inline. **Error/feedback messages** are not bound to §8a's *table*: write a sensible one where it does not cover a case, and improving an existing one needs no spec update. ⚠️ That is a rule about the documentation, not about the tests — the specs assert these messages **verbatim**, so changing one is a deliberate edit that shows up as a failing test rather than slipping through
