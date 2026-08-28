@@ -187,9 +187,9 @@ It never automatically moves to the next step without this confirmation, even if
 
   It is a **backend** step deliberately. Folding backend work into a frontend step would quietly break the rule that no frontend step starts before the backend is complete.
 
-  Additive throughout: no existing message, status code or response field changes, so the 175 unit and 81 e2e tests stay green. Estimated a day.
+  Additive at the level of the API contract: no existing message, status code or response field changes. ⚠️ **That did not mean the test suite was untouched, and this plan claimed it did.** The claim held for the error codes (measured: 175/175 unit stayed green through all 24 conversions) but was **false for the cycle lock** — two e2e fixtures wrote shifts with an *employee* token at a date two cycles back, so they would have failed from the first day. They were rewritten as admin-written fixtures; see `progress-tracker.md` under Step 8c. Final state: 195 unit, 94 e2e.
 
-  **1. Error codes on every domain exception.** **25 `throw` sites** gain a stable machine-readable `code` alongside the `message` they already carry — counted, not estimated: `auth` 10, `users` 5, `time-entries` 8, `settings` 1, `payroll` 1. The other three of the 28 in `src/` are the deliberate `InternalServerErrorException`s (2 in `settings`, 1 in `payroll`), which are **not** part of the API contract and get no code — Swagger does not declare them either. `jwt.strategy.ts`'s 401 is guard-level, not domain, and is likewise excluded. The shape becomes:
+  **1. Error codes on every domain exception.** **24 `throw` sites** gain a stable machine-readable `code` alongside the `message` they already carry — recounted during the step, since the original figure was wrong: `auth` **9** (not 10), `users` 5, `time-entries` 8, `settings` 1, `payroll` 1. The other four of the 28 HttpExceptions in `src/` are the deliberate `InternalServerErrorException`s (2 in `settings`, 1 in `payroll`), which are **not** part of the API contract and get no code — Swagger does not declare them either — plus `jwt.strategy.ts`'s 401, which is guard-level rather than domain. (A 29th `throw` exists in `rate-zones.util.ts`, but it is a plain `Error` guarding an internal invariant, not an HTTP response.) The 24 map to **17** codes, not 24: two sites needing the same sentence share one, and in the `INVALID_CREDENTIALS` case they must — separate codes for "unknown email" and "wrong password" would reopen the account enumeration their shared message closes. The shape becomes:
   ```json
   { "statusCode": 400, "code": "SHIFT_OVERLAP", "message": "This shift overlaps an existing shift." }
   ```
@@ -197,7 +197,7 @@ It never automatically moves to the next step without this confirmation, even if
 
   This is less new than it sounds: `time-entries.service.ts` already throws `BadRequestException(OPEN_SHIFT_EXISTS)`, a shared constant introduced in step 5. The constant already holds the name; the step exposes it.
 
-  ⚠️ The `ValidationPipe`'s own 400s are framework-generated and carry no `code`. That is expected — they are never shown to a user (architecture.md § Invariants), and the client treats a missing `code` as an unmapped failure.
+  ⚠️ The `ValidationPipe`'s own 400s are framework-generated and carry no `code`. That is expected — they are never shown to a user (architecture.md § Invariants), and the client treats a missing `code` as an unmapped failure. ⚠️ **This does qualify the motivating example above**, and the qualification was found while building: of the four meanings `400` carries on `POST /time-entries`, only two (`OPEN_SHIFT_EXISTS`, `SHIFT_OVERLAP`) are service-thrown and therefore coded. "End before start" and "time in the future" are rules 2 and 4, which live in the DTO validators. The decision stands — those two were always the pair that needed telling apart, and step 11's zod schema catches the other two before a request is sent — but the sentence overstated it.
 
   **2. `PATCH /users/:id/reactivate` (ADMIN).** Sets `isActive = true` on an EMPLOYEE row. Today deactivation is **irreversible through the API**: `PUT /users/:id` accepts only `name`/`hourlyRate`, and a fresh `POST /users` collides with the unique email. The only remedy is hand-editing the database — for a case (a seasonal employee returning) that is routine rather than exotic in the target market. ADMIN rows stay untouchable, via `findEmployeeByIdOrThrow`, exactly as `PUT`/`DELETE` already are.
 
@@ -319,6 +319,12 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
 
   **New error copy in `messages.ts`** (and recorded in spec §8a): the `429` text (deferred here from step 3 — the framework's `"ThrottlerException: Too many requests"` is never shown), a network-failure message, and a **session-expired** message shown on `/login` after an auto-logout, so being thrown out reads as an explanation rather than a glitch.
 
+  ⚠️ **One code can need two sentences — design `ERRORS` so that is expressible.** The flat `Record<ErrorCode, string>` is the right default and most codes want nothing more: `EMPLOYEE_NOT_FOUND` reads the same on all seven operations that return it, and `INVALID_CYCLE` on all five. **`ACCOUNT_ALREADY_ACTIVATED` is the exception**, because the *audience* changes rather than the fact: on `/activate` an employee is being told about **their own** account (right answer: say so and send them to `/login`), while on Team an admin is being told about **someone else's** (right answer: their list is stale, refresh it). The backend is not wrong to use one code — the fact really is the same — so this is a client-side concern and it is recorded here rather than fixed there.
+
+  The risk is not a clumsy sentence; it is that step 13, finding nowhere to put the admin's wording, writes a string inline in JSX and breaks the "every string comes from `messages.ts`" invariant. Give the map a per-screen override (a second optional lookup consulted before `ERRORS`, keyed by screen) or split the code then — but decide it **here**, while `messages.ts` is being written, not there.
+
+  Note the general principle this is an instance of, because it recurs: **the page always knows which request it sent.** `/activate` only ever calls `set-initial-password`, Team only ever calls `reset-setup-code`, and the Clock page knows whether it pressed Clock In or Clock Out. A code is needed to tell apart failures of *one* call, never to tell apart *which* call failed.
+
   **Vitest, in this step**: `toIsoUtc` and the formatters (including a shift crossing midnight and a month boundary), and `client.ts`'s decision logic — 401-with-token logs out, 401-without-token does not, a network error does not. ⚠️ **Mock `fetch`, not `request()`** — mocking the wrapper you are testing proves only that the mock works, and hides a wrong header or a malformed URL.
 
 - [ ] **10. Clock Page** (EMPLOYEE only — the admin has no clock and lands on Team instead)
@@ -358,6 +364,14 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
   - Times are rendered through `lib/datetime.ts` (UTC), never `toLocaleString`
   - Edit and Delete are **disabled** when the per-entry field from step 8c says this caller may not edit the row, with a short explanation. Always enabled for an admin
   - **Add Shift is disabled when the response's `canWrite` is `false`** — an employee looking at a closed cycle. Read the flag· never work it out from the dates on screen
+
+  ⚠️ **Decide here: the open-shift block is not covered by either flag.** `canWrite` and `canEdit` report the **cycle lock only**. While an employee has an open shift they may also not `POST` or `PUT` (spec §7a) — so on this screen, clocked in, Add and Edit render enabled and answer `400 OPEN_SHIFT_EXISTS`. That is the exact failure `canWrite` was invented to prevent for closed cycles, left open for a different reason.
+
+  It was parked rather than fixed because the fix is a **product** decision, and this is the step where its cost is visible: today `DELETE` is deliberately *exempt* from the open-shift block (an employee may delete an open shift instead of clocking out), and no single per-row boolean can say "Edit no, Delete yes". Two ways out:
+  - **Accept it.** The 400 is actionable ("clock out first") and renders inline. Nothing changes.
+  - **Make the rule uniform** — an open shift blocks `POST`, `PUT` **and** `DELETE` — and add one response-level flag beside `canWrite` for it (proposed name `blockedByOpenShift`, kept separate so each flag carries one reason and the UI can say *which*). Verified safe: clock-out is never blocked, so there is no dead end, and an open shift older than the write window is already locked by rule 5 either way. Costs one query per employee list request, inverts one e2e test, and rewrites the rule in spec §7a, architecture.md, build-plan §5 and the `DELETE` Swagger entry.
+
+  Deciding **during** this step is still a one-sided change: `ShiftList` is being written here anyway. Deferring past it is not.
 
   **`ShiftForm`** — a dialog, for add and edit.
   - `POST /time-entries` / `PUT /time-entries/:id`. react-hook-form + zod
