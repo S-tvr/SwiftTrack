@@ -254,7 +254,7 @@ Everything below applies to all of steps 9–13.
 - No cycle-boundary maths — the backend returns `cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`, the client echoes them back
 - No new dependency without asking, with the exceptions already approved here: `zod`, `react-hook-form`, `@hookform/resolvers`, `vitest`, `@playwright/test`, and shadcn components pulled from the registry
 
-**⚠️ Four things this stack does differently from what most examples show.** They are written out in architecture.md § Stack Traps. Read that section before writing a component — it covers Base UI vs Radix, Tailwind v4's CSS-first config, the zod/resolver version floor, and where to mock in a Vitest test. Getting the first two wrong fails **silently**.
+**⚠️ Five things this stack does differently from what most examples show.** They are written out in architecture.md § Stack Traps. Read that section before writing a component — it covers Base UI vs Radix (including the **missing `Form` component**), Tailwind v4's CSS-first config, the `zodResolver`/`z.coerce` type failure, where to mock in a Vitest test, and React Router's declarative mode. Getting the first two wrong fails **silently**.
 
 **Routes and roles — explicit, never inferred.** AI-generated authorization defaults to permissive (a 2026 review found IDOR in four of six generated codebases), so this table is the contract, not a hint:
 
@@ -270,7 +270,9 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
 
 **A frontend step is done when:** the happy path works against the real backend· loading, error and empty states all exist· role restrictions match the table above· no file it owns still imports `@/mocks/data`· every string comes from `messages.ts`· `npx tsc -b` and `npm run lint` are clean· and its Vitest specs pass.
 
-**⚠️ Parked for whoever sets up tooling** (not part of any step): a `.mcp.json` with the **shadcn MCP** (browse/install registry components — steps 9–13 need `form`, `select`, `alert-dialog`, `switch`, none of which are installed) and the **Playwright MCP** (drives a real browser, so an agent can look at the page it just built instead of assuming). Both are local `npx` servers; neither needs an account.
+**Dependencies and components — installed 2026-08-28, before step 9.** `zod@4.5.1`, `react-hook-form@7.86.0`, `@hookform/resolvers@5.9.1` (dependencies) and `vitest@4.1.11` (dev), each checked against the registry for peer compatibility with React 19.2, Vite 8.1 and Node 22.14. From the registry: `field`, `select`, `alert-dialog`, `switch`, plus `separator` which `field` requires. `label` and `button` were already present and reported **identical** to the registry copy, so nothing was overwritten. `jsdom` and `@testing-library/react` were deliberately **not** installed — step 9's specs are pure functions, and the decision is deferred to the first step that genuinely needs a DOM.
+
+**⚠️ The MCP servers were considered and declined** (2026-08-28), so this is settled rather than parked. The shadcn MCP's value is registry discovery, but the one discovery that mattered — that `base-nova`'s `form` is an empty shell — came from reading the raw `form.json` and seeing `files: 0`. A natural-language layer asked *"does shadcn have a form component?"* would likely answer yes, because the item does exist. Against that, `.mcp.json` would pin `shadcn@latest` (4.19.0) beside the local 4.16.0 that actually wrote these components — a second floating copy of one tool, in a project whose stated fear is divergent dialects. The registry is plain HTTP; query it directly when something is needed. The **Playwright MCP** was not set up either· revisit at step 13b, where a real browser is the point.
 
 ---
 
@@ -313,7 +315,11 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
 
   **`Header` / `Footer` / `AppLayout`** — reads the real user from `AuthContext`. ⚠️ [`Header.tsx`](../frontend/src/components/layout/Header.tsx) and [`App.tsx`](../frontend/src/App.tsx) currently import `currentUser` from `@/mocks/data`; the `VIEW_AS_ADMIN` constant and both imports die here.
 
-  **`LoginPage` / `SetInitialPasswordPage`** — the first two forms, and they set the pattern: **react-hook-form + zod + shadcn `Form`**, from the very first one. Field-level errors (zod, before any request) render under the field; request-level errors (from the `code`) render above the submit button. `LoginPage` keeps its **"Activate your account"** link.
+  **`LoginPage` / `SetInitialPasswordPage`** — the first two forms, and they set the pattern: **react-hook-form + zod + shadcn `Field`**, from the very first one. Field-level errors (zod, before any request) render under the field; request-level errors (from the `code`) render above the submit button. `LoginPage` keeps its **"Activate your account"** link.
+
+  ⚠️ **`Field`, not `Form` — this line used to say `Form`, and that component does not exist here.** In the `base-nova` style `form.json` is an empty shell, so `npx shadcn add form` writes nothing and reports no error; there are no `<Form>`/`<FormField>`/`<FormMessage>` components to import. See architecture.md § Stack Traps #1 for the measurement. `field.tsx` is installed and is presentational only, so **the binding to react-hook-form is written by hand here and copied by the other four forms** — nothing in the library enforces that they agree. `FieldError` takes react-hook-form's error shape directly: `<FieldError errors={[errors.email]} />`.
+
+  ⚠️ **Do not use `z.coerce` in any schema.** It typechecks nowhere on this stack — see architecture.md § Stack Traps #3, where it is measured along with the two fixes. Neither of these forms needs it; `SettingsPage` and `EmployeeForm` (step 13) are where the temptation arises, and the answer there is `z.number()` plus `register(..., { valueAsNumber: true })`.
 
   **New error copy in `messages.ts`** (and recorded in spec §8a): the `429` text (deferred here from step 3 — the framework's `"ThrottlerException: Too many requests"` is never shown), a network-failure message, and a **session-expired** message shown on `/login` after an auto-logout, so being thrown out reads as an explanation rather than a glitch.
 
@@ -472,7 +478,7 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
     - **`npm run seed:demo`** — demo data for local development: 5 employees covering every UI state (active, pending, deactivated-with-hours, clocked-in) and ~150 shifts across three cycles. Separate from `prisma db seed` on purpose, since that one runs in production deploys and inside the e2e `globalSetup`. ⚠️ Document that it **deletes all EMPLOYEE rows and their time entries** before rebuilding, and that it refuses to run against a `*_test` database
     - **The e2e suite's prerequisites**: copy `.env.test.example` to `.env.test`, and create the database once with `docker compose exec db psql -U swifttrack -d postgres -c "CREATE DATABASE swifttrack_test;"`. `globalSetup` runs the migrations and the seed, but does **not** create the database itself — that needs a connection to `postgres` with create rights
     - **Step 13b's prerequisites** on top of those: `npx playwright install` (browser binaries are not in `node_modules`), and the fact that a run needs **three** processes up — Postgres, backend, frontend
-    - **`.mcp.json` (optional, but worth documenting for anyone building with an agent)**: the **shadcn MCP** lets an agent browse and install registry components instead of hand-writing them, and the **Playwright MCP** gives it a real browser so it can look at the page it just built. Both are local `npx` servers and need no account. Not required by any step — recorded so the next person does not have to rediscover them
+    - **`.mcp.json`** — **declined on 2026-08-28, not merely unbuilt.** The reasoning is under § Read this before any frontend step, and it is worth restating only so nobody re-opens it as an oversight: the shadcn MCP's discovery value was outweighed by it pinning a second, floating copy of the shadcn CLI, and the registry is queryable over plain HTTP anyway. The **Playwright MCP** is a genuinely open question for step 13b, where an agent driving a real browser is the point — decide it there
 
 ---
 

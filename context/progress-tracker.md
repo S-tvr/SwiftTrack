@@ -1061,6 +1061,46 @@ Endpoints/Components:
 
 **Επόμενο βήμα**: **Step 9** — Auth & Layout (frontend). Το backend είναι κλειστό.
 
+## Προετοιμασία εξαρτήσεων για το Step 9
+Status: ✅ Done · **δεν είναι βήμα του build-plan** — προεργασία, κανένας κώδικας εφαρμογής δεν γράφτηκε
+Ημερομηνία: 2026-08-28
+Αρχεία που προστέθηκαν/άλλαξαν:
+- `frontend/package.json` + lockfile — `zod@^4.5.1`, `react-hook-form@^7.86.0`, `@hookform/resolvers@^5.9.1` (dependencies), `vitest@^4.1.11` (dev)
+- `frontend/src/components/ui/` — **5 νέα**: `field.tsx`, `select.tsx`, `switch.tsx`, `separator.tsx`, `alert-dialog.tsx`
+- `context/architecture.md` — Stack Trap #1 (το `Form` που δεν υπάρχει), Stack Trap #3 (ξαναγράφτηκε με μετρήσεις), «Four» → «Five»
+- `context/build-plan.md` — §9 (`Form` → `Field` + απαγόρευση `z.coerce`), § frontend preamble (τι εγκαταστάθηκε, απόφαση MCP), §14 (το `.mcp.json` έκλεισε ως απόφαση)
+
+### Επαλήθευση εκδόσεων πριν την εγκατάσταση
+
+Όλες από το **npm registry**, όχι από blog posts — και σωστά, γιατί ένα αποτέλεσμα αναζήτησης ισχυριζόταν *«react-hook-form v8 με @hookform/resolvers v4+»*, που **δεν υπάρχει**. Peer checks: rhf → `react ^19` ✅ (έχουμε 19.2.7)· resolvers → `zod ^4.0` + `rhf ^7.55` ✅· vitest → `vite ^6||^7||^8` ✅ (Vite 8.1.1), `node ^22` ✅ (22.14.0), `@types/node >=24` ✅ (^26.1.2).
+
+**`npm audit`: 5 ευπάθειες πριν, 5 μετά.** Δεν εισήχθη καμία. Ίχνη: `shadcn` (μέσω `cosmiconfig`/`postcss`/`@modelcontextprotocol/sdk`/`@dotenvx/dotenvx`) και `eslint`. Η μόνη αμφίβολη (`fast-uri` μέσω `ajv`, που το `@hookform/resolvers` δηλώνει `peerOptional`) ελέγχθηκε με `git show HEAD:frontend/package-lock.json` — **και τα δύο προϋπήρχαν** στο committed lockfile.
+
+### 🔴 Το `shadcn Form` ΔΕΝ υπάρχει στο `base-nova`
+
+`base-nova/form.json` = `{ "$schema": …, "name": "form", "type": "registry:ui" }` — **0 αρχεία**. Τα Radix styles (`new-york`, `default`) το έχουν κανονικά, με `@radix-ui/react-label`, `@radix-ui/react-slot`, `zod`, `react-hook-form`. Δηλαδή `npx shadcn add form` = **σιωπηλό no-op** (exit 0, κανένα αρχείο), και όποιο tutorial προσφέρει `<FormField>` περιγράφει Radix — η αντιγραφή του θα έσερνε `@radix-ui/*` σε project με **μηδέν** Radix πακέτα.
+
+Αντικαταστάτης: **`field`**, presentational μόνο. Το `FieldError` δέχεται `errors?: Array<{ message?: string }>` — ακριβώς το σχήμα του rhf, άρα `<FieldError errors={[errors.x]} />` δουλεύει άμεσα. **Το δέσιμο γράφεται στο χέρι στο Step 9 και το αντιγράφουν οι άλλες 4 φόρμες.**
+
+Το `--dry-run` προηγήθηκε της εγγραφής: 5 create, `label`/`button` **skip (identical)** — μηδενικό overwrite. Χρησιμοποιήθηκε το **τοπικό** CLI 4.16.0 (αυτό που έγραψε τα υπάρχοντα 9), όχι το `@latest` 4.19.0.
+
+### 🔬 Smoke test — βρήκε πραγματικό πρόβλημα και το έκλεισε
+
+⚠️ Το `tsc -b`/`lint` μετά την εγκατάσταση ήταν πράσινα **αλλά δεν απεδείκνυαν τίποτα** — κανένα αρχείο στο `src/` δεν κάνει ακόμα import τα νέα πακέτα, άρα ο compiler δεν τα άγγιξε. Γράφτηκε προσωρινό αρχείο, τρέξαμε `tsc -b --force`, **και διαγράφηκε** (επαληθευμένο: `git status` καθαρό πλην των 5 νέων components).
+
+Σε **TypeScript 6.0.3**: `z.object` + `useForm<z.infer<S>>` ✅ · `z.email()` (η μορφή του zod 4) ✅ · `.refine()` cross-field ✅ — δηλαδή το παλιό πρόβλημα «ZodEffects» **δεν** ισχύει πια. Έσπασε **μόνο** το `z.coerce.number()` → `TS2322`, γιατί το coercion κάνει το input type `unknown` ενώ το `z.infer` δίνει το output.
+
+Δύο διορθώσεις, **και οι δύο επαληθεύτηκαν να μεταγλωττίζουν**: (Α) `useForm<z.input<S>, unknown, z.output<S>>`, (Β) *προτιμώμενη* — καθόλου coercion, `z.number()` + `register(..., { valueAsNumber: true })`. Αφορά `SettingsPage` και `EmployeeForm` του Step 13.
+
+### Αποφάσεις
+
+- **`jsdom` / `@testing-library/react` ΔΕΝ εγκαταστάθηκαν** (απόφαση χρήστη). Τα specs του Step 9 (`toIsoUtc`, formatters, `client.ts` με mocked `fetch`) είναι καθαρές συναρτήσεις. Η απόφαση αναβάλλεται για το πρώτο βήμα που θέλει πραγματικά DOM.
+- **MCP: ΔΕΝ μπήκε** (απόφαση χρήστη, μετά από αντιπρόταση δική μου). Σκεπτικό στο build-plan· η ουσία είναι ότι το ωμό `form.json` έδειξε `files: 0`, κάτι που ένα φυσικής-γλώσσας στρώμα πιθανότατα θα εξομάλυνε σε «ναι, υπάρχει». Το Playwright MCP παραμένει ανοιχτό για το 13b.
+
+### Τελική κατάσταση
+
+`npx tsc -b` exit 0, `npm run lint` exit 0, `npx vitest --version` → `4.1.11 win32-x64 node-v22.14.0`. **Καμία γραμμή κώδικα εφαρμογής** — το Step 9 ξεκινά από καθαρό σημείο.
+
 ---
 
 # ✅ ΛΥΜΕΝΟ (2026-08-05) — οι τρεις αποφάσεις πάρθηκαν

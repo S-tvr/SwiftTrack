@@ -28,7 +28,7 @@
 
 ## Stack Traps
 
-Four places where this project is on a **current** version whose API differs from what most examples, tutorials and training data describe. Do not write these from memory — the first two fail **silently**, which is worse than a compile error.
+Five places where this project is on a **current** version whose API differs from what most examples, tutorials and training data describe. Do not write these from memory — the first two fail **silently**, which is worse than a compile error.
 
 **1. shadcn here is built on Base UI, not Radix.** shadcn changed its default primitive library to Base UI in July 2026, and this project is on it: there is **no `@radix-ui/*` package installed at all**, and the components import from `@base-ui/react/*` and carry `data-slot` attributes (`frontend/src/components/ui/dialog.tsx` is the reference). Consequences when copying Radix-era shadcn code:
 
@@ -40,9 +40,46 @@ Four places where this project is on a **current** version whose API differs fro
 
 The last row is the dangerous one: no error, no warning, the styling or animation simply never applies. New components are pulled from the registry (`npx shadcn@latest add …`), which installs the Base UI version — never hand-written from a remembered example.
 
+⚠️ **The sharpest instance: there is no `Form` component in this style, and asking for one fails silently.** Measured against the registry on 2026-08-28:
+
+| Style | `form.json` | npm deps it pulls |
+|---|---|---|
+| `new-york`, `default` (Radix) | 1 file | `@radix-ui/react-label`, `@radix-ui/react-slot`, `@hookform/resolvers`, `zod`, `react-hook-form` |
+| **`base-nova`** (ours) | **0 files** | none |
+
+`base-nova/form.json` is literally `{ "$schema": …, "name": "form", "type": "registry:ui" }` — an empty shell. **`npx shadcn add form` is a silent no-op**: no file, no error, exit 0. There are no `<Form>`, `<FormField>`, `<FormItem>` or `<FormMessage>` components to import, and any tutorial offering them is describing a Radix style — copying it would drag `@radix-ui/*` into a project that today has **zero** Radix packages.
+
+The replacement is **`field`** (`components/ui/field.tsx`, installed 2026-08-28): `Field`, `FieldSet`, `FieldLegend`, `FieldGroup`, `FieldContent`, `FieldLabel`, `FieldTitle`, `FieldDescription`, `FieldSeparator`, `FieldError`. It is **presentational only** — it imports nothing from react-hook-form, so the binding is written by hand. It is built to interoperate, though: `FieldError` takes `errors?: Array<{ message?: string }>`, which is exactly react-hook-form's error shape, so `<FieldError errors={[errors.startTime]} />` works directly. It dedupes and renders a `<ul>` when given more than one.
+
+**Consequence for step 9:** the form pattern is established once, by hand, and the other four forms copy it. There is no library wrapper enforcing consistency here — that job falls to the first form written.
+
 **2. Tailwind v4 is CSS-first, and there is no config file.** `frontend/src/index.css` starts with `@import "tailwindcss"` and defines theme tokens in `@theme inline`. **`tailwind.config.js` does not exist and must not be created** — v4 does not read one by default, so an agent adding a colour there will find it silently absent. Also: no `@tailwind base/components/utilities` directives (that is v3), no `content: []` array to maintain (sources are detected automatically), and `@apply` is discouraged in favour of CSS variables.
 
-**3. `@hookform/resolvers` must be ≥ 5.1 for zod v4.** Earlier versions support zod 3 only. There is a known type error on the boundary — `Resolver<input<T>, any, output<T>>' is not assignable to 'Resolver<output<T>, any, output<T>>'` — arising from zod v4's change to input/output type handling; the current resolver detects the schema version at runtime and handles both. Recorded so nobody debugs it from zero.
+**3. `zodResolver` + `z.coerce` does not typecheck — and only that combination.** Installed 2026-08-28 and **measured**, not assumed: `zod@4.5.1`, `react-hook-form@7.86.0`, `@hookform/resolvers@5.9.1`, on TypeScript 6.0.3. A throwaway file exercising four shapes through `tsc -b` gave:
+
+| Shape | Result |
+|---|---|
+| `z.object({...})` → `useForm<z.infer<S>>` | ✅ |
+| `z.email()` (zod 4's top-level form, not `z.string().email()`) | ✅ |
+| `.refine()` cross-field — the ShiftForm rules | ✅ |
+| **`z.coerce.number()`** → `useForm<z.infer<S>>` | ❌ **TS2322** |
+
+The failure, verbatim:
+
+```
+Type 'Resolver<{ cycleStartDay: unknown; … }, any, { cycleStartDay: number; … }>'
+  is not assignable to type 'Resolver<{ cycleStartDay: number; … }, any, { … }>'.
+      Type 'unknown' is not assignable to type 'number'.
+```
+
+Coercion accepts anything, so the schema's **input** type is `unknown` while its **output** is `number`. `z.infer` resolves to the output, and one type parameter cannot describe both ends. Note this is *not* the `.refine()`/`ZodEffects` problem that older write-ups blame — that case passes cleanly here.
+
+**Two fixes, both verified to compile:**
+
+- **A** — name both ends: `useForm<z.input<typeof S>, unknown, z.output<typeof S>>({ resolver: zodResolver(S) })`
+- **B** *(preferred)* — drop coercion: keep `z.number()` in the schema and convert at the input with `register("hourlyRate", { valueAsNumber: true })`
+
+**B** is preferred because the only places this arises are `SettingsPage` (a `<select>` of 11–25, whose values we control) and `EmployeeForm`'s `hourlyRate` — both of which are cleaner as plain numbers than as coerced strings, and neither needs the wider generic signature bleeding into every consumer of the form.
 
 **4. In a Vitest test, mock `fetch` — not the wrapper you are testing.** Mocking `request()` to test `client.ts` proves only that the mock behaves as written, and hides precisely the bugs worth catching: a wrong header, a malformed URL, a mishandled status. Relatedly, jsdom implements **no layout** — anything depending on real dimensions, scroll position or computed CSS belongs in Playwright (step 13b), not in a Vitest spec, where it will pass or fail for the wrong reason.
 
