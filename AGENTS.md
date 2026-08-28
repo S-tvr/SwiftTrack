@@ -44,8 +44,6 @@ Endpoints/Components: <list>
 Notes: <anything the next session/step needs to know>
 ```
 
-Purpose: a new session (or the agent after a context reset) can read **only** this file and understand the current state, without needing to re-scan the entire codebase or guess what's been done.
-
 Before starting any step, first check whether an entry for it already exists — if it says "Partial" or "Blocked", read the notes before continuing.
 
 ---

@@ -20,42 +20,57 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 
 ## 3. Domain Model
 
+> **Source of truth: `backend/prisma/schema.prisma`.** Every type, default and constraint below is copied from it — verified, not paraphrased. The schema generates the Prisma Client, so it is the one copy that cannot drift silently: if it is wrong, the build fails. **Never edit a type here alone.** What this section adds is the *why*, which a schema cannot carry.
+>
+> Two rules are enforced in the database but are **not expressible in Prisma's DSL**, so they live in hand-written migrations under `backend/prisma/migrations/`. Both are noted in place below.
+
+### `enum Role`
+`ADMIN | EMPLOYEE` — always imported from the generated client, never hand-written as a union (see architecture.md § Invariants).
+
 ### User
-| Field | Type | Notes |
+| Field | Prisma | Notes |
 |---|---|---|
-| id | Int (PK) | |
-| name | String | |
-| email | String | unique — the only identifier, no separate username |
-| password | String? | nullable — bcrypt hashed once set· null until the employee activates their account |
-| role | Enum | ADMIN \| EMPLOYEE |
-| hourlyRate | Int? | nullable — EMPLOYEE only· ISK, always an integer (no decimals)· admin never clocks in/out, so never needs an hourlyRate |
-| isActive | Boolean | default true — `DELETE` deactivates, doesn't actually delete (preserves time/payroll history) |
-| setupCode | String? | random 4-digit code, generated when the admin creates the employee· cleared after activation |
-| setupCodeExpiresAt | DateTime? | createdAt + 3 days· cleared after activation |
-| createdAt | DateTime | |
-| updatedAt | DateTime | |
+| id | `Int @id @default(autoincrement())` | |
+| name | `String` | |
+| email | `String @unique` | the only identifier — no separate username |
+| password | `String?` | bcrypt hashed once set· null until the employee activates their account |
+| role | `Role` | |
+| hourlyRate | `Int?` | EMPLOYEE only· ISK, always an integer (no decimals)· the admin never clocks in/out, so never needs one |
+| isActive | `Boolean @default(true)` | `DELETE` deactivates, doesn't actually delete — preserves time/payroll history |
+| setupCode | `String?` | random 4-digit code, generated when the admin creates the employee· cleared after activation |
+| setupCodeExpiresAt | `DateTime?` | createdAt + 3 days· set and cleared **together** with `setupCode`, never separately |
+| createdAt | `DateTime @default(now())` | |
+| updatedAt | `DateTime @updatedAt` | |
+| timeEntries | `TimeEntry[]` | relation |
 
 ### TimeEntry
 > All timestamps are stored and computed in **UTC**. The app is built exclusively for use in Iceland, which stays on UTC year-round (no DST) — so no timezone conversion is needed anywhere in the system.
 
-| Field | Type | Notes |
+| Field | Prisma | Notes |
 |---|---|---|
-| id | Int (PK) | |
-| userId | Int (FK) | |
-| startTime | DateTime | full timestamp, UTC |
-| endTime | DateTime? | **nullable** — null while the shift is "open" (forgotten clock out) |
-| notes | String? | optional notes |
-| createdAt | DateTime | |
-| updatedAt | DateTime | |
+| id | `Int @id @default(autoincrement())` | |
+| userId | `Int` | |
+| startTime | `DateTime` | full timestamp, UTC |
+| endTime | `DateTime?` | **nullable** — null while the shift is "open" (forgotten clock out) |
+| notes | `String?` | optional notes |
+| createdAt | `DateTime @default(now())` | |
+| updatedAt | `DateTime @updatedAt` | |
+| user | `User @relation(fields: [userId], references: [id])` | |
+
+`@@index([userId, startTime])` — every cycle query filters on exactly this pair.
+
+⚠️ **DB-level, hand-written** (`..._time_entry_single_open_shift`): `CREATE UNIQUE INDEX "TimeEntry_one_open_shift_per_user" ON "TimeEntry" ("userId") WHERE "endTime" IS NULL`. A *partial* index, because the rule is "at most one **open** shift per user" and a user may have any number of closed ones. It closes the check-then-act window the service-level check leaves open.
 
 > No `status` field (PENDING/APPROVED/REJECTED) — removed. Every entry counts directly toward the calculation, as long as it has an `endTime` (i.e. it's "closed").
 
 ### AppSettings
-| Field | Type | Notes |
+| Field | Prisma | Notes |
 |---|---|---|
-| id | Int (PK) | fixed, always `1` — a single unique row |
-| cycleStartDay | Int | default 25· allowed range **11–25** (see §4, decision 5a). The only field the cycle arithmetic reads |
-| cycleEndDay | Int | default 24 (of the following month — the cycle "wraps" across the month boundary, e.g. 25 June → 24 July). Always exactly `cycleStartDay - 1`, so allowed range **10–24**. Stored and validated, but **derived** — never used to compute a boundary |
+| id | `Int @id @default(1)` | fixed, always `1` — a single unique row |
+| cycleStartDay | `Int @default(25)` | allowed range **11–25** — enforced by `class-validator` on the DTO, **not** by the database (see §4, decision 5a). The only field the cycle arithmetic reads |
+| cycleEndDay | `Int @default(24)` | of the following month — the cycle "wraps" across the month boundary, e.g. 25 June → 24 July. Always exactly `cycleStartDay - 1`, so allowed range **10–24**. Stored and validated, but **derived** — never used to compute a boundary |
+
+⚠️ **DB-level, hand-written** (`..._appsettings_singleton_check`): `ALTER TABLE "AppSettings" ADD CONSTRAINT "AppSettings_id_check" CHECK ("id" = 1)` — so even a mistaken `create()` with a different id fails outright instead of silently succeeding.
 
 ---
 
@@ -346,26 +361,6 @@ The sentence is a template, not a constant — the same device shows *"3 hours a
 
 ---
 
-## 10. Docker Setup
-
-```yaml
-services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: swifttrack
-      POSTGRES_PASSWORD: swifttrack
-      POSTGRES_DB: swifttrack
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-volumes:
-  pgdata:
-```
-
----
-
 ## 11. Development Order
 
 **0.** Frontend: Static mockups of all screens (shadcn components, placeholder/fake data, NO functionality — buttons don't make real calls) — Login, Clock, Shift History, Payroll, Team, Payroll Overview, Settings. Goal: get look/UX approval before starting the backend
@@ -387,12 +382,6 @@ volumes:
 14. README (build/deploy instructions)
 
 ⚠️ Steps 9–13b were rewritten on 2026-08-26 against the finished API· the per-page specifications live in `build-plan.md`, and the reasoning in `progress-tracker.md` under that date. There is **no step 13a** — the client-side validation pass it described became a rule applied from step 9 onward (every form uses react-hook-form + zod from the start), since the validation rules have been known since the backend closed.
-
----
-
-## 12. Prompt-starter for Claude Code
-
-> I want to build a time-tracking & payroll app (SwiftTrack, single-tenant) with a NestJS backend, Prisma ORM, PostgreSQL (Docker), React frontend (Vite + Tailwind), JWT auth with ADMIN/EMPLOYEE roles. I have the full spec in a file [attach swifttrack-phase1-final.md]. Start with the backend: Prisma schema (User, TimeEntry, AppSettings), docker-compose.yml, seed script for the first admin, then the Users module, then the Auth module (login + set-initial-password — AuthService uses UsersService, NO register route), then the Settings module (it owns the pay cycle, and TimeEntries depends on it), then TimeEntries. IMPORTANT: every new employee is created WITHOUT a password — the backend generates a random 4-digit setupCode with a 3-day expiry, and the employee activates their own account via `/auth/set-initial-password`. The Payroll service is **not** a flat rate: hours are priced in four rate zones (see §7), and rounding happens at exactly three points (§4, decision 5d).
 
 ---
 

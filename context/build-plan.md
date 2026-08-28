@@ -2,7 +2,7 @@
 
 Development order. Each step must be completed (and working) before the next one starts. We don't move on to the rest of the frontend (steps 9+) before the entire backend is verified — the manual sweep (8), the service unit tests (8a), the full-stack tests against a real database (8b), and **8c**, the API changes the frontend plan turned out to need. Exception: step 0, which is built first of all, before even Docker/backend.
 
-⚠️ **Steps 9–13b were rewritten on 2026-08-26**, after the backend was complete, to describe the API that actually exists rather than the one imagined in step 0 — and to be followed by an agent that has not seen the earlier steps. **Step 13a (client-side validation polish) was removed** in the same pass: it existed to defer form validation until the rules were known, and the rules have been known since the backend closed, so its content became a rule applied from step 9 onward instead of a cleanup pass at the end. The reasoning for every decision is in `progress-tracker.md` under that date.
+⚠️ **Steps 9–13b were rewritten on 2026-08-26**, after the backend was complete, to describe the API that actually exists rather than the one imagined in step 0. **Step 13a (client-side validation polish) was removed** in the same pass: it existed to defer form validation until the rules were known, and the rules have been known since the backend closed, so its content became a rule applied from step 9 onward instead of a cleanup pass at the end. The reasoning for every decision is in `progress-tracker.md` under that date.
 
 ---
 
@@ -223,7 +223,7 @@ It never automatically moves to the next step without this confirmation, even if
 
 ### Read this before any frontend step
 
-Steps 9–13 are written to be built by an agent that has **not** seen the previous step. Everything below applies to all of them.
+Everything below applies to all of steps 9–13.
 
 **Where the mockups stand.** Step 0 built all eight screens with fake data, and they were approved as a **visual specification**. They are kept and rewired, not rebuilt — with the classification below. The reason is specific to how this project is being built: the best-documented failure of AI-generated frontends is *inconsistency between independently generated files* ("as if ten developers worked without talking to each other"). Eight screens that already agree with each other are the only thing enforcing one visual language across eight separately-built steps.
 
@@ -267,8 +267,6 @@ Steps 9–13 are written to be built by an agent that has **not** seen the previ
 | `/team`, `/payroll-overview`, `/settings` | **ADMIN only** |
 
 The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time-entries/me`, `/payroll/me`) are. An admin has no shifts and no `hourlyRate`.
-
-**After building any component, run the `imprint` skill** — it records the visual patterns worth keeping in `ui-registry.md`, so the next step matches this one instead of inventing a second dialect. Read that file before styling anything new.
 
 **A frontend step is done when:** the happy path works against the real backend· loading, error and empty states all exist· role restrictions match the table above· no file it owns still imports `@/mocks/data`· every string comes from `messages.ts`· `npx tsc -b` and `npm run lint` are clean· and its Vitest specs pass.
 

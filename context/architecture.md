@@ -363,43 +363,11 @@ of endpoints someone has to remember to keep updated.
 
 ## Database Schema (Prisma)
 
-### `User`
+**Owned by `backend/prisma/schema.prisma`** — the executable source of truth. It generates the Prisma Client, so it is the only copy that cannot drift silently: get it wrong and the build fails.
 
-| Column     | Type      | Notes                              |
-| ---------- | --------- | ----------------------------------- |
-| id                 | Int (PK)  |                                     |
-| name               | String    |                                     |
-| email              | String    | unique — the only identifier, no separate username |
-| password           | String?   | nullable — bcrypt hashed once set; null until account is activated |
-| role               | Enum      | ADMIN \| EMPLOYEE                   |
-| hourlyRate         | Int?      | nullable — EMPLOYEE only, ISK (no decimals); admin never clocks in/out, so never needs a rate |
-| isActive           | Boolean   | default true — "DELETE" deactivates rather than removes, preserving TimeEntry/payroll history |
-| setupCode          | String?   | random 4-digit code, set on employee creation, cleared after activation |
-| setupCodeExpiresAt | DateTime? | createdAt + 3 days; cleared after activation |
-| createdAt          | DateTime  |                                     |
-| updatedAt          | DateTime  |                                     |
+The annotated field list — every column with the reasoning behind it — lives in **spec §3**, verified against the schema rather than paraphrased from it. The two rules Prisma's DSL cannot express are hand-written in `backend/prisma/migrations/` and are noted in place there: the `AppSettings` `CHECK ("id" = 1)`, and the partial unique index enforcing at most one open shift per user.
 
-### `TimeEntry`
-
-> All timestamps are stored and computed in **UTC**. App is Iceland-only, which stays on UTC year-round (no DST) — no timezone conversion needed anywhere in the system.
-
-| Column    | Type      | Notes                                          |
-| --------- | --------- | ------------------------------------------------ |
-| id        | Int (PK)  |                                                   |
-| userId    | Int (FK)  |                                                   |
-| startTime | DateTime  | UTC                                              |
-| endTime   | DateTime? | null while shift is open (forgotten clock-out), UTC |
-| notes     | String?   | optional                                         |
-| createdAt | DateTime  |                                                   |
-| updatedAt | DateTime  |                                                   |
-
-### `AppSettings`
-
-| Column        | Type     | Notes                        |
-| ------------- | -------- | ----------------------------- |
-| id            | Int (PK) | fixed, always `1`             |
-| cycleStartDay | Int      | default 25· allowed **11–25**. The only field the cycle arithmetic reads |
-| cycleEndDay   | Int      | default 24 (of the following month — cycle wraps across the month boundary, e.g. 25 Jun → 24 Jul). Always exactly `cycleStartDay - 1`, allowed **10–24**. Stored and validated, but derived — never used to compute a boundary |
+> This section deliberately carries **no table of its own**. It used to mirror spec §3 field for field — two hand-maintained copies of one fact, in slightly different words, so no diff could ever show them drifting apart. The heading stays because two migration files point at it by name.
 
 ---
 
