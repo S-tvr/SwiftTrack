@@ -49,4 +49,11 @@ export class CycleTimeEntryDto extends TimeEntryResponseDto {
       'True when the shift extends beyond this cycle in either direction — it started before this cycle opened, or ends after it closes. This is what explains the same shift appearing again when the ◀▶ navigator moves to the neighbouring cycle. Always false for an open shift, which cannot be split.',
   })
   isSplit!: boolean;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Whether **the caller** may still edit or delete this row (spec §7a rule 5) — one flag for both verbs, since the cycle lock treats them alike. Always true for an ADMIN. For an EMPLOYEE it is anchored on `startTime`, the same instant the write rule tests, so a split shift that began before the window is locked even though it runs into it — correct, because part of it was paid in a closed cycle.\n\nCycle-scoped only: it does not fold in the transient open-shift block, which clears on clock-out, does not apply to DELETE, and answers with its own `OPEN_SHIFT_EXISTS` code.',
+  })
+  canEdit!: boolean;
 }

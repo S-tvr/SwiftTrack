@@ -1,9 +1,7 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
+import { ErrorCode } from '../common/error-codes';
+import { conflict, notFound } from '../common/domain-errors';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -70,7 +68,10 @@ export class UsersService {
       select: { id: true },
     });
     if (!employee) {
-      throw new NotFoundException(`Employee with id ${id} not found.`);
+      throw notFound(
+        ErrorCode.EMPLOYEE_NOT_FOUND,
+        `Employee with id ${id} not found.`,
+      );
     }
   }
 
@@ -119,7 +120,10 @@ export class UsersService {
   async createEmployee(dto: CreateUserDto): Promise<UserResponseDto> {
     const existing = await this.findByEmail(dto.email);
     if (existing) {
-      throw new ConflictException('A user with this email already exists.');
+      throw conflict(
+        ErrorCode.EMAIL_ALREADY_EXISTS,
+        'A user with this email already exists.',
+      );
     }
 
     try {
@@ -147,7 +151,12 @@ export class UsersService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException('A user with this email already exists.');
+        // Same code as the explicit check above: which of the two layers caught
+        // it is our business, not the caller's.
+        throw conflict(
+          ErrorCode.EMAIL_ALREADY_EXISTS,
+          'A user with this email already exists.',
+        );
       }
       throw error;
     }
@@ -179,6 +188,56 @@ export class UsersService {
     return this.toResponseDto(user);
   }
 
+  /**
+   * The counterpart to `deactivate()`. Without it deactivation is irreversible
+   * through the API — `updateEmployee` accepts only name/hourlyRate, and a fresh
+   * `createEmployee` collides with the unique email — so the only remedy for a
+   * seasonal employee coming back was editing the database by hand.
+   *
+   * Already-active rows return 200 rather than 409: the button that calls this
+   * only renders on a deactivated row, so the only way to reach that state is a
+   * double submit, where "they are active" is the outcome the admin asked for.
+   * Contrast `resetSetupCode()`, which refuses — there the repeat is not a no-op
+   * but a new secret written to an account that no longer needs one.
+   */
+  async reactivate(id: number): Promise<UserResponseDto> {
+    await this.findEmployeeByIdOrThrow(id);
+
+    const user = await this.prisma.user.update({
+      where: { id },
+      data: { isActive: true },
+    });
+    return this.toResponseDto(user);
+  }
+
+  /**
+   * A fresh code and a fresh 3-day window for an employee who never activated
+   * in time. This closes a guaranteed dead end rather than an edge case: the
+   * code is issued exactly once, in `createEmployee`, and had no regeneration
+   * path — so someone hired on a Friday who sat down on Tuesday was locked out
+   * permanently, while the expiry message told them to "contact your admin",
+   * who had no tool.
+   */
+  async resetSetupCode(id: number): Promise<UserResponseDto> {
+    const employee = await this.findEmployeeByIdOrThrow(id);
+
+    if (employee.password !== null) {
+      throw conflict(
+        ErrorCode.ACCOUNT_ALREADY_ACTIVATED,
+        'This account has already been activated.',
+      );
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id },
+      data: {
+        setupCode: this.generateSetupCode(),
+        setupCodeExpiresAt: this.addDays(new Date(), SETUP_CODE_VALIDITY_DAYS),
+      },
+    });
+    return this.toResponseDto(user);
+  }
+
   async activateAccount(email: string, hashedPassword: string): Promise<User> {
     return this.prisma.user.update({
       where: { email },
@@ -194,23 +253,28 @@ export class UsersService {
   private async findUserByIdOrThrow(id: number): Promise<User> {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) {
-      throw new NotFoundException(`User with id ${id} not found.`);
+      throw notFound(ErrorCode.USER_NOT_FOUND, `User with id ${id} not found.`);
     }
     return user;
   }
 
   /**
    * Employees only. Admin accounts are deliberately out of reach of the
-   * update/deactivate routes: an admin has no hourlyRate by design (spec §3),
-   * and deactivating the only admin would lock everyone out of the system with
-   * no reactivation endpoint to recover through.
+   * update/deactivate/reactivate/reset-code routes: an admin has no hourlyRate
+   * by design (spec §3), and deactivating the only admin would lock everyone
+   * out of the system permanently — `reactivate()` goes through this same
+   * lookup, so it is no escape hatch for an ADMIN row, and there is no public
+   * register route to create a replacement.
    */
   private async findEmployeeByIdOrThrow(id: number): Promise<User> {
     const employee = await this.prisma.user.findFirst({
       where: { id, role: 'EMPLOYEE' },
     });
     if (!employee) {
-      throw new NotFoundException(`Employee with id ${id} not found.`);
+      throw notFound(
+        ErrorCode.EMPLOYEE_NOT_FOUND,
+        `Employee with id ${id} not found.`,
+      );
     }
     return employee;
   }
@@ -248,6 +312,9 @@ export class UsersService {
       isActive: user.isActive,
       hasActivated: user.password !== null,
       setupCode: user.setupCode,
+      setupCodeExpiresAt: user.setupCodeExpiresAt
+        ? user.setupCodeExpiresAt.toISOString()
+        : null,
     };
   }
 }

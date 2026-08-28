@@ -52,13 +52,15 @@ describe('UsersService', () => {
     /**
      * ⭐ Both reasons are load-bearing: an admin has no `hourlyRate` by design,
      * and deactivating the only admin is unrecoverable through the API — login
-     * checks `isActive`, there is no reactivation endpoint, and there is no
-     * public register route.
+     * checks `isActive`, there is no public register route, and `reactivate()`
+     * is no escape hatch because it runs through this same EMPLOYEE-only lookup.
      */
     it('404s instead of writing, and never issues the update', async () => {
       for (const call of [
         (s: UsersService) => s.updateEmployee(1, { name: 'Renamed' }),
         (s: UsersService) => s.deactivate(1),
+        (s: UsersService) => s.reactivate(1),
+        (s: UsersService) => s.resetSetupCode(1),
       ]) {
         const { service, user } = makeService();
         // The lookup filters on role, so an ADMIN id resolves to null.
@@ -85,6 +87,70 @@ describe('UsersService', () => {
         where: { id: 7 },
         data: { isActive: false },
       });
+    });
+  });
+
+  /**
+   * The two recovery paths added in step 8c. Before them, deactivation was
+   * irreversible through the API and an expired setup code was a permanent
+   * lockout — both routine situations with no remedy short of editing the
+   * database by hand.
+   */
+  describe('the recovery endpoints', () => {
+    it('reactivates by setting isActive true, and nothing else', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ isActive: false }));
+
+      await service.reactivate(7);
+
+      expect(user.update).toHaveBeenCalledWith({
+        where: { id: 7 },
+        data: { isActive: true },
+      });
+    });
+
+    it('treats reactivating an already-active employee as a no-op, not a conflict', async () => {
+      // The button only renders on a deactivated row, so the only way here is a
+      // double submit — where "they are active" is the outcome that was asked
+      // for. Contrast resetSetupCode below, where a repeat is not harmless.
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ isActive: true }));
+
+      await expect(service.reactivate(7)).resolves.toMatchObject({ id: 7 });
+    });
+
+    it('issues a fresh 4-digit code and a fresh 3-day expiry', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ setupCode: '0001' }));
+      const before = Date.now();
+
+      await service.resetSetupCode(7);
+
+      const [firstCall] = user.update.mock.calls as Array<
+        [{ data: { setupCode: string; setupCodeExpiresAt: Date } }]
+      >;
+      const { data } = firstCall[0];
+      expect(data.setupCode).toMatch(/^\d{4}$/);
+      expect(data.setupCode).not.toBe('0001');
+      // Both fields are rewritten together: a new code with the old expiry
+      // would still be dead on arrival.
+      const threeDays = 3 * 24 * 60 * 60 * 1000;
+      expect(data.setupCodeExpiresAt.getTime()).toBeGreaterThanOrEqual(
+        before + threeDays - 1000,
+      );
+    });
+
+    it('refuses to re-issue a code for an account that has already activated', async () => {
+      // A code is the secret that unlocks an unactivated account. Writing a new
+      // one onto an account that no longer needs it creates a way in that
+      // nobody asked for.
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ password: 'hashed' }));
+
+      await expect(service.resetSetupCode(7)).rejects.toThrow(
+        'This account has already been activated.',
+      );
+      expect(user.update).not.toHaveBeenCalled();
     });
   });
 
@@ -221,6 +287,7 @@ describe('UsersService', () => {
         hourlyRate: 2450,
       });
       expect(profile).not.toHaveProperty('setupCode');
+      expect(profile).not.toHaveProperty('setupCodeExpiresAt');
     });
 
     /**
@@ -241,6 +308,34 @@ describe('UsersService', () => {
       expect(pending.hasActivated).toBe(false);
       expect(activated.setupCode).toBeNull();
       expect(activated.hasActivated).toBe(true);
+    });
+
+    /**
+     * The expiry travels with the code, because the Team page prints a date
+     * ("Valid until 29 August") rather than a duration — in the dialog shown
+     * after creating an employee and on every pending row, so an admin can see
+     * one about to lapse. A code without its expiry cannot be presented that
+     * way, and this is the same class of gap as the code itself being missing.
+     */
+    it('carries setupCodeExpiresAt as an ISO string beside the code', async () => {
+      const { service, user } = makeService();
+      user.findMany.mockResolvedValue([
+        makeUser({ id: 1, password: null }),
+        // Activated: both fields were cleared together, as activateAccount does.
+        makeUser({
+          id: 2,
+          password: 'hashed',
+          setupCode: null,
+          setupCodeExpiresAt: null,
+        }),
+      ]);
+
+      const [pending, activated] = await service.findAllEmployees();
+
+      expect(pending.setupCodeExpiresAt).toBe('2026-01-04T00:00:00.000Z');
+      // Null in exactly the cases the code is — never one without the other.
+      expect(activated.setupCode).toBeNull();
+      expect(activated.setupCodeExpiresAt).toBeNull();
     });
 
     it('findAllEmployees never returns the admin', async () => {

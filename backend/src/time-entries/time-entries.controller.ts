@@ -61,7 +61,11 @@ export class TimeEntriesController {
     type: TimeEntryResponseDto,
     description: 'The newly opened shift, with `endTime: null`.',
   })
-  @ApiResponse({ status: 400, description: 'An open shift already exists.' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Code: `OPEN_SHIFT_EXISTS` — the only failure this route has. Both layers answer with it: the service check and the partial unique index behind it.',
+  })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   clockIn(@CurrentUser() user: JwtPayload): Promise<TimeEntryResponseDto> {
     return this.timeEntriesService.clockIn(user.userId);
@@ -80,7 +84,10 @@ export class TimeEntriesController {
     type: TimeEntryResponseDto,
     description: 'The shift just closed, with `endTime` set to now.',
   })
-  @ApiResponse({ status: 400, description: 'No open shift to close.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Code: `NO_OPEN_SHIFT` — there was nothing to close.',
+  })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   clockOut(@CurrentUser() user: JwtPayload): Promise<TimeEntryResponseDto> {
     return this.timeEntriesService.clockOut(user.userId);
@@ -120,13 +127,20 @@ export class TimeEntriesController {
     description:
       'The resolved cycle block plus the shifts touching it — open ones included. No hours figure per shift: hours live only in GET /payroll (spec §4, decision 5f).',
   })
-  @ApiResponse({ status: 400, description: 'Malformed cycle key.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Code: `INVALID_CYCLE` — malformed cycle key.',
+  })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   findMine(
     @CurrentUser() user: JwtPayload,
     @Query('cycle') cycle?: string,
   ): Promise<CycleEntriesResponseDto> {
-    return this.timeEntriesService.findCycleEntries(user.userId, cycle);
+    return this.timeEntriesService.findCycleEntries(
+      user.userId,
+      user.role,
+      cycle,
+    );
   }
 
   @Get()
@@ -147,10 +161,15 @@ export class TimeEntriesController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Missing userId, or a malformed cycle key.',
+    description:
+      'Code: `INVALID_CYCLE` for a ?cycle= value that is not YYYY-MM. A missing or non-integer userId is a ParseIntPipe failure and carries no code.',
   })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
-  @ApiResponse({ status: 404, description: 'No such employee.' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'Code: `EMPLOYEE_NOT_FOUND` — checked before listing, so an unknown id is a 404 rather than an empty cycle.',
+  })
   findForEmployee(
     @Query('userId', ParseIntPipe) userId: number,
     @Query('cycle') cycle?: string,
@@ -173,9 +192,13 @@ export class TimeEntriesController {
   @ApiResponse({
     status: 400,
     description:
-      'Validation failed, the shift overlaps another, or the employee has an open shift.',
+      'Codes: `SHIFT_OVERLAP`, `OPEN_SHIFT_EXISTS`, `CYCLE_LOCKED` (an EMPLOYEE writing outside their current or previous cycle), `USER_ID_REQUIRED`, `USER_ID_NOT_ALLOWED`. A failure from the ValidationPipe (end before start, a future timestamp, a malformed field) carries **no** code — those are framework-generated and never shown to a user.',
   })
-  @ApiResponse({ status: 404, description: 'No such employee.' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'Code: `EMPLOYEE_NOT_FOUND` — the `userId` an ADMIN named is not an EMPLOYEE row. Deactivated employees resolve normally, so their history stays repairable.',
+  })
   create(
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateTimeEntryDto,
@@ -199,11 +222,12 @@ export class TimeEntriesController {
   @ApiResponse({
     status: 400,
     description:
-      'Validation failed, the shift overlaps another, or the employee has an open shift.',
+      'Codes: `SHIFT_OVERLAP`, `OPEN_SHIFT_EXISTS`, `CYCLE_LOCKED` (an EMPLOYEE editing outside their current or previous cycle — checked against **both** the row as it stands and the row as it would become). No `USER_ID_*` here, unlike POST: `userId` is not on the update DTO at all, because there it would *move* a shift between people. A failure from the ValidationPipe (end before start, a future timestamp, a malformed field) carries **no** code — those are framework-generated and never shown to a user.',
   })
   @ApiResponse({
     status: 404,
-    description: 'No such shift, or not the caller’s.',
+    description:
+      'Code: `TIME_ENTRY_NOT_FOUND`. A row belonging to someone else answers exactly this, not a 403 — the ownership filter lives in the Prisma `where`, so "not yours" and "does not exist" are indistinguishable by design.',
   })
   update(
     @CurrentUser() user: JwtPayload,
@@ -222,10 +246,15 @@ export class TimeEntriesController {
       'Unlike POST and PUT, this is not blocked while the owner has an open shift — an employee may delete an open shift instead of clocking out of it. Safe (nothing unpayable is lost) but it discards the clock-in record rather than correcting it. A row belonging to someone else is a 404, not a 403.',
   })
   @ApiResponse({ status: 204, description: 'Deleted. No response body.' })
-  @ApiResponse({ status: 400, description: 'Non-integer id.' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Non-integer id, or code `CYCLE_LOCKED` — rule 5 covers DELETE too, since deleting a shift from a paid cycle corrupts it exactly as editing its hours would.',
+  })
   @ApiResponse({
     status: 404,
-    description: 'No such shift, or not the caller’s.',
+    description:
+      'Code: `TIME_ENTRY_NOT_FOUND`. A row belonging to someone else answers exactly this, not a 403 — the ownership filter lives in the Prisma `where`, so "not yours" and "does not exist" are indistinguishable by design.',
   })
   remove(
     @CurrentUser() user: JwtPayload,

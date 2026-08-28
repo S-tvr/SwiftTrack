@@ -33,6 +33,27 @@ const CYCLE_DTO = {
   cycleEnd: '2026-08-24T23:59:59.999Z',
 };
 
+/**
+ * The employee write window (spec §7a rule 5) as the stub reports it: the start
+ * of the cycle before RANGE. Every fixture shift below sits inside it, so tests
+ * about the other rules are untouched by the lock — the rule-5 tests move this
+ * instead of moving the shifts.
+ */
+const WRITABLE_FROM = new Date('2026-06-25T00:00:00.000Z');
+
+/**
+ * What `SettingsService.resolveCycleRange()` hands back. The defaults describe
+ * an open cycle the employee may write to; the flag tests override one field
+ * each, which is what keeps each of them about a single rule.
+ */
+const resolved = (overrides: Record<string, unknown> = {}) => ({
+  range: RANGE,
+  cycleDto: CYCLE_DTO,
+  writableFrom: WRITABLE_FROM,
+  hasStarted: true,
+  ...overrides,
+});
+
 const shiftBody = {
   startTime: '2026-08-04T08:00:00.000Z',
   endTime: '2026-08-04T16:00:00.000Z',
@@ -78,10 +99,15 @@ function makeService() {
   const prisma = {
     timeEntry: { findFirst, findMany, create, update, delete: remove },
   } as unknown as PrismaService;
+  // The write floor and "has this cycle opened?" ride along with the cycle:
+  // all three come from one reading of `cycleStartDay` and one reading of the
+  // clock, so the read paths take them from here and only the write paths call
+  // resolveWritableCycleStart().
+  const resolveCycleRange = jest.fn().mockResolvedValue(resolved());
+  const resolveWritableCycleStart = jest.fn().mockResolvedValue(WRITABLE_FROM);
   const settings = {
-    resolveCycleRange: jest
-      .fn()
-      .mockResolvedValue({ range: RANGE, cycleDto: CYCLE_DTO }),
+    resolveCycleRange,
+    resolveWritableCycleStart,
   } as unknown as SettingsService;
   const users = { assertEmployeeExists } as unknown as UsersService;
 
@@ -93,6 +119,8 @@ function makeService() {
     update,
     remove,
     assertEmployeeExists,
+    resolveCycleRange,
+    resolveWritableCycleStart,
   };
 }
 
@@ -327,6 +355,115 @@ describe('TimeEntriesService', () => {
     });
   });
 
+  /**
+   * Rule 5 differs from 1-4 in scope: it covers DELETE as well, and it is about
+   * *when* a shift may be written rather than what a valid one looks like.
+   *
+   * Every fixture here sits inside WRITABLE_FROM, so a locked case is expressed
+   * by moving the shift before it rather than by moving the window.
+   */
+  describe('the cycle lock (§7a rule 5)', () => {
+    const LOCKED = {
+      startTime: '2026-05-04T08:00:00.000Z',
+      endTime: '2026-05-04T16:00:00.000Z',
+    };
+    const LOCKED_MESSAGE =
+      'That pay cycle is closed. You can only change shifts in your current or previous cycle.';
+
+    it('refuses an employee creating a shift in a closed cycle', async () => {
+      const { service, create } = makeService();
+
+      await expect(service.create(EMPLOYEE, LOCKED)).rejects.toThrow(
+        LOCKED_MESSAGE,
+      );
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('runs before the open-shift block, so the refusal names the fixable thing', async () => {
+      // Both rules are violated. The employee can act on "pick another date";
+      // they cannot act on "clock out" to make an old cycle writable again.
+      const { service, findFirst } = makeService();
+      findFirst.mockResolvedValueOnce(entry({ endTime: null }));
+
+      await expect(service.create(EMPLOYEE, LOCKED)).rejects.toThrow(
+        LOCKED_MESSAGE,
+      );
+    });
+
+    it('lets an employee create inside the window', async () => {
+      const { service, create } = makeService();
+      await service.create(EMPLOYEE, shiftBody);
+
+      expect(create).toHaveBeenCalled();
+    });
+
+    it('refuses an employee dragging a locked row forward into the window', async () => {
+      // Only the NEW value is inside. Checking that alone would let a paid
+      // cycle be emptied one shift at a time.
+      const { service, findFirst, update } = makeService();
+      findFirst.mockResolvedValueOnce(
+        entry({ startTime: new Date(LOCKED.startTime) }),
+      );
+
+      await expect(service.update(EMPLOYEE, 10, shiftBody)).rejects.toThrow(
+        LOCKED_MESSAGE,
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('refuses an employee pushing a current row back into a closed cycle', async () => {
+      // Only the EXISTING row is inside. The mirror image of the case above,
+      // and one check catches only one of them.
+      const { service, findFirst, update } = makeService();
+      findFirst.mockResolvedValueOnce(entry()); // findOwnedOrThrow — inside
+
+      await expect(service.update(EMPLOYEE, 10, LOCKED)).rejects.toThrow(
+        LOCKED_MESSAGE,
+      );
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('refuses an employee deleting from a closed cycle', async () => {
+      const { service, findFirst, remove } = makeService();
+      findFirst.mockResolvedValueOnce(
+        entry({ startTime: new Date(LOCKED.startTime) }),
+      );
+
+      await expect(service.remove(EMPLOYEE, 10)).rejects.toThrow(
+        LOCKED_MESSAGE,
+      );
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    it('exempts an admin on all three writes, without even resolving the window', async () => {
+      // The exemption is not a comparison that happens to pass — the boundary
+      // is never looked up, which is what keeps it true regardless of the date.
+      const {
+        service,
+        findFirst,
+        create,
+        update,
+        remove,
+        resolveWritableCycleStart,
+      } = makeService();
+      const lockedRow = entry({ startTime: new Date(LOCKED.startTime) });
+      findFirst
+        .mockResolvedValueOnce(null) // create: overlap check
+        .mockResolvedValueOnce(lockedRow) // update: findOwnedOrThrow
+        .mockResolvedValueOnce(null) // update: overlap check
+        .mockResolvedValueOnce(lockedRow); // remove: findOwnedOrThrow
+
+      await service.create(ADMIN, { ...LOCKED, userId: 5 });
+      await service.update(ADMIN, 10, LOCKED);
+      await service.remove(ADMIN, 10);
+
+      expect(create).toHaveBeenCalled();
+      expect(update).toHaveBeenCalled();
+      expect(remove).toHaveBeenCalled();
+      expect(resolveWritableCycleStart).not.toHaveBeenCalled();
+    });
+  });
+
   describe('overlap (§7a rule 3)', () => {
     it('rejects a shift colliding with an existing one', async () => {
       const { service, findFirst, create } = makeService();
@@ -453,7 +590,10 @@ describe('TimeEntriesService', () => {
   describe('the cycle list', () => {
     it('returns the cycle block flat, alongside the entries', async () => {
       const { service } = makeService();
-      const result = await service.findCycleEntries(EMPLOYEE.userId);
+      const result = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
 
       expect(result).toMatchObject(CYCLE_DTO);
       expect(result.entries).toEqual([]);
@@ -463,7 +603,7 @@ describe('TimeEntriesService', () => {
       // `endTime: { not: null }` alone would drop open shifts, and the approved
       // ShiftList renders an "Open" badge for exactly those.
       const { service, findMany } = makeService();
-      await service.findCycleEntries(EMPLOYEE.userId, '2026-07');
+      await service.findCycleEntries(EMPLOYEE.userId, EMPLOYEE.role, '2026-07');
 
       expect(findMany).toHaveBeenCalledWith({
         where: {
@@ -492,7 +632,10 @@ describe('TimeEntriesService', () => {
         }),
       ]);
 
-      const { entries } = await service.findCycleEntries(EMPLOYEE.userId);
+      const { entries } = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
 
       // The last 3h fall in the next cycle, which is why the same row shows up
       // again when the navigator moves forward — this flag is what says so.
@@ -503,7 +646,10 @@ describe('TimeEntriesService', () => {
       const { service, findMany } = makeService();
       findMany.mockResolvedValueOnce([entry({ endTime: null })]);
 
-      const { entries } = await service.findCycleEntries(EMPLOYEE.userId);
+      const { entries } = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
 
       expect(entries[0]).toMatchObject({ endTime: null, isSplit: false });
     });
@@ -514,9 +660,127 @@ describe('TimeEntriesService', () => {
       const { service, findMany } = makeService();
       findMany.mockResolvedValueOnce([entry()]);
 
-      const { entries } = await service.findCycleEntries(EMPLOYEE.userId);
+      const { entries } = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
 
       expect(entries[0]).not.toHaveProperty('hoursInCycle');
+    });
+
+    /**
+     * The list needs two things off `AppSettings` — the cycle and the write
+     * window — and asking for them separately meant reading the singleton row
+     * twice per request. `resolveCycleRange()` now returns both from one read,
+     * so `resolveWritableCycleStart()` belongs only to the write paths.
+     */
+    it('resolves the cycle and the write window in a single settings call', async () => {
+      const { service, resolveCycleRange, resolveWritableCycleStart } =
+        makeService();
+
+      await service.findCycleEntries(EMPLOYEE.userId, EMPLOYEE.role);
+
+      expect(resolveCycleRange).toHaveBeenCalledTimes(1);
+      expect(resolveWritableCycleStart).not.toHaveBeenCalled();
+    });
+
+    it('reports canWrite and canEdit for an employee inside the window', async () => {
+      const { service, findMany } = makeService();
+      findMany.mockResolvedValueOnce([entry()]);
+
+      const result = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
+
+      expect(result.canWrite).toBe(true);
+      expect(result.entries[0].canEdit).toBe(true);
+    });
+
+    it('reports canWrite false for an employee looking at a closed cycle', async () => {
+      // The flag a POST needs: there is no row for it to hang one on, so
+      // without this the employee fills the form and meets an unanticipated 400.
+      const { service, findMany, resolveCycleRange } = makeService();
+      resolveCycleRange.mockResolvedValueOnce(
+        resolved({ writableFrom: new Date('2026-09-25T00:00:00.000Z') }),
+      );
+      findMany.mockResolvedValueOnce([entry()]);
+
+      const result = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
+
+      expect(result.canWrite).toBe(false);
+      expect(result.entries[0].canEdit).toBe(false);
+    });
+
+    /**
+     * The **upper** bound of `canWrite`, which the test above cannot reach: it
+     * moves the writable floor, so it only ever exercises the lower one.
+     *
+     * A cycle can be unwritable in two directions. Rule 5 closes the past, and
+     * rule 4 ("no timestamp after now") closes the future — the ◀▶ navigator
+     * can reach a cycle that has not opened yet, and "Add Shift" has to be
+     * disabled there too, or the employee fills in a form whose every value is
+     * refused by a `ValidationPipe` 400 that carries no code to explain itself.
+     */
+    it('reports canWrite false for a cycle that has not started yet', async () => {
+      // The write floor still passes here, so only `hasStarted` can decide it.
+      // The arithmetic behind that flag is SettingsService's, and is tested
+      // against a real clock there; what this pins is that the flag is honoured
+      // rather than recomputed — this service reads no clock of its own.
+      const { service, resolveCycleRange } = makeService();
+      resolveCycleRange.mockResolvedValueOnce(resolved({ hasStarted: false }));
+
+      const result = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
+
+      expect(result.canWrite).toBe(false);
+    });
+
+    it('anchors canEdit on startTime, so a split shift from a closed cycle stays locked', async () => {
+      // It runs into the window but began before it, and part of it was paid in
+      // the closed cycle — so the row does not become editable by extending.
+      const { service, findMany, resolveCycleRange } = makeService();
+      resolveCycleRange.mockResolvedValueOnce(
+        resolved({ writableFrom: RANGE.start }),
+      );
+      findMany.mockResolvedValueOnce([
+        entry({
+          startTime: new Date('2026-07-24T20:00:00.000Z'),
+          endTime: new Date('2026-07-25T03:00:00.000Z'),
+        }),
+      ]);
+
+      const { entries } = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
+
+      expect(entries[0].isSplit).toBe(true);
+      expect(entries[0].canEdit).toBe(false);
+    });
+
+    it('reports both flags true for an admin, whatever the window says', async () => {
+      // Keeps one response shape for both routes, as §5 requires. The floor is
+      // set far in the future and the row far in the past, so both flags would
+      // be false for an employee — the admin ignores it rather than happening
+      // to satisfy it.
+      const { service, findMany, resolveCycleRange } = makeService();
+      resolveCycleRange.mockResolvedValueOnce(
+        resolved({ writableFrom: new Date('2030-01-01T00:00:00.000Z') }),
+      );
+      findMany.mockResolvedValueOnce([
+        entry({ startTime: new Date('2020-01-01T08:00:00.000Z') }),
+      ]);
+
+      const result = await service.findCycleEntriesForEmployee(5, '2026-07');
+
+      expect(result.canWrite).toBe(true);
+      expect(result.entries[0].canEdit).toBe(true);
     });
 
     it('404s on the admin route before listing, rather than returning an empty cycle', async () => {

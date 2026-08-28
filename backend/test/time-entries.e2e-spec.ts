@@ -9,17 +9,37 @@ import {
   addShift,
   createActivatedEmployee,
   loginAsAdmin,
+  seedShift,
   type ActivatedEmployee,
 } from './helpers/fixtures';
 import type {
   CycleEntriesBody,
+  ErrorBody,
   OpenShiftBody,
   TimeEntryBody,
 } from './helpers/types';
 
-// A Monday comfortably in the past — rule 4 forbids future timestamps, so every
-// fixture shift has to have already happened.
-const MON = '2026-08-03';
+/**
+ * The date every employee-written fixture below uses, resolved per run rather
+ * than written down. Two rules constrain it at once and a literal satisfies
+ * neither for long: rule 4 forbids future timestamps, and rule 5 confines an
+ * EMPLOYEE to the current or previous cycle — so a fixed calendar date is
+ * writable only until it falls out of the window, and then the suite fails on a
+ * day nobody changed anything. (That is not hypothetical: a sibling test in
+ * payroll.e2e-spec.ts hardcoded "now is in the 2026-07 cycle" and went red on
+ * its own, one cycle boundary later.)
+ *
+ * The day before the current cycle opened is inside the previous cycle by
+ * construction — cycles are contiguous — and is therefore both writable and
+ * safely in the past. The boundary comes from the API, never computed here.
+ */
+let MON: string;
+
+const dayBefore = (iso: string): string => {
+  const date = new Date(iso);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+};
 
 describe('/time-entries', () => {
   let app: INestApplication;
@@ -36,6 +56,13 @@ describe('/time-entries', () => {
     await resetDatabase(prisma);
     adminToken = await loginAsAdmin(server);
     employee = await createActivatedEmployee(server, adminToken);
+
+    // `?cycle=` omitted, so the backend answers with the cycle containing now.
+    const current = await request(server)
+      .get('/time-entries/me')
+      .set('Authorization', `Bearer ${employee.token}`)
+      .expect(200);
+    MON = dayBefore((current.body as CycleEntriesBody).cycleStart);
   });
 
   afterAll(async () => {
@@ -414,7 +441,9 @@ describe('/time-entries', () => {
      */
     it('marks a boundary-crossing shift as split in both cycles', async () => {
       // Fri 24 Jul 20:00 → Sat 25 Jul 03:00, with the boundary at the 25th.
-      await addShift(server, employee.token, {
+      // Seeded as the admin: the fixed date is the point of the test, and only
+      // the admin is exempt from the cycle window that date will fall out of.
+      await seedShift(server, adminToken, employee.id, {
         startTime: '2026-07-24T20:00:00.000Z',
         endTime: '2026-07-25T03:00:00.000Z',
       });
@@ -450,6 +479,156 @@ describe('/time-entries', () => {
       expect(body.entries[0].endTime).toBeNull();
       // An open shift has no end, so it cannot be split.
       expect(body.entries[0].isSplit).toBe(false);
+    });
+  });
+
+  /**
+   * Spec §7a rule 5 (step 8c): once a cycle is paid, an EMPLOYEE stops being
+   * able to move its record. All three verbs, because editing a July shift down
+   * to two hours corrupts a paid cycle exactly as deleting it does — locking one
+   * door and leaving two open reads as protection without being any.
+   *
+   * The locked date is fixed and long past; the writable ones are derived from
+   * the API, so neither side of the boundary depends on today's date.
+   */
+  describe('the cycle lock (§7a rule 5)', () => {
+    const LOCKED_DAY = '2024-03-04';
+    // The cycle *containing* that day, not its calendar month: with a 25th
+    // boundary, 4 March falls in the cycle that opened on 25 February.
+    const LOCKED_CYCLE = '2024-02';
+    const locked = {
+      startTime: `${LOCKED_DAY}T08:00:00.000Z`,
+      endTime: `${LOCKED_DAY}T16:00:00.000Z`,
+    };
+    const writable = () => ({
+      startTime: `${MON}T08:00:00.000Z`,
+      endTime: `${MON}T16:00:00.000Z`,
+    });
+
+    it('refuses an employee creating a shift in a closed cycle', async () => {
+      const response = await request(server)
+        .post('/time-entries')
+        .set('Authorization', `Bearer ${employee.token}`)
+        .send(locked)
+        .expect(400);
+
+      expect((response.body as ErrorBody).code).toBe('CYCLE_LOCKED');
+    });
+
+    it('refuses an employee editing or deleting a row in a closed cycle', async () => {
+      // Seeded by the admin, who is exempt — which is also what makes the row
+      // exist at all for this test.
+      const old = await seedShift(server, adminToken, employee.id, locked);
+
+      const edit = await request(server)
+        .put(`/time-entries/${old.id}`)
+        .set('Authorization', `Bearer ${employee.token}`)
+        .send({ ...locked, notes: 'trying to change history' })
+        .expect(400);
+      expect((edit.body as ErrorBody).code).toBe('CYCLE_LOCKED');
+
+      const remove = await request(server)
+        .delete(`/time-entries/${old.id}`)
+        .set('Authorization', `Bearer ${employee.token}`)
+        .expect(400);
+      expect((remove.body as ErrorBody).code).toBe('CYCLE_LOCKED');
+
+      // Still there — a refused write must not half-happen.
+      const still = await prisma.timeEntry.findUnique({
+        where: { id: old.id },
+      });
+      expect(still).not.toBeNull();
+    });
+
+    it('refuses an employee dragging a locked row into the writable window', async () => {
+      // The new value is legal, the existing row is not. Checking only the
+      // incoming times would let a paid cycle be emptied one shift at a time.
+      const old = await seedShift(server, adminToken, employee.id, locked);
+
+      const response = await request(server)
+        .put(`/time-entries/${old.id}`)
+        .set('Authorization', `Bearer ${employee.token}`)
+        .send(writable())
+        .expect(400);
+
+      expect((response.body as ErrorBody).code).toBe('CYCLE_LOCKED');
+    });
+
+    it('refuses an employee pushing a writable row back into a closed cycle', async () => {
+      // The mirror image, and the reason both ends are checked.
+      const recent = await addShift(server, employee.token, writable());
+
+      const response = await request(server)
+        .put(`/time-entries/${recent.id}`)
+        .set('Authorization', `Bearer ${employee.token}`)
+        .send(locked)
+        .expect(400);
+
+      expect((response.body as ErrorBody).code).toBe('CYCLE_LOCKED');
+    });
+
+    it('lets the admin write in a closed cycle — the exemption is load-bearing', async () => {
+      // Not a convenience: clock-out is EMPLOYEE-only and closes the caller's
+      // own shift, so PUT is the only tool that exists for a deactivated
+      // employee's forgotten open shift.
+      const old = await seedShift(server, adminToken, employee.id, locked);
+
+      await request(server)
+        .put(`/time-entries/${old.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ ...locked, notes: 'corrected by admin' })
+        .expect(200);
+
+      await request(server)
+        .delete(`/time-entries/${old.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(204);
+    });
+
+    /**
+     * Both flags exist because the client may not resolve cycle boundaries
+     * itself. `canWrite` is the one a POST needs — a creation has no row to
+     * carry a per-entry flag, so without it an employee fills in the form on a
+     * closed cycle and meets a 400 nothing on screen predicted.
+     */
+    it('reports canWrite and canEdit so the UI can disable what would fail', async () => {
+      const old = await seedShift(server, adminToken, employee.id, locked);
+      await addShift(server, employee.token, writable());
+
+      const closed = await request(server)
+        .get(`/time-entries/me?cycle=${LOCKED_CYCLE}`)
+        .set('Authorization', `Bearer ${employee.token}`)
+        .expect(200);
+      const closedBody = closed.body as CycleEntriesBody;
+      expect(closedBody.canWrite).toBe(false);
+      expect(closedBody.entries.some((e) => e.id === old.id)).toBe(true);
+      expect(closedBody.entries.every((e) => e.canEdit === false)).toBe(true);
+
+      const open = await request(server)
+        .get('/time-entries/me')
+        .set('Authorization', `Bearer ${employee.token}`)
+        .expect(200);
+      const openBody = open.body as CycleEntriesBody;
+      expect(openBody.canWrite).toBe(true);
+
+      // A cycle that has not opened yet is unwritable in the other direction —
+      // rule 4 refuses every timestamp it could contain. The ▶ can navigate
+      // there, so the flag has to say so rather than let the form be filled in.
+      const ahead = await request(server)
+        .get(`/time-entries/me?cycle=${openBody.nextCycle}`)
+        .set('Authorization', `Bearer ${employee.token}`)
+        .expect(200);
+      expect((ahead.body as CycleEntriesBody).canWrite).toBe(false);
+
+      // The admin sees the same shape with both flags true, on the same closed
+      // cycle — one response shape for both routes, as §5 requires.
+      const asAdmin = await request(server)
+        .get(`/time-entries?userId=${employee.id}&cycle=${LOCKED_CYCLE}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const adminBody = asAdmin.body as CycleEntriesBody;
+      expect(adminBody.canWrite).toBe(true);
+      expect(adminBody.entries.every((e) => e.canEdit === true)).toBe(true);
     });
   });
 });

@@ -14,15 +14,14 @@ import type { AppSettings } from '../generated/prisma/client';
 function serviceWith(row: AppSettings | null): {
   service: SettingsService;
   update: jest.Mock;
+  findUnique: jest.Mock;
 } {
   const update = jest.fn();
+  const findUnique = jest.fn().mockResolvedValue(row);
   const prisma = {
-    appSettings: {
-      findUnique: jest.fn().mockResolvedValue(row),
-      update,
-    },
+    appSettings: { findUnique, update },
   } as unknown as PrismaService;
-  return { service: new SettingsService(prisma), update };
+  return { service: new SettingsService(prisma), update, findUnique };
 }
 
 const row = (cycleStartDay: number, cycleEndDay: number): AppSettings => ({
@@ -132,6 +131,139 @@ describe('SettingsService', () => {
       // rather than an error, so it is caught before any arithmetic happens.
       const { service } = serviceWith(row(31, 30));
       await expect(service.resolveCycleRange('2026-02')).rejects.toThrow(
+        InternalServerErrorException,
+      );
+    });
+  });
+
+  /**
+   * The lower bound of the employee write window (spec §7a rule 5). It lives
+   * here rather than in `TimeEntriesService` because it is derived from
+   * `AppSettings` — the same reason `resolveCycleRange()` does.
+   */
+  describe('resolveWritableCycleStart', () => {
+    it('returns the start of the cycle before the one containing now', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        // 3 August with a 25th boundary: the running cycle is 2026-07, so the
+        // window opens where 2026-06 did — 25 June.
+        await expect(service.resolveWritableCycleStart()).resolves.toEqual(
+          new Date('2026-06-25T00:00:00.000Z'),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('rolls the year back correctly at January', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-01-03T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        // 3 January → running cycle 2025-12 → window opens 25 November 2025.
+        await expect(service.resolveWritableCycleStart()).resolves.toEqual(
+          new Date('2025-11-25T00:00:00.000Z'),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('moves with cycleStartDay rather than assuming the 25th', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(11, 10));
+        // 3 August with an 11th boundary: running cycle is 2026-07 (11 Jul -
+        // 11 Aug), so the window opens on 11 June.
+        await expect(service.resolveWritableCycleStart()).resolves.toEqual(
+          new Date('2026-06-11T00:00:00.000Z'),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    /**
+     * The two entry points compute the same boundary from the same field, so
+     * they must not be able to disagree — and the read paths get it off
+     * `resolveCycleRange()` precisely so the row is read once per request. A
+     * second read is not just a wasted query: a `PUT /settings` landing between
+     * them would produce one response whose cycle and whose write window came
+     * from different settings.
+     */
+    it('agrees with the writableFrom that resolveCycleRange returns', async () => {
+      const { service } = serviceWith(row(25, 24));
+
+      const standalone = await service.resolveWritableCycleStart();
+      const { writableFrom } = await service.resolveCycleRange('2026-07');
+
+      expect(writableFrom).toEqual(standalone);
+    });
+
+    /**
+     * `hasStarted` is answered here rather than by the caller, because working
+     * it out means comparing a cycle boundary against the clock — and every
+     * consumer of this service is forbidden to do that for itself. These are
+     * the tests of the actual arithmetic; `time-entries.service.spec.ts` only
+     * pins that the flag is honoured.
+     */
+    it('reports hasStarted true for the running cycle and for a past one', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        // 3 August with a 25th boundary: 2026-07 opened on 25 July.
+        await expect(
+          service.resolveCycleRange('2026-07'),
+        ).resolves.toMatchObject({ hasStarted: true });
+        await expect(
+          service.resolveCycleRange('2026-05'),
+        ).resolves.toMatchObject({ hasStarted: true });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('reports hasStarted false for a cycle whose first instant is still ahead', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        // 2026-08 opens on 25 August — three weeks after "now".
+        await expect(
+          service.resolveCycleRange('2026-08'),
+        ).resolves.toMatchObject({ hasStarted: false });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('treats the opening instant itself as started', async () => {
+      // The boundary is inclusive on this side: at exactly 25 Aug 00:00 the
+      // cycle is open, which is what keeps it consistent with `range.start`
+      // being the first instant *inside* it.
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-25T00:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        await expect(
+          service.resolveCycleRange('2026-08'),
+        ).resolves.toMatchObject({ hasStarted: true });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('resolveCycleRange reads the settings row exactly once', async () => {
+      const { service, findUnique } = serviceWith(row(25, 24));
+
+      await service.resolveCycleRange('2026-07');
+
+      expect(findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a hand-edited out-of-range day here too', async () => {
+      // Same guard as resolveCycleRange: this path computes a boundary, so it
+      // must not run on a day the arithmetic cannot represent honestly.
+      const { service } = serviceWith(row(31, 30));
+      await expect(service.resolveWritableCycleStart()).rejects.toThrow(
         InternalServerErrorException,
       );
     });

@@ -1,4 +1,5 @@
-import { BadRequestException } from '@nestjs/common';
+import { ErrorCode } from '../common/error-codes';
+import { badRequest } from '../common/domain-errors';
 import { CycleRangeDto } from './dto/cycle-range.dto';
 
 /**
@@ -30,7 +31,8 @@ const CYCLE_KEY_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 /** `"2026-07"` → `{ year: 2026, month: 7 }`. `month` is 1-based, not a JS month index. */
 export function parseCycleKey(cycle: string): { year: number; month: number } {
   if (!CYCLE_KEY_PATTERN.test(cycle)) {
-    throw new BadRequestException(
+    throw badRequest(
+      ErrorCode.INVALID_CYCLE,
       `Invalid cycle "${cycle}". Expected format YYYY-MM.`,
     );
   }

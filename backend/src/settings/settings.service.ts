@@ -6,6 +6,7 @@ import { CycleRangeDto } from './dto/cycle-range.dto';
 import {
   computeCycleRange,
   resolveCurrentCycleKey,
+  shiftCycleKey,
   toCycleRangeDto,
   type CycleRange,
 } from './cycle.util';
@@ -17,11 +18,33 @@ const MAX_CYCLE_START_DAY = 25;
 
 /**
  * What every cycle-aware caller needs: `range` to filter and clip with,
- * `cycleDto` to spread into the response.
+ * `cycleDto` to spread into the response, and `writableFrom` for callers that
+ * also have to say whether the caller may still write here.
+ *
+ * `writableFrom` rides along rather than being fetched separately because it is
+ * derived from the **same** `cycleStartDay` as the range: computing it here is
+ * two `Date.UTC` calls on a value already in hand, while asking for it
+ * afterwards means reading the singleton row a second time in one request — and
+ * a second read is not merely wasteful, it can disagree with the first if a
+ * `PUT /settings` lands between them, leaving one response describing a cycle
+ * from one boundary and a write window from another.
  */
 export interface ResolvedCycle {
   range: CycleRange;
   cycleDto: CycleRangeDto;
+  writableFrom: Date;
+  /**
+   * Whether this cycle has opened yet. A fact about the *cycle*, so it is
+   * answered here rather than by whoever asked: the caller would have to read
+   * the clock to work it out, and consulting the clock about a cycle boundary
+   * is the one thing every consumer of this service is forbidden to do.
+   *
+   * It exists because a cycle can be unwritable in **two** directions. Rule 5
+   * closes the past; rule 4 ("no timestamp after now") closes the future — the
+   * ◀▶ navigator can reach a cycle that has not begun, and "Add Shift" has to
+   * be disabled there too.
+   */
+  hasStarted: boolean;
 }
 
 @Injectable()
@@ -60,11 +83,58 @@ export class SettingsService {
     const { cycleStartDay } = await this.getSettingsRow();
     this.assertUsableCycleStartDay(cycleStartDay);
 
-    const resolvedCycle =
-      cycle ?? resolveCurrentCycleKey(new Date(), cycleStartDay);
+    // One reading of the clock for the whole resolution. Three facts below
+    // depend on "now" — which cycle is current, where the write window opens,
+    // and whether the requested cycle has begun — and they are only guaranteed
+    // to agree with each other if they are answered from the same instant.
+    const now = new Date();
+
+    const resolvedCycle = cycle ?? resolveCurrentCycleKey(now, cycleStartDay);
     const range = computeCycleRange(resolvedCycle, cycleStartDay);
 
-    return { range, cycleDto: toCycleRangeDto(resolvedCycle, range) };
+    return {
+      range,
+      cycleDto: toCycleRangeDto(resolvedCycle, range),
+      writableFrom: this.computeWritableFrom(cycleStartDay, now),
+      hasStarted: range.start.getTime() <= now.getTime(),
+    };
+  }
+
+  /**
+   * The earliest instant an EMPLOYEE may still write to — the start of the
+   * *previous* cycle (spec §7a rule 5). Anything before it belongs to a cycle
+   * that has been paid, and its record should stop moving.
+   *
+   * Only a lower bound is returned, and that is not an omission: rule 4 already
+   * refuses any timestamp after `now`, so the upper end of the window needs no
+   * second guard here.
+   *
+   * It lives in this service for the same reason `resolveCycleRange()` does —
+   * the boundary is derived from `AppSettings`, and `TimeEntriesService` is not
+   * allowed to do cycle arithmetic of its own. An ADMIN never reaches this: they
+   * have no cycle limit, being the only actor who can repair a genuine
+   * historical error.
+   *
+   * Kept as its own entry point for the **write** paths, which have no cycle to
+   * resolve and so never call `resolveCycleRange()`. The read paths take
+   * `writableFrom` off that call instead — same arithmetic, one row read.
+   */
+  async resolveWritableCycleStart(): Promise<Date> {
+    const { cycleStartDay } = await this.getSettingsRow();
+    this.assertUsableCycleStartDay(cycleStartDay);
+
+    return this.computeWritableFrom(cycleStartDay, new Date());
+  }
+
+  /**
+   * The shared arithmetic, so the two entry points cannot drift apart. `now` is
+   * passed in rather than read here, so a single resolution never consults the
+   * clock twice.
+   */
+  private computeWritableFrom(cycleStartDay: number, now: Date): Date {
+    const currentCycle = resolveCurrentCycleKey(now, cycleStartDay);
+    const previousCycle = shiftCycleKey(currentCycle, -1);
+    return computeCycleRange(previousCycle, cycleStartDay).start;
   }
 
   /**

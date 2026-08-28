@@ -28,6 +28,7 @@ export interface UserBody {
   isActive: boolean;
   hasActivated: boolean;
   setupCode: string | null;
+  setupCodeExpiresAt: string | null;
 }
 
 export interface TimeEntryBody {
@@ -44,7 +45,9 @@ export interface CycleEntriesBody {
   nextCycle: string;
   cycleStart: string;
   cycleEnd: string;
-  entries: Array<TimeEntryBody & { isSplit: boolean }>;
+  /** Sibling of `entries`, never part of the cycle block — it varies by caller. */
+  canWrite: boolean;
+  entries: Array<TimeEntryBody & { isSplit: boolean; canEdit: boolean }>;
 }
 
 export interface OpenShiftBody {
@@ -105,5 +108,12 @@ export interface SettingsBody {
 export interface ErrorBody {
   statusCode: number;
   message: string | string[];
+  /**
+   * The stable identifier the frontend keys its own wording off (step 8c).
+   * Optional because `ValidationPipe`'s 400s are framework-generated and carry
+   * none — the client treats a missing code as an unmapped failure.
+   */
+  code?: string;
+  /** Only on framework-built bodies; domain errors carry `code` instead. */
   error?: string;
 }

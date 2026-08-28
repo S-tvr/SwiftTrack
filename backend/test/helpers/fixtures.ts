@@ -97,6 +97,28 @@ export async function createActivatedEmployee(
   };
 }
 
+/**
+ * Seeds a shift **as the admin**, for tests that need historical rows as data
+ * rather than as an assertion about who may write them.
+ *
+ * Why it exists: spec §7a rule 5 confines an EMPLOYEE to the current or
+ * previous cycle, so a fixture written by an employee at a fixed calendar date
+ * stops being writable once that date falls out of the window — the suite would
+ * pass today and fail on a day nobody changed anything. The admin has no cycle
+ * limit by design, which makes an admin-written fixture immune to the calendar.
+ *
+ * Use `addShift` with an employee token where the *employee write path itself*
+ * is what the test is about; use this everywhere the shift is merely data.
+ */
+export async function seedShift(
+  server: App,
+  adminToken: string,
+  userId: number,
+  body: { startTime: string; endTime: string; notes?: string },
+): Promise<TimeEntryBody> {
+  return addShift(server, adminToken, { ...body, userId });
+}
+
 /** Manually adds a closed shift (`POST /time-entries`). */
 export async function addShift(
   server: App,

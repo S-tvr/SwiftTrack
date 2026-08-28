@@ -32,7 +32,8 @@ export class AuthController {
   })
   @ApiResponse({
     status: 401,
-    description: 'Invalid credentials, not activated, or deactivated.',
+    description:
+      'Codes: `INVALID_CREDENTIALS` (an unknown email and a wrong password answer with the same one, deliberately — separate codes would let a caller enumerate accounts), `ACCOUNT_NOT_ACTIVATED`, `ACCOUNT_DEACTIVATED`. The three are distinguishable because each needs a different action from the user.',
   })
   @ApiResponse({
     status: 429,
@@ -61,10 +62,17 @@ export class AuthController {
   @ApiResponse({
     status: 401,
     description:
-      'Invalid setupCode, expired setupCode, or a deactivated account. A rejected attempt never consumes the code.',
+      'Codes: `INVALID_SETUP_CODE`, `SETUP_CODE_EXPIRED` (kept apart: one means retype it, the other means ask the admin for a new one via POST /users/:id/reset-setup-code), `ACCOUNT_DEACTIVATED`. A rejected attempt never consumes the code.',
   })
-  @ApiResponse({ status: 404, description: 'User not found.' })
-  @ApiResponse({ status: 409, description: 'Account already activated.' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'Code: `USER_NOT_FOUND` — no account with this email. Deliberately distinguishable from a wrong code: in an internal tool where the admin creates every account, "you typed the wrong email" is the more useful answer, and enumeration protection guards a secret that has no value here. ⚠️ Revisit if this ever becomes multi-tenant.',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Code: `ACCOUNT_ALREADY_ACTIVATED`.',
+  })
   @ApiResponse({
     status: 429,
     description: 'Rate limited — more than 5 attempts from one IP in 60s.',

@@ -1,8 +1,6 @@
-import {
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { ErrorCode } from '../common/error-codes';
+import { notFound } from '../common/domain-errors';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UsersService } from '../users/users.service';
@@ -60,7 +58,10 @@ export class PayrollService {
   ): Promise<PayrollResponseDto> {
     const employee = await this.usersService.findEmployeeRate(userId);
     if (!employee) {
-      throw new NotFoundException(`Employee with id ${userId} not found.`);
+      throw notFound(
+        ErrorCode.EMPLOYEE_NOT_FOUND,
+        `Employee with id ${userId} not found.`,
+      );
     }
     const hourlyRate = this.requireHourlyRate(employee);
 

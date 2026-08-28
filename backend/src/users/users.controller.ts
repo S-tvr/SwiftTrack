@@ -3,8 +3,10 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Put,
   UseGuards,
@@ -91,7 +93,8 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   @ApiResponse({
     status: 409,
-    description: 'A user with this email already exists.',
+    description:
+      'Code: `EMAIL_ALREADY_EXISTS`. Both layers of the uniqueness rule — the explicit check and the unique index behind it — answer with this one.',
   })
   createEmployee(@Body() dto: CreateUserDto): Promise<UserResponseDto> {
     return this.usersService.createEmployee(dto);
@@ -117,7 +120,8 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   @ApiResponse({
     status: 404,
-    description: 'No EMPLOYEE with this id — an admin id included.',
+    description:
+      'Code: `EMPLOYEE_NOT_FOUND`. No EMPLOYEE with this id — an admin id included.',
   })
   updateEmployee(
     @Param('id', ParseIntPipe) id: number,
@@ -143,9 +147,66 @@ export class UsersController {
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   @ApiResponse({
     status: 404,
-    description: 'No EMPLOYEE with this id — an admin id included.',
+    description:
+      'Code: `EMPLOYEE_NOT_FOUND`. No EMPLOYEE with this id — an admin id included.',
   })
   deactivate(@Param('id', ParseIntPipe) id: number): Promise<UserResponseDto> {
     return this.usersService.deactivate(id);
+  }
+
+  @Patch(':id/reactivate')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Reactivate a deactivated employee (ADMIN)',
+    description:
+      'Sets `isActive = true`, restoring the ability to log in. Without this, DELETE is irreversible through the API: PUT accepts only name/hourlyRate and a fresh POST collides with the unique email, so a returning seasonal employee could only be restored by editing the database. Calling it on an already-active employee is a no-op that returns 200 — the only way to get there is a double submit, and "they are active" is the requested outcome. EMPLOYEE rows only, exactly as PUT and DELETE.',
+  })
+  @ApiResponse({
+    status: 200,
+    type: UserResponseDto,
+    description: 'The updated employee, with `isActive: true`.',
+  })
+  @ApiResponse({ status: 400, description: 'Non-integer id.' })
+  @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'No EMPLOYEE with this id — an admin id included. Code: `EMPLOYEE_NOT_FOUND`.',
+  })
+  reactivate(@Param('id', ParseIntPipe) id: number): Promise<UserResponseDto> {
+    return this.usersService.reactivate(id);
+  }
+
+  @Post(':id/reset-setup-code')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Issue a fresh activation code for a pending employee (ADMIN)',
+    description:
+      'Generates a new 4-digit `setupCode` and a new 3-day expiry, replacing whatever was there. Closes a guaranteed dead end: the original code is issued once in POST /users and lapses after 3 days, so anyone who did not activate in time was locked out permanently — and the expiry message points them at an admin who, until now, had no tool. Refuses on an already-activated account: a code is never re-issued for one that no longer needs it.',
+  })
+  @ApiResponse({
+    status: 200,
+    type: UserResponseDto,
+    description: 'The employee, carrying the new code and its new expiry.',
+  })
+  @ApiResponse({ status: 400, description: 'Non-integer id.' })
+  @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'No EMPLOYEE with this id — an admin id included. Code: `EMPLOYEE_NOT_FOUND`.',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'This employee has already activated their account. Code: `ACCOUNT_ALREADY_ACTIVATED`.',
+  })
+  resetSetupCode(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<UserResponseDto> {
+    return this.usersService.resetSetupCode(id);
   }
 }

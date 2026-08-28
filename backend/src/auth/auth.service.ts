@@ -1,11 +1,8 @@
-import {
-  ConflictException,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { ErrorCode } from '../common/error-codes';
+import { conflict, notFound, unauthorized } from '../common/domain-errors';
 import { UsersService } from '../users/users.service';
 import { JwtPayload } from './jwt-payload.interface';
 import { LoginResponseDto } from './dto/login-response.dto';
@@ -22,22 +19,34 @@ export class AuthService {
   async login(email: string, password: string): Promise<LoginResponseDto> {
     const user = await this.usersService.findByEmail(email);
     if (!user) {
-      throw new UnauthorizedException('Invalid email or password.');
+      // Same code and same message as a wrong password below: separating them
+      // would let a caller enumerate which emails have accounts.
+      throw unauthorized(
+        ErrorCode.INVALID_CREDENTIALS,
+        'Invalid email or password.',
+      );
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException('This account is no longer active.');
+      throw unauthorized(
+        ErrorCode.ACCOUNT_DEACTIVATED,
+        'This account is no longer active.',
+      );
     }
 
     if (user.password === null) {
-      throw new UnauthorizedException(
+      throw unauthorized(
+        ErrorCode.ACCOUNT_NOT_ACTIVATED,
         "This account hasn't been activated yet. Please activate it first.",
       );
     }
 
     const passwordMatches = await bcrypt.compare(password, user.password);
     if (!passwordMatches) {
-      throw new UnauthorizedException('Invalid email or password.');
+      throw unauthorized(
+        ErrorCode.INVALID_CREDENTIALS,
+        'Invalid email or password.',
+      );
     }
 
     const payload: JwtPayload = { userId: user.id, role: user.role };
@@ -54,7 +63,7 @@ export class AuthService {
   ): Promise<void> {
     const user = await this.usersService.findByEmail(email);
     if (!user) {
-      throw new NotFoundException('User not found.');
+      throw notFound(ErrorCode.USER_NOT_FOUND, 'User not found.');
     }
 
     // Checked before the activation state, mirroring login's ordering: an
@@ -62,19 +71,29 @@ export class AuthService {
     // deactivated — telling it to activate would send the employee down a
     // path that can never succeed, since login re-checks isActive anyway.
     if (!user.isActive) {
-      throw new UnauthorizedException('This account is no longer active.');
+      throw unauthorized(
+        ErrorCode.ACCOUNT_DEACTIVATED,
+        'This account is no longer active.',
+      );
     }
 
     if (user.password !== null) {
-      throw new ConflictException('This account has already been activated.');
+      throw conflict(
+        ErrorCode.ACCOUNT_ALREADY_ACTIVATED,
+        'This account has already been activated.',
+      );
     }
 
     if (user.setupCode !== setupCode) {
-      throw new UnauthorizedException('Invalid activation code.');
+      throw unauthorized(
+        ErrorCode.INVALID_SETUP_CODE,
+        'Invalid activation code.',
+      );
     }
 
     if (!user.setupCodeExpiresAt || new Date() > user.setupCodeExpiresAt) {
-      throw new UnauthorizedException(
+      throw unauthorized(
+        ErrorCode.SETUP_CODE_EXPIRED,
         'This activation code has expired. Please contact your admin.',
       );
     }

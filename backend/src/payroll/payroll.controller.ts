@@ -58,7 +58,10 @@ export class PayrollController {
     description:
       "The caller's breakdown for the resolved cycle: the four zones with hours/rate/pay, and a row per date with hours only. Render `zones[]` as a list, never as hardcoded columns.",
   })
-  @ApiResponse({ status: 400, description: 'Malformed cycle key.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Code: `INVALID_CYCLE` — a ?cycle= value that is not YYYY-MM.',
+  })
   @ApiResponse({ status: 403, description: 'Not an EMPLOYEE.' })
   getMyPayroll(
     @CurrentUser() user: JwtPayload,
@@ -82,7 +85,10 @@ export class PayrollController {
     description:
       "One row per employee plus the team's `totalCost`. Each row equals that employee's own page exactly — both come from the same calculation.",
   })
-  @ApiResponse({ status: 400, description: 'Malformed cycle key.' })
+  @ApiResponse({
+    status: 400,
+    description: 'Code: `INVALID_CYCLE` — a ?cycle= value that is not YYYY-MM.',
+  })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   getOverview(
     @Query('cycle') cycle?: string,
@@ -107,12 +113,14 @@ export class PayrollController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Malformed cycle key, or a userId that is not an integer.',
+    description:
+      'Code: `INVALID_CYCLE` for a ?cycle= value that is not YYYY-MM. A non-integer userId is a ParseIntPipe failure and carries no code.',
   })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
   @ApiResponse({
     status: 404,
-    description: 'No EMPLOYEE with this id — an admin id included.',
+    description:
+      'Code: `EMPLOYEE_NOT_FOUND`. An admin id lands here too — an admin has no payroll of their own.',
   })
   getPayrollForEmployee(
     @Param('userId', ParseIntPipe) userId: number,

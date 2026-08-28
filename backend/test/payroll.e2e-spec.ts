@@ -6,10 +6,10 @@ import type { PrismaService } from '../src/prisma/prisma.service';
 import { createTestApp } from './helpers/app';
 import { resetDatabase } from './helpers/db';
 import {
-  addShift,
   createActivatedEmployee,
   loginAsAdmin,
   type ActivatedEmployee,
+  seedShift,
 } from './helpers/fixtures';
 import type { PayrollBody, PayrollOverviewBody } from './helpers/types';
 
@@ -55,6 +55,20 @@ describe('/payroll', () => {
     return response.body as PayrollBody;
   };
 
+  /**
+   * `?cycle=` omitted, so the backend resolves the cycle containing `now` and
+   * echoes the key it chose. Any test about "the current cycle" asks for it
+   * this way rather than naming one: a literal key is only true until the next
+   * boundary, and then fails on a day nobody changed anything.
+   */
+  const payrollForCurrentCycle = async (): Promise<PayrollBody> => {
+    const response = await request(server)
+      .get('/payroll/me')
+      .set('Authorization', `Bearer ${employee.token}`)
+      .expect(200);
+    return response.body as PayrollBody;
+  };
+
   const zone = (body: PayrollBody, key: string) => {
     const found = body.zones.find((z) => z.zone === key);
     if (!found) {
@@ -74,7 +88,7 @@ describe('/payroll', () => {
    */
   it('splits a boundary-crossing shift across two cycles, summing to the whole', async () => {
     // Fri 24 Jul 20:00 → Sat 25 Jul 03:00. Boundary at the 25th.
-    await addShift(server, employee.token, {
+    await seedShift(server, adminToken, employee.id, {
       startTime: '2026-07-24T20:00:00.000Z',
       endTime: '2026-07-25T03:00:00.000Z',
     });
@@ -102,7 +116,7 @@ describe('/payroll', () => {
    */
   it('splits a shift across a zone boundary at midnight', async () => {
     // Tue 4 Aug 22:00 → Wed 5 Aug 06:00.
-    await addShift(server, employee.token, {
+    await seedShift(server, adminToken, employee.id, {
       startTime: '2026-08-04T22:00:00.000Z',
       endTime: '2026-08-05T06:00:00.000Z',
     });
@@ -129,15 +143,15 @@ describe('/payroll', () => {
   });
 
   it('every column adds up to the figure beneath it', async () => {
-    await addShift(server, employee.token, {
+    await seedShift(server, adminToken, employee.id, {
       startTime: '2026-08-03T08:00:00.000Z',
       endTime: '2026-08-03T20:15:00.000Z',
     });
-    await addShift(server, employee.token, {
+    await seedShift(server, adminToken, employee.id, {
       startTime: '2026-08-04T22:00:00.000Z',
       endTime: '2026-08-05T06:00:00.000Z',
     });
-    await addShift(server, employee.token, {
+    await seedShift(server, adminToken, employee.id, {
       startTime: '2026-08-01T10:00:00.000Z',
       endTime: '2026-08-01T18:30:00.000Z',
     });
@@ -178,7 +192,7 @@ describe('/payroll', () => {
   });
 
   it('returns the identical shape to the admin and the employee', async () => {
-    await addShift(server, employee.token, {
+    await seedShift(server, adminToken, employee.id, {
       startTime: '2026-08-03T08:00:00.000Z',
       endTime: '2026-08-03T16:00:00.000Z',
     });
@@ -198,11 +212,14 @@ describe('/payroll', () => {
       .set('Authorization', `Bearer ${employee.token}`)
       .expect(201);
 
-    // "now" is inside the 2026-07 cycle.
-    expect((await payrollFor('2026-07')).hasOpenShift).toBe(true);
-    expect((await payrollFor('2026-06')).hasOpenShift).toBe(false);
+    // Clock-in writes `startTime = now`, so the flag belongs to whichever cycle
+    // contains now — read from the response rather than named here.
+    const current = await payrollForCurrentCycle();
+
+    expect(current.hasOpenShift).toBe(true);
+    expect((await payrollFor(current.prevCycle)).hasOpenShift).toBe(false);
     // An open shift is unpayable, so it adds nothing.
-    expect((await payrollFor('2026-07')).totalPay).toBe(0);
+    expect(current.totalPay).toBe(0);
   });
 
   it('404s on any id that is not an EMPLOYEE, the admin’s own included', async () => {
@@ -252,7 +269,7 @@ describe('/payroll', () => {
       const leaver = await createActivatedEmployee(server, adminToken, {
         hourlyRate: RATE,
       });
-      await addShift(server, leaver.token, {
+      await seedShift(server, adminToken, leaver.id, {
         startTime: '2026-08-03T08:00:00.000Z',
         endTime: '2026-08-03T16:00:00.000Z',
       });
@@ -268,7 +285,7 @@ describe('/payroll', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(200);
 
-      await addShift(server, employee.token, {
+      await seedShift(server, adminToken, employee.id, {
         startTime: '2026-08-04T09:00:00.000Z',
         endTime: '2026-08-04T17:00:00.000Z',
       });
@@ -295,7 +312,7 @@ describe('/payroll', () => {
     });
 
     it('agrees exactly with that employee’s own page', async () => {
-      await addShift(server, employee.token, {
+      await seedShift(server, adminToken, employee.id, {
         startTime: '2026-08-04T22:00:00.000Z',
         endTime: '2026-08-05T06:00:00.000Z',
       });

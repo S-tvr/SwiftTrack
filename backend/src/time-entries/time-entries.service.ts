@@ -1,8 +1,6 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { ErrorCode } from '../common/error-codes';
+import { badRequest, notFound } from '../common/domain-errors';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UsersService } from '../users/users.service';
@@ -17,9 +15,17 @@ import {
 } from './dto/time-entry-response.dto';
 import { Prisma, Role, type TimeEntry } from '../generated/prisma/client';
 
-/** Reused verbatim from spec §8a — same situation, same required action. */
-const OPEN_SHIFT_EXISTS =
+/**
+ * Reused verbatim from spec §8a — same situation, same required action.
+ * Suffixed to keep it distinct from `ErrorCode.OPEN_SHIFT_EXISTS`, which is the
+ * identifier for the same case rather than its wording.
+ */
+const OPEN_SHIFT_EXISTS_MESSAGE =
   'You already have an open shift. Please clock out first.';
+
+/** Spec §7a rule 5. Names the window, since the fix is to pick another shift. */
+const CYCLE_LOCKED_MESSAGE =
+  'That pay cycle is closed. You can only change shifts in your current or previous cycle.';
 
 @Injectable()
 export class TimeEntriesService {
@@ -40,7 +46,7 @@ export class TimeEntriesService {
    */
   async clockIn(userId: number): Promise<TimeEntryResponseDto> {
     if (await this.findOpenShiftRow(userId)) {
-      throw new BadRequestException(OPEN_SHIFT_EXISTS);
+      throw badRequest(ErrorCode.OPEN_SHIFT_EXISTS, OPEN_SHIFT_EXISTS_MESSAGE);
     }
 
     try {
@@ -56,9 +62,12 @@ export class TimeEntriesService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        // Deliberately the same message the check gives: which layer stopped
-        // the request is our business, not the caller's.
-        throw new BadRequestException(OPEN_SHIFT_EXISTS);
+        // Deliberately the same code and message the check gives: which layer
+        // stopped the request is our business, not the caller's.
+        throw badRequest(
+          ErrorCode.OPEN_SHIFT_EXISTS,
+          OPEN_SHIFT_EXISTS_MESSAGE,
+        );
       }
       throw error;
     }
@@ -67,7 +76,10 @@ export class TimeEntriesService {
   async clockOut(userId: number): Promise<TimeEntryResponseDto> {
     const open = await this.findOpenShiftRow(userId);
     if (!open) {
-      throw new BadRequestException('No open shift to clock out of.');
+      throw badRequest(
+        ErrorCode.NO_OPEN_SHIFT,
+        'No open shift to clock out of.',
+      );
     }
 
     // Nothing to check against either: while this shift was open the employee
@@ -92,6 +104,10 @@ export class TimeEntriesService {
     const startTime = new Date(dto.startTime);
     const endTime = new Date(dto.endTime);
 
+    // Before the open-shift block on purpose: "you may not write here at all"
+    // is a more fundamental refusal than "you may not write right now", and it
+    // is the one the employee can act on by picking a different date.
+    await this.assertWritableCycle(caller.role, startTime);
     await this.assertOwnerHasNoOpenShift(userId, caller.role);
     await this.assertNoOverlap(userId, startTime, endTime);
 
@@ -110,6 +126,12 @@ export class TimeEntriesService {
     const startTime = new Date(dto.startTime);
     const endTime = new Date(dto.endTime);
 
+    // BOTH the row as it stands and the row as it would become. Each catches a
+    // different escape: checking only the new value lets an employee drag a
+    // paid June shift forward into August, and checking only the existing one
+    // lets them push a current shift back into June. One check closes one door.
+    await this.assertWritableCycle(caller.role, existing.startTime, startTime);
+
     // Always the row's owner, never the caller: an admin's own state is empty
     // and would let every check pass for the wrong reason.
     await this.assertOwnerHasNoOpenShift(existing.userId, caller.role);
@@ -126,7 +148,13 @@ export class TimeEntriesService {
     caller: { userId: number; role: Role },
     id: number,
   ): Promise<void> {
-    await this.findOwnedOrThrow(caller, id);
+    const existing = await this.findOwnedOrThrow(caller, id);
+
+    // Rule 5 covers DELETE too, unlike rules 1-4. Deleting a July shift
+    // corrupts a paid cycle exactly as editing its hours down to two would;
+    // locking one door and leaving the other open reads as protection.
+    await this.assertWritableCycle(caller.role, existing.startTime);
+
     // No open-shift block and no overlap check: removing a row can create
     // neither a second open shift nor a collision.
     await this.prisma.timeEntry.delete({ where: { id } });
@@ -139,10 +167,18 @@ export class TimeEntriesService {
    */
   async findCycleEntries(
     userId: number,
+    callerRole: Role,
     cycle?: string,
   ): Promise<CycleEntriesResponseDto> {
-    const { range, cycleDto } =
+    // One settings read for both the cycle and the write window — they derive
+    // from the same `cycleStartDay`, so asking twice would risk them being
+    // computed from two different ones.
+    const { range, cycleDto, writableFrom, hasStarted } =
       await this.settingsService.resolveCycleRange(cycle);
+
+    // Applied once for the whole response rather than per row. `null` means
+    // "no limit applies to this caller", which is how ADMIN reads.
+    const employeeWriteFloor = callerRole === Role.ADMIN ? null : writableFrom;
 
     // NOT the payroll query. Payroll takes closed shifts overlapping the cycle;
     // this must additionally show OPEN ones, which `endTime: { not: null }`
@@ -168,7 +204,10 @@ export class TimeEntriesService {
 
     return {
       ...cycleDto,
-      entries: entries.map((entry) => this.toCycleEntryDto(entry, range)),
+      canWrite: this.canWriteInCycle(range, employeeWriteFloor, hasStarted),
+      entries: entries.map((entry) =>
+        this.toCycleEntryDto(entry, range, employeeWriteFloor),
+      ),
     };
   }
 
@@ -178,7 +217,41 @@ export class TimeEntriesService {
     cycle?: string,
   ): Promise<CycleEntriesResponseDto> {
     await this.usersService.assertEmployeeExists(employeeId);
-    return this.findCycleEntries(employeeId, cycle);
+    // Role passed explicitly rather than inferred: this route is ADMIN-only by
+    // its guard, and saying so here keeps the flags honest if that ever moves.
+    return this.findCycleEntries(employeeId, Role.ADMIN, cycle);
+  }
+
+  /**
+   * Whether the caller may create a shift in this cycle at all — the flag a
+   * `POST` needs and that no per-entry field can carry, because a creation has
+   * no row to hang one on. Without it an employee navigating ◀ to a closed
+   * cycle fills in the form and meets a 400 they had no way to anticipate, and
+   * the client cannot work it out alone: deciding whether a cycle is writable
+   * means resolving cycle boundaries, which the frontend is forbidden to do.
+   *
+   * Two bounds, because the cycle can be wrong in either direction: it may be
+   * closed (before the window), or it may not have started yet — rule 4 refuses
+   * future timestamps, so an employee cannot write into a cycle whose first
+   * instant is still ahead of us either.
+   *
+   * Both bounds are decided from values `SettingsService` handed over, and this
+   * service reads no clock of its own: "has the cycle opened?" is a fact about
+   * a cycle boundary, and every consumer of cycles is forbidden to answer those
+   * for itself (see architecture.md § Invariants).
+   *
+   * ⚠️ Cycle-scoped only. It does not fold in the transient open-shift block:
+   * that one clears the moment the employee clocks out, applies to `PUT` but
+   * not `DELETE`, and already answers with its own actionable code. One boolean
+   * carrying two reasons would leave the UI unable to say which is in force.
+   */
+  private canWriteInCycle(
+    range: CycleRange,
+    writableFrom: Date | null,
+    hasStarted: boolean,
+  ) {
+    if (writableFrom === null) return true;
+    return range.start.getTime() >= writableFrom.getTime() && hasStarted;
   }
 
   /**
@@ -195,13 +268,17 @@ export class TimeEntriesService {
       // send" is one rule, while "…unless it happens to equal your own" is a
       // second one that has to be re-derived every time someone reads this.
       if (requestedUserId !== undefined) {
-        throw new BadRequestException('userId can only be set by an admin.');
+        throw badRequest(
+          ErrorCode.USER_ID_NOT_ALLOWED,
+          'userId can only be set by an admin.',
+        );
       }
       return caller.userId;
     }
 
     if (requestedUserId === undefined) {
-      throw new BadRequestException(
+      throw badRequest(
+        ErrorCode.USER_ID_REQUIRED,
         'userId is required when an admin creates a shift.',
       );
     }
@@ -226,7 +303,10 @@ export class TimeEntriesService {
       },
     });
     if (!entry) {
-      throw new NotFoundException(`Time entry with id ${id} not found.`);
+      throw notFound(
+        ErrorCode.TIME_ENTRY_NOT_FOUND,
+        `Time entry with id ${id} not found.`,
+      );
     }
     return entry;
   }
@@ -249,7 +329,37 @@ export class TimeEntriesService {
   ): Promise<void> {
     if (callerRole === Role.ADMIN) return;
     if (await this.findOpenShiftRow(userId)) {
-      throw new BadRequestException(OPEN_SHIFT_EXISTS);
+      throw badRequest(ErrorCode.OPEN_SHIFT_EXISTS, OPEN_SHIFT_EXISTS_MESSAGE);
+    }
+  }
+
+  /**
+   * Spec §7a rule 5: an EMPLOYEE writes only inside the current or previous
+   * cycle. Once a cycle is paid its record stops moving.
+   *
+   * Takes however many instants the verb has to weigh — one for POST and
+   * DELETE, two for PUT — so the "which instants?" question is answered at each
+   * call site, where the answer is visible, rather than inside here.
+   *
+   * ADMIN is exempt, mirroring the open-shift asymmetry above and for the same
+   * reason: they are the only actor who can repair a genuine historical error,
+   * and locking them out would strand, among other things, the forgotten open
+   * shift of a deactivated employee who can no longer log in to close it.
+   *
+   * ⚠️ Accepted consequence, recorded rather than discovered later: an error an
+   * employee finds after the window has passed is permanent for them. There is
+   * no correcting-entry mechanism, so only an admin can fix it. The window runs
+   * one to two months, which covers when people actually notice — payday.
+   */
+  private async assertWritableCycle(
+    callerRole: Role,
+    ...instants: Date[]
+  ): Promise<void> {
+    if (callerRole === Role.ADMIN) return;
+
+    const writableFrom = await this.settingsService.resolveWritableCycleStart();
+    if (instants.some((at) => at.getTime() < writableFrom.getTime())) {
+      throw badRequest(ErrorCode.CYCLE_LOCKED, CYCLE_LOCKED_MESSAGE);
     }
   }
 
@@ -285,7 +395,10 @@ export class TimeEntriesService {
       },
     });
     if (conflict) {
-      throw new BadRequestException('This shift overlaps an existing shift.');
+      throw badRequest(
+        ErrorCode.SHIFT_OVERLAP,
+        'This shift overlaps an existing shift.',
+      );
     }
   }
 
@@ -308,10 +421,17 @@ export class TimeEntriesService {
   private toCycleEntryDto(
     entry: TimeEntry,
     range: CycleRange,
+    writableFrom: Date | null,
   ): CycleTimeEntryDto {
     return {
       ...this.toResponseDto(entry),
       isSplit: isSplitAcrossCycle(entry.startTime, entry.endTime, range),
+      // Anchored on startTime, the same instant the write rule tests. A split
+      // shift that began before the window is therefore locked even though it
+      // runs into it — correct, since part of it was paid in a closed cycle.
+      canEdit:
+        writableFrom === null ||
+        entry.startTime.getTime() >= writableFrom.getTime(),
     };
   }
 }
