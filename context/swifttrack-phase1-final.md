@@ -312,13 +312,30 @@ The sentence is a template, not a constant — the same device shows *"3 hours a
 
 > Enter times in Iceland time (UTC), not your local time.
 
-**Error text keyed by the exception's `code`** (see build-plan §8c). These three have no backend equivalent at all:
+**Error text keyed by the exception's `code`** (see build-plan §8c). These four have no backend equivalent at all — they are codes the **client synthesises** in `api/client.ts`, so that every caller has exactly one thing to look at:
 
-| Case | English message |
-|---|---|
-| Rate limited (429) — the framework's `"ThrottlerException: Too many requests"` is never shown | "Too many attempts. Please wait a minute and try again." |
-| No response from the server (network failure — **not** a 401, and never a logout) | "Could not reach the server. Check your connection and try again." |
-| Shown on `/login` after an auto-logout, so being thrown out reads as an explanation rather than a glitch | "Your session has expired. Please sign in again." |
+| Case | Client code | English message |
+|---|---|---|
+| Rate limited (429) — the framework's `"ThrottlerException: Too many requests"` is never shown | `RATE_LIMITED` | "Too many attempts. Please wait a minute and try again." |
+| No response from the server (network failure — **not** a 401, and never a logout) | `NETWORK_ERROR` | "Could not reach the server. Check your connection and try again." |
+| An unmapped failure: a `ValidationPipe` 400 (framework-generated, codeless by design), a guard's 401/403 (which carry no code either), or a code this client does not know | `UNKNOWN_ERROR` | "Something went wrong. Please try again." |
+| Shown on `/login` after an auto-logout, so being thrown out reads as an explanation rather than a glitch. Not an error code — no request produced it | — | "Your session has expired. Please sign in again." |
+
+**Shown in place of the activation form on success** (step 9). Without it the form simply empties, and an employee who has just created their password cannot tell whether it worked:
+
+> Your account is ready. You can now sign in.
+
+**Field validation, shown by zod before any request is sent** (step 9). Distinct from the table above, which answers a request that already failed. Each mirrors a rule the backend also enforces, so the two layers agree rather than duplicate:
+
+| Field rule | Backend counterpart | English message |
+|---|---|---|
+| Email format | `@IsEmail()` | "Enter a valid email address." |
+| Password present | `@MinLength(1)` | "Enter your password." |
+| New password length | `@MinLength(8)` | "Use at least 8 characters." |
+| Activation code shape | `@Matches(/^\d{4}$/)` | "The activation code is 4 digits." |
+| Password confirmation matches | **none** — the API takes no confirmation field | "Passwords do not match." |
+
+**Form and control labels written by the client** (step 9). Recorded here because the binding table above covers only what was agreed up front, and these were not: Log out · Retry · Sign in · Email · Password · New password · Confirm password · Activation code · Activate account · Account Activation · Back to sign in. They live in `LABELS` and may be improved without a spec change, like everything else in this half of §8a.
 
 **Open, to be written with the page in front of you** (recorded here so nobody treats them as oversights): the wording and styling of the two confirmation dialogs (deleting a shift, deactivating an employee — both must state that the action cannot be undone, and the deactivation one must say that shifts and payroll history are kept), the setup-code dialog shown after creating an employee (must show the code **and its expiry date** — a date is actionable, "3 days" is arithmetic), and the colour/icon/exact placement of error messages.
 

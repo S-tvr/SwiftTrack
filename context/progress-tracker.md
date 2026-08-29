@@ -1101,6 +1101,96 @@ Status: ✅ Done · **δεν είναι βήμα του build-plan** — προ�
 
 `npx tsc -b` exit 0, `npm run lint` exit 0, `npx vitest --version` → `4.1.11 win32-x64 node-v22.14.0`. **Καμία γραμμή κώδικα εφαρμογής** — το Step 9 ξεκινά από καθαρό σημείο.
 
+## Step 9 — Auth & Layout (frontend)
+Status: ✅ Done
+Ημερομηνία: 2026-08-29
+Αρχεία που προστέθηκαν/άλλαξαν:
+- `frontend/.env.example` + `frontend/.env` — **νέα**· `VITE_API_URL`. Το root `.gitignore:5` (`.env`, χωρίς slash → κάθε βάθος) το καλύπτει· επαληθεύτηκε με `git check-ignore -v`
+- `frontend/src/vite-env.d.ts` — **νέο**· δηλώνει `VITE_API_URL: string | undefined` (χωρίς αυτό ήταν `any` μέσω του index signature του `vite/client`)
+- `frontend/src/api/client.ts`, `api/auth.ts`, `api/users.ts` — **νέα**
+- `frontend/src/context/AuthContext.tsx`, `hooks/useApiQuery.ts` — **νέα**
+- `frontend/src/components/layout/ProtectedRoute.tsx` (+ `HomeRedirect`), `TimezoneNotice.tsx` — **νέα**
+- `frontend/src/lib/datetime.ts` — **νέο**· `frontend/src/lib/messages.ts` — ξαναγράφτηκε
+- `frontend/src/App.tsx`, `components/layout/Header.tsx`, `pages/LoginPage.tsx`, `pages/SetInitialPasswordPage.tsx` — ξαναγράφτηκαν
+- `frontend/src/lib/datetime.spec.ts`, `api/client.spec.ts` — **νέα** (34 tests)
+- `frontend/vite.config.ts` — `defineConfig` από `vitest/config` + `test` block· `frontend/package.json` — `test`/`test:watch` scripts
+- `context/build-plan.md` §14 — σημείωση για το `frontend/.env` σε καθαρό clone
+Endpoints/Components:
+- `api/client.ts` — `request<T>()`, `ApiError{status, code}`, `configureApiClient()`
+- `AuthContext` — `{ user, isBootstrapping, bootstrapError, retryBootstrap, sessionExpired, login, logout }`
+- `useApiQuery(fetcher, deps)` → `{ data, error, isLoading, refetch }` — **χτίστηκε, δεν έχει ακόμα καταναλωτή** (έρχεται στο Step 10)
+- `ProtectedRoute allow="ADMIN"|"EMPLOYEE"` + `HomeRedirect` — ο πίνακας ρόλων του build-plan, ενεργός
+- `lib/datetime.ts` — `toIsoUtc`, `formatDate/Time/DateTime`, `getBrowserTimeZone`, `getUtcOffsetMinutes`, `formatUtcOffsetDifference`
+- `lib/messages.ts` — `PAGE_TITLES`, `LABELS`, `VALIDATION`, `NOTICES`, `ERRORS`, `errorText(code, screen?)`, `toErrorCode()`
+
+### Οι 3 αποφάσεις που πάρθηκαν μέσω `/architect` πριν τον κώδικα
+
+**Α. `ERRORS` = βασικός χάρτης + per-screen override.** `ERRORS` εξαντλητικός πάνω σε `ErrorCode`, και ξεχωριστός `SCREEN_ERRORS` που συμβουλεύεται πρώτος· μία πόρτα `errorText(code, screen?)`. Λύνει αυτό που το build-plan §9 απαιτούσε να **αποφασιστεί εδώ**: το `ACCOUNT_ALREADY_ACTIVATED` λέγεται στον υπάλληλο για τον εαυτό του (`/activate` → «πήγαινε στο login») και στον admin για τρίτον (Team → «η λίστα σου είναι μπαγιάτικη»). Η μία καταχώρηση του `team` υπάρχει ήδη, καταναλώνεται στο Step 13.
+
+**Β. Το auto-logout φεύγει με callback που δηλώνει το `AuthContext`,** όχι με `window.location`. Το `client.ts` δεν αγγίζει `window` ούτε `localStorage`. Το επιχείρημα που έκρινε: το `jsdom` δεν είναι εγκατεστημένο, άρα σε node-env spec ένα `window.location.assign` θα απαιτούσε `vi.stubGlobal` — και τότε το spec δοκιμάζει το σκηνικό όσο και τον κώδικα.
+
+**Γ. `VITE_API_URL` υποχρεωτικό, χωρίς fallback** — σκάει στο load με μήνυμα που λέει τη διόρθωση. Σκεπτικό: το Vite εκθέτει μόνο `VITE_`-prefixed μεταβλητές, οπότε λάθος όνομα δίνει `undefined`, και fallback ίσο με την πραγματική dev τιμή θα το έκρυβε μέχρι το deploy — το μάθημα του Step 1 σε δεύτερο σημείο. Σημείωση για καθαρό clone γράφτηκε στο **build-plan §14**, δίπλα στο αντίστοιχο `prisma generate`.
+
+### Τρεις αποκλίσεις από το πλάνο, όλες με λόγο
+
+1. **Το `useApiQuery` ΠΑΡΑΓΕΙ το `isLoading`, δεν το αποθηκεύει.** Ο κανόνας `react-hooks/set-state-in-effect` (eslint-plugin-react-hooks 7) απέρριψε το `setIsLoading(true)` στο σώμα του effect: cascading render σε κάθε αλλαγή κύκλου. Τώρα κρατιέται ένα `settled = { key, data, error }` και το `isLoading` είναι `settled?.key !== key`, όπου `key = \`${attempt}|${JSON.stringify(deps)}\``. **Πλευρικό όφελος**: το effect εξαρτάται από ένα string αντί για spread array, οπότε έφυγε και το `exhaustive-deps` disable. Το state γράφεται ακριβώς μία φορά ανά request.
+2. **Το `client.ts` διαβάζει το σώμα και μετά αποφασίζει,** αντί να ρωτά `content-length === "0"`. Δύο endpoints επιστρέφουν `Promise<void>` (`set-initial-password`, `DELETE /time-entries/:id`)· αν ο Nest διάλεγε chunked, το `res.json()` θα έσκαγε σε **επιτυχημένη** ενεργοποίηση και ο χρήστης θα έβλεπε «Something went wrong» ενώ ο λογαριασμός του μόλις είχε φτιαχτεί. ⚠️ Το πέρασμα έδειξε ότι ο Nest **όντως** στέλνει `Content-Length: 0` — άρα ο αρχικός έλεγχος θα δούλευε· η αλλαγή στέκει επειδή αφαιρεί την εξάρτηση, όχι επειδή διόρθωσε ζωντανό bug.
+3. **`TZ: 'America/St_Johns'` στο vitest config.** ⚠️ Δεν είναι διακοσμητικό: σε μηχάνημα UTC τα datetime specs περνούν ό,τι κι αν κάνει η υλοποίηση — `new Date(v).toISOString()` και append `"Z"` συμφωνούν εκεί, και formatter χωρίς `timeZone:"UTC"` επίσης. Επιλέχθηκε **αρνητικό** (που κάνει το bare `YYYY-MM-DD` να τυπώνεται προηγούμενη μέρα) **και μη ακέραιο** (−3:30, η περίπτωση που το `offset / 60` χαλάει). Αποδείχθηκε ότι εφαρμόζεται: το spike αφαίρεσε το `timeZone:"UTC"` και το test κοκκίνισε.
+
+### Το πρότυπο φόρμας γράφτηκε στο χέρι — και οι 4 επόμενες το αντιγράφουν
+
+Δεν υπάρχει `<Form>`/`<FormField>` στο `base-nova` (Stack Trap #1). Το `LoginPage` είναι η κανονική αναφορά: `useForm` + `zodResolver` + `Field`/`FieldLabel`/`FieldError`, με `<FieldError errors={[errors.x]} />` που δέχεται απευθείας το σχήμα του rhf. Field-level σφάλματα κάτω από το πεδίο, request-level πάνω από το submit. Καθόλου `z.coerce`. Το `z.email(params?: string | $ZodEmailParams)` επιβεβαιώθηκε **στα types του εγκατεστημένου zod 4.5.1**, όχι από μνήμη — δέχεται σκέτο string ως μήνυμα.
+
+### Το χειροκίνητο πέρασμα — 13 έλεγχοι HTTP σε πραγματικό dev server + dev βάση
+
+Δεν είναι τα vitest: εκείνα έχουν mocked `fetch`. Εδώ μίλησα με `curl` στον ίδιο server που θα χρησιμοποιούσε άνθρωπος.
+
+Επαληθεύτηκαν: **CORS** `Access-Control-Allow-Origin: http://localhost:5173` σε POST **και** σε authenticated GET· το σώμα σφάλματος κουβαλά `code` εκεί ακριβώς που το διαβάζει ο client (`{"statusCode":401,"code":"INVALID_CREDENTIALS",…}`)· `LoginResponse` = `{accessToken, user}` με το `user` **χωρίς** `setupCode`· `UserProfile` = `{id,name,email,role,hourlyRate}` ακριβώς· login ADMIN **και** EMPLOYEE· ενεργοποίηση end-to-end (**HTTP 200, σώμα 0 bytes, `Content-Length: 0` παρόν**)· `ACCOUNT_ALREADY_ACTIVATED` 409 σε επανάληψη.
+
+⚠️ **Δύο ευρήματα για το σχήμα σφαλμάτων που πρέπει να ξέρουν τα επόμενα βήματα:**
+- **Το 401 του guard δεν έχει `code`** (`{"message":"Unauthorized","statusCode":401}`). Δεν πειράζει: το auto-logout κρίνεται από «401 + στάλθηκε header», ποτέ από τον κωδικό — δηλαδή δουλεύει ακριβώς εκεί που κωδικός δεν υπάρχει.
+- **Ούτε το 403 του `RolesGuard` έχει `code`** (`{"message":"Forbidden resource",…}`) → υποβαθμίζεται σε `UNKNOWN_ERROR` («Something went wrong»). **Δεν διορθώθηκε σκόπιμα**: το `ProtectedRoute` μπλοκάρει πριν φύγει τέτοιο request, άρα δεν φτάνει σε χρήστη. Αν κάποτε φτάσει, το μήνυμα θα είναι αόριστο.
+
+**Καθαρισμός επαληθευμένος, όχι δηλωμένος**: δημιουργήθηκε πρόσκαιρος υπάλληλος (`step9.probe@`), ενεργοποιήθηκε, και η γραμμή σβήστηκε με `DELETE FROM "User"` (το `DELETE /users/:id` είναι soft — θα άφηνε υπόλειμμα). 7 → 6 γραμμές, `DELETE 1`. Τα demo δεδομένα άθικτα: η `sigridur@demo.local` παραμένει pending με κωδικό 2371, ο `kristjan@demo.local` απενεργοποιημένος.
+
+### ⭐ Spike — τα tests αποδείχθηκαν μη κενά, δύο φορές
+
+**Πρώτο πέρασμα** (3 σκόπιμες βλάβες μαζί): `toIsoUtc` → `new Date().toISOString()`, αφαίρεση του `timeZone:"UTC"` από τον date formatter, αφαίρεση της συνθήκης `sentAuthHeader` από τον κανόνα του 401 → **8 κόκκινα** στα σωστά tests. **Δεύτερο** (μετά το `/review`): αφαίρεση του διαχωρισμού transport/bug στο `catch` του `fetch` → **1 κόκκινο**. Και στις δύο περιπτώσεις επαναφορά, `grep SPIKE` → 0.
+
+### `/review` στο τέλος του Step 9 — 9 ευρήματα (2 Important, 7 Minor)
+
+**Διορθώθηκαν (6):**
+
+1. 🟠 **Το `configureApiClient` στηριζόταν σε σειρά effects που δεν ισχύει.** Ο σχολιασμός έλεγε «effects run in declaration order» — αληθές **μέσα** στο component, ψευδές απέναντι στα **παιδιά**, των οποίων τα effects τρέχουν **πρώτα**. Ο `AuthProvider` είναι γονέας κάθε σελίδας, άρα η πρώτη σελίδα που θα έκανε fetch σε πρώτο commit θα έστελνε request **χωρίς `Authorization`** — και επειδή δεν στάλθηκε header, ούτε auto-logout. Δεν ήταν ζωντανό (στο πρώτο commit είτε δεν γίνεται render σελίδα, είτε είναι το `/login`, που δεν κάνει request), αλλά ήταν παγίδα για τα Steps 10-13. **Λύση**: η ρύθμιση έφυγε σε **module scope** του `AuthContext.tsx`· το token ζει σε module μεταβλητή (όχι ref) και ο handler του 401 **σβήνει το token μέσα στο module**, ώστε να συμβαίνει είτε υπάρχει mounted provider είτε όχι. Από τη React δηλώνεται μόνο το μισό που αφορά UI (το banner).
+2. 🟠 **Αποτυχία boot που δεν ήταν 401 ούτε network αποτύγχανε σιωπηλά.** Το `catch` έθετε `bootstrapError` μόνο για `status === 0`· ένα 500 ή 403 στο `GET /users/me` προσγείωνε τον χρήστη στο `/login` **χωρίς μήνυμα**, με το token να μένει στο storage. Τώρα αναδεικνύεται οτιδήποτε δεν είναι 401.
+3. 🟡 Η οθόνη σφάλματος boot **κλείδωνε έξω από το `/login`**: με stale token και backend εκτός, δεν υπήρχε ούτε αποσύνδεση ούτε πρόσβαση στη φόρμα. Προστέθηκε **Log out** δίπλα στο Retry, και το `logout()` καθαρίζει `bootstrapError`/`isBootstrapping`.
+4. 🟡 Το `catch` γύρω από το `fetch` χαρακτήριζε **τα πάντα** `NETWORK_ERROR`. Τώρα μόνο `TypeError` και `TimeoutError`· οτιδήποτε άλλο ξαναπετιέται ως έχει (bug του client δεν πρέπει να έρχεται ντυμένο «check your connection»). Επιπλέον το `VITE_API_URL` ελέγχεται με `new URL()` στο load.
+5. 🟡 `ERRORS` → `as const satisfies Record<ErrorCode, string>`: read-only, αφού είναι **και** η runtime πηγή αλήθειας του `toErrorCode` (μέσω `Object.hasOwn`, όχι `in` — ώστε `"toString"` να μη θεωρείται κωδικός).
+6. 🟡 Νεκρή συνθήκη `sessionExpired && failure === null` στο `LoginPage` — το `login()` καθαρίζει ήδη το `sessionExpired` σε κάθε προσπάθεια.
+
+**Έκλεισαν ως αποδεκτά (2), απόφαση του χρήστη:**
+- Η **οθόνη επιτυχίας μετά την ενεργοποίηση** (`NOTICES.accountActivated` + κουμπί Sign in) χτίστηκε χωρίς να είναι στο πλάνο — το πλάνο δεν λέει τι γίνεται μετά από επιτυχές `set-initial-password`. Κρατήθηκε: χωρίς αυτήν η φόρμα απλώς αδειάζει και δεν φαίνεται ότι πέτυχε.
+- Η **διαγραφή του `MESSAGES`** από το `messages.ts` (μηδέν importers, και το περιεχόμενό του το αντικαθιστά ο χάρτης κωδικών).
+
+### Συνέπεια που εισήγαγε η διόρθωση Νο1 — να μην εκπλαγεί το Step που θα βάλει jsdom
+
+Το `AuthContext.tsx` διαβάζει πλέον `localStorage` **στο import** (module scope). Στον browser είναι σωστό· σημαίνει όμως ότι το module **δεν μπορεί να γίνει import σε node-env test χωρίς stub**. Κανένα test δεν το κάνει σήμερα.
+
+### Επαλήθευση (πραγματικά εκτελεσμένη)
+
+`npx tsc -b` καθαρό, `npm run lint` καθαρό, **34/34 vitest**, 13/13 χειροκίνητοι έλεγχοι HTTP, spike ×2 με επαναφορά.
+
+⚠️ **`tsc` έπιασε δύο πράγματα που ούτε το vitest ούτε το lint είδαν** — τα spec files τυποελέγχονται κι αυτά (`include: ["src"]`): `ReturnType<typeof vi.fn>` δεν είναι καλέσιμο (χρειάστηκε `Mock<() => void>`), και το `erasableSyntaxOnly: true` απαγορεύει parameter properties, άρα η `ApiError` γράφει τα πεδία της ρητά.
+
+### ⚠️ Ανοιχτά που κληροδοτεί το βήμα
+
+1. **Καμία ροή browser δεν έχει επαληθευτεί.** Φόρμα login και redirect ανά ρόλο, refresh που κρατά τη συνεδρία, `ProtectedRoute`, banner μετά από auto-logout — όλα ανεπαλήθευτα. Δεν υπάρχει Playwright ούτε MCP· είναι δουλειά του **Step 13b**, ή χειροκίνητη.
+2. **Ο dev server του frontend θέλει restart** αν έτρεχε πριν δημιουργηθεί το `frontend/.env` — αλλιώς λευκή σελίδα με `VITE_API_URL is not set…`. Αυτό είναι ο σχεδιασμός να δουλεύει, όχι bug.
+3. **Το `useApiQuery` δεν έχει test ούτε καταναλωτή** — και τα δύο έρχονται στο Step 10.
+4. Το **403 χωρίς `code`** (βλ. παραπάνω).
+
+**Επόμενο βήμα**: **Step 10** — Clock Page (EMPLOYEE only). Ο πρώτος καταναλωτής του `useApiQuery`· διαγράφεται το `MonthSummary.tsx`.
+
 ---
 
 # ✅ ΛΥΜΕΝΟ (2026-08-05) — οι τρεις αποφάσεις πάρθηκαν
