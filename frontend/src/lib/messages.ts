@@ -23,6 +23,10 @@ export const LABELS = {
   clockOut: "Clock Out",
   logOut: "Log out",
   retry: "Retry",
+  /** Screen-reader text for a pending read. The visible placeholder is a shape
+   *  rather than a sentence, so without this the wait is announced as nothing
+   *  at all. Kept generic — steps 11-13 have loading states too. */
+  loading: "Loading…",
   signIn: "Sign in",
   email: "Email",
   password: "Password",
@@ -69,6 +73,18 @@ export const NOTICES = {
    *  hours (India +5:30, Nepal +5:45). */
   timezone: (zone: string, difference: string) =>
     `All times are in Iceland time (UTC). Your device (${zone}) is ${difference}.`,
+
+  /**
+   * Under the Clock button, only while a shift is open. `startedAt` arrives
+   * already formatted from lib/datetime.ts, as `difference` above does.
+   *
+   * ⚠️ It carries the **date**, not just the time, and that is the point: a
+   * button reading "Clock Out" cannot tell "I am on shift" apart from "I forgot
+   * to clock out the day before yesterday". This line can. It also makes a
+   * successful clock-in visible without a toast — it appears where there was
+   * nothing, and stays for the whole shift rather than for four seconds.
+   */
+  clockedInSince: (startedAt: string) => `Clocked in since ${startedAt}.`,
 } as const
 
 // ── Error codes ──────────────────────────────────────────────────────────────

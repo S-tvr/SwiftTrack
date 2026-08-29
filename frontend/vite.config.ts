@@ -14,11 +14,22 @@ export default defineConfig({
     },
   },
   test: {
-    // `node`, not jsdom — jsdom is deliberately not installed. The specs here
-    // are pure functions and a mocked `fetch` (which Node provides natively),
-    // so none of them needs a DOM. The decision is revisited by the first step
-    // that genuinely requires one.
+    // `node` remains the default: most specs here are pure functions and a
+    // mocked `fetch` (which Node provides natively). jsdom was installed in
+    // step 10 and is opted into **per file**, with a `// @vitest-environment
+    // jsdom` control comment at the top — so the specs that do not need a DOM
+    // never pay for one.
     environment: 'node',
+    // ⚠️ Not a preference — a measured fix. Booting jsdom costs ~9s of
+    // environment setup here, and with the default parallel forks the two DOM
+    // specs never started at all: both died with "[vitest-pool]: Failed to
+    // start forks worker … Timeout waiting for worker to respond", while the
+    // two node specs passed — a green-looking run that had silently skipped
+    // the new files. Vitest exposes no timeout for that particular wait, so
+    // the lever is the contention itself. Sequential is also **faster** here:
+    // 16s for the whole suite against the 60s the parallel run burned before
+    // failing.
+    fileParallelism: false,
     // ⚠️ Pinned here rather than read from `.env`, for two reasons: the specs
     // must run on a clean clone that has no `.env`, and a value distinct from
     // the real one is what lets client.spec.ts prove the base URL is built from

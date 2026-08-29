@@ -246,7 +246,7 @@ Every page (for both roles) includes a **Header** (logo "SwiftTrack" on the left
 | # | Page | Content |
 |---|---|---|
 | 1 | Login / Account Activation | Login with email+password· separate link/page for activation (email + setupCode + new password) |
-| 2 | **Clock** (main page, **employee only** — admin has no clock in/out) | The large **Clock In / Clock Out** button, and nothing else. ⚠️ The step-0 mockup's month summary is **removed** (decision of 2026-08-26): it computed pay as `hours × hourlyRate`, which under four rate zones is materially wrong for anyone working evenings or weekends. A summary may return later as two figures read straight from `GET /payroll/me` plus the `hasOpenShift` warning — see build-plan §10 |
+| 2 | **Clock** (main page, **employee only** — admin has no clock in/out) | The large **Clock In / Clock Out** button, plus **one line under it while a shift is open** ("Clocked in since 28 Aug 2026, 22:40" — decision of 2026-08-29, see §8a). No hours, no money, no list. ⚠️ The step-0 mockup's month summary is **removed** (decision of 2026-08-26): it computed pay as `hours × hourlyRate`, which under four rate zones is materially wrong for anyone working evenings or weekends. A summary may return later as two figures read straight from `GET /payroll/me` plus the `hasOpenShift` warning — see build-plan §10 |
 | 3 | Shift History | List of entries, add a forgotten shift, edit/delete, ◀▶ arrows to navigate cycles |
 | 4 | Payroll Breakdown | **Shared page with the admin** (see below) — breakdown for the selected cycle. **Two components**: a summary (one line per rate zone — label, hours, rate, pay — plus the total) and a day-by-day table (row per date, column per zone, hours only). ⚠️ The step-0 mockup was a **draft** and is superseded: it rendered a Date/Hours/Pay table computed in the browser· see §7 and §4 decision 5e |
 
@@ -324,6 +324,12 @@ The sentence is a template, not a constant — the same device shows *"3 hours a
 **Shown in place of the activation form on success** (step 9). Without it the form simply empties, and an employee who has just created their password cannot tell whether it worked:
 
 > Your account is ready. You can now sign in.
+
+**Under the Clock button, only while a shift is open** (step 10). A template, with the instant filled in from `startTime` through `lib/datetime.ts` in UTC:
+
+> Clocked in since 28 Aug 2026, 22:40.
+
+⚠️ It carries the **date**, not only the time, and that is the whole reason it exists: a button reading "Clock Out" cannot distinguish *"I am on shift"* from *"I forgot to clock out the day before yesterday"*. This line can, on the page an employee opens every day. It is also what makes a successful clock-in visible without a toast — it appears where there was nothing, and stays for the whole shift instead of for four seconds.
 
 **Field validation, shown by zod before any request is sent** (step 9). Distinct from the table above, which answers a request that already failed. Each mirrors a rule the backend also enforces, so the two layers agree rather than duplicate:
 
