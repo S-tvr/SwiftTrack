@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { ChevronDown } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -9,22 +9,35 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { currentUser } from "@/mocks/data"
+import { useAuth } from "@/context/AuthContext"
+import { LABELS, PAGE_TITLES } from "@/lib/messages"
 
 const EMPLOYEE_LINKS = [
-  { to: "/clock", label: "Clock" },
-  { to: "/shifts", label: "Shift History" },
-  { to: "/payroll", label: "Payroll Breakdown" },
+  { to: "/clock", label: PAGE_TITLES.clock },
+  { to: "/shifts", label: PAGE_TITLES.shiftHistory },
+  { to: "/payroll", label: PAGE_TITLES.payrollBreakdown },
 ]
 
 const ADMIN_LINKS = [
-  { to: "/team", label: "Team" },
-  { to: "/payroll-overview", label: "Payroll Overview" },
-  { to: "/settings", label: "Settings" },
+  { to: "/team", label: PAGE_TITLES.team },
+  { to: "/payroll-overview", label: PAGE_TITLES.payrollOverview },
+  { to: "/settings", label: PAGE_TITLES.settings },
 ]
 
 export function Header() {
-  const links = currentUser.role === "ADMIN" ? ADMIN_LINKS : EMPLOYEE_LINKS
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  // The header only ever renders inside AppLayout, which sits behind
+  // ProtectedRoute — so this is a type narrowing, not a real state.
+  if (user === null) return null
+
+  const links = user.role === "ADMIN" ? ADMIN_LINKS : EMPLOYEE_LINKS
+
+  function handleLogout() {
+    logout()
+    navigate("/login", { replace: true })
+  }
 
   return (
     <header className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-6">
@@ -36,7 +49,7 @@ export function Header() {
         <DropdownMenuTrigger
           render={
             <Button variant="ghost" className="gap-1.5">
-              {currentUser.name}
+              {user.name}
               <ChevronDown className="size-4" />
             </Button>
           }
@@ -48,8 +61,8 @@ export function Header() {
             </DropdownMenuItem>
           ))}
           <DropdownMenuSeparator />
-          <DropdownMenuItem render={<Link to="/login" />}>
-            Log out
+          <DropdownMenuItem onClick={handleLogout}>
+            {LABELS.logOut}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

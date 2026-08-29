@@ -1,6 +1,11 @@
-import { useState, type SubmitEvent } from "react"
+import { useState } from "react"
 import { Link } from "react-router-dom"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm } from "react-hook-form"
+import { z } from "zod"
 
+import { setInitialPassword } from "@/api/auth"
+import { ApiError } from "@/api/client"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -9,27 +14,58 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Field, FieldError, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import {
+  errorText,
+  LABELS,
+  NOTICES,
+  VALIDATION,
+  type ErrorCode,
+} from "@/lib/messages"
 
-// Step 0 mockup — no backend call yet. Client-side password-match check is
-// the one piece of real logic architecture.md calls for on this page; it
-// stays this way from step 9 onward too.
+// Same pattern as LoginPage — react-hook-form + zod + `Field`, bound by hand.
+// The cross-field check uses `.refine()`, which typechecks cleanly on this
+// stack (the old "ZodEffects" problem does not apply — architecture.md
+// § Stack Traps #3).
+
+const activationSchema = z
+  .object({
+    email: z.email(VALIDATION.email),
+    setupCode: z.string().regex(/^\d{4}$/, VALIDATION.setupCode),
+    newPassword: z.string().min(8, VALIDATION.newPassword),
+    // Client-side only: the API takes no confirmation field.
+    confirmPassword: z.string(),
+  })
+  .refine((values) => values.newPassword === values.confirmPassword, {
+    message: VALIDATION.passwordsDoNotMatch,
+    path: ["confirmPassword"],
+  })
+
+type ActivationValues = z.infer<typeof activationSchema>
+
 export function SetInitialPasswordPage() {
-  const [email, setEmail] = useState("")
-  const [setupCode, setSetupCode] = useState("")
-  const [newPassword, setNewPassword] = useState("")
-  const [confirmPassword, setConfirmPassword] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [isSubmitting] = useState(false)
+  const [failure, setFailure] = useState<ErrorCode | null>(null)
+  const [isActivated, setIsActivated] = useState(false)
 
-  function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (newPassword !== confirmPassword) {
-      setError("Passwords do not match.")
-      return
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<ActivationValues>({ resolver: zodResolver(activationSchema) })
+
+  async function onSubmit(values: ActivationValues) {
+    setFailure(null)
+    try {
+      await setInitialPassword({
+        email: values.email,
+        setupCode: values.setupCode,
+        newPassword: values.newPassword,
+      })
+      setIsActivated(true)
+    } catch (caught) {
+      setFailure(caught instanceof ApiError ? caught.code : "UNKNOWN_ERROR")
     }
-    setError(null)
   }
 
   return (
@@ -37,76 +73,95 @@ export function SetInitialPasswordPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">SwiftTrack</CardTitle>
-          <CardDescription>Account Activation</CardDescription>
+          <CardDescription>{LABELS.accountActivation}</CardDescription>
         </CardHeader>
         <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                required
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setupCode">Activation Code</Label>
-              <Input
-                id="setupCode"
-                type="text"
-                inputMode="numeric"
-                maxLength={4}
-                value={setupCode}
-                onChange={(event) => setSetupCode(event.target.value)}
-                required
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="newPassword">New Password</Label>
-              <Input
-                id="newPassword"
-                type="password"
-                autoComplete="new-password"
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                required
-              />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="confirmPassword">Confirm Password</Label>
-              <Input
-                id="confirmPassword"
-                type="password"
-                autoComplete="new-password"
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-                required
-              />
-            </div>
-
-            {error && (
-              <p className="text-sm text-destructive" role="alert">
-                {error}
+          {isActivated ? (
+            <div className="flex flex-col gap-4">
+              <p className="text-sm" role="status">
+                {NOTICES.accountActivated}
               </p>
-            )}
-
-            <Button type="submit" disabled={isSubmitting} className="w-full">
-              Activate Account
-            </Button>
-
-            <Link
-              to="/login"
-              className="text-center text-sm text-muted-foreground underline-offset-4 hover:underline"
+              <Button render={<Link to="/login" />} className="w-full">
+                {LABELS.signIn}
+              </Button>
+            </div>
+          ) : (
+            <form
+              className="flex flex-col gap-4"
+              onSubmit={(event) => void handleSubmit(onSubmit)(event)}
+              noValidate
             >
-              Back to Login
-            </Link>
-          </form>
+              <Field>
+                <FieldLabel htmlFor="email">{LABELS.email}</FieldLabel>
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  aria-invalid={errors.email !== undefined}
+                  {...register("email")}
+                />
+                <FieldError errors={[errors.email]} />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="setupCode">{LABELS.setupCode}</FieldLabel>
+                <Input
+                  id="setupCode"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  aria-invalid={errors.setupCode !== undefined}
+                  {...register("setupCode")}
+                />
+                <FieldError errors={[errors.setupCode]} />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="newPassword">
+                  {LABELS.newPassword}
+                </FieldLabel>
+                <Input
+                  id="newPassword"
+                  type="password"
+                  autoComplete="new-password"
+                  aria-invalid={errors.newPassword !== undefined}
+                  {...register("newPassword")}
+                />
+                <FieldError errors={[errors.newPassword]} />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="confirmPassword">
+                  {LABELS.confirmPassword}
+                </FieldLabel>
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  autoComplete="new-password"
+                  aria-invalid={errors.confirmPassword !== undefined}
+                  {...register("confirmPassword")}
+                />
+                <FieldError errors={[errors.confirmPassword]} />
+              </Field>
+
+              {failure !== null && (
+                <p className="text-sm text-destructive" role="alert">
+                  {errorText(failure, "activate")}
+                </p>
+              )}
+
+              <Button type="submit" disabled={isSubmitting} className="w-full">
+                {LABELS.activateAccount}
+              </Button>
+
+              <Link
+                to="/login"
+                className="text-center text-sm text-muted-foreground underline-offset-4 hover:underline"
+              >
+                {LABELS.backToLogin}
+              </Link>
+            </form>
+          )}
         </CardContent>
       </Card>
     </div>

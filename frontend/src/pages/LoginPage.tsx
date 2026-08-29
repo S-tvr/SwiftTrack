@@ -1,6 +1,10 @@
-import { useState, type SubmitEvent } from "react"
-import { Link } from "react-router-dom"
+import { useState } from "react"
+import { Link, useNavigate } from "react-router-dom"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useForm } from "react-hook-form"
+import { z } from "zod"
 
+import { ApiError } from "@/api/client"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -9,21 +13,57 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Field, FieldError, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { LABELS, PAGE_TITLES } from "@/lib/messages"
+import { useAuth } from "@/context/AuthContext"
+import {
+  errorText,
+  LABELS,
+  NOTICES,
+  PAGE_TITLES,
+  VALIDATION,
+  type ErrorCode,
+} from "@/lib/messages"
 
-// Step 0 mockup — no backend call, no AuthContext yet (that's step 9).
-// Submit is inert; state exists only so the form looks/behaves like the
-// real thing (controlled inputs, disabled-while-submitting affordance).
+// ⚠️ This is the reference implementation of the form pattern, and the other
+// four forms copy it. There is no <Form>/<FormField> here: in the base-nova
+// style `form.json` is an empty shell, so `npx shadcn add form` writes nothing
+// and reports no error (architecture.md § Stack Traps #1). `field.tsx` is
+// presentational only, so the binding to react-hook-form is written by hand and
+// nothing in the library enforces that the five forms agree.
+//
+// ⚠️ No `z.coerce` anywhere — it does not typecheck on this stack (Stack Trap #3).
+
+const loginSchema = z.object({
+  email: z.email(VALIDATION.email),
+  password: z.string().min(1, VALIDATION.password),
+})
+
+type LoginValues = z.infer<typeof loginSchema>
+
 export function LoginPage() {
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [error] = useState<string | null>(null)
-  const [isSubmitting] = useState(false)
+  const { login, sessionExpired } = useAuth()
+  const navigate = useNavigate()
 
-  function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
-    event.preventDefault()
+  // Request-level failure, keyed by code. Field-level failures live in
+  // `formState.errors` and never reach here.
+  const [failure, setFailure] = useState<ErrorCode | null>(null)
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginValues>({ resolver: zodResolver(loginSchema) })
+
+  async function onSubmit(values: LoginValues) {
+    setFailure(null)
+    try {
+      await login(values.email, values.password)
+      // "/" resolves by role — ADMIN to /team, EMPLOYEE to /clock.
+      navigate("/", { replace: true })
+    } catch (caught) {
+      setFailure(caught instanceof ApiError ? caught.code : "UNKNOWN_ERROR")
+    }
   }
 
   return (
@@ -34,39 +74,56 @@ export function LoginPage() {
           <CardDescription>{PAGE_TITLES.loginActivation}</CardDescription>
         </CardHeader>
         <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => void handleSubmit(onSubmit)(event)}
+            noValidate
+          >
+            {/* Shown after an auto-logout, so being thrown out reads as an
+                explanation rather than a glitch. Cleared on the next attempt. */}
+            {sessionExpired && (
+              <p
+                className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground"
+                role="status"
+              >
+                {NOTICES.sessionExpired}
+              </p>
+            )}
+
+            <Field>
+              <FieldLabel htmlFor="email">{LABELS.email}</FieldLabel>
               <Input
                 id="email"
                 type="email"
                 autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                required
+                aria-invalid={errors.email !== undefined}
+                {...register("email")}
               />
-            </div>
+              <FieldError errors={[errors.email]} />
+            </Field>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="password">Password</Label>
+            <Field>
+              <FieldLabel htmlFor="password">{LABELS.password}</FieldLabel>
               <Input
                 id="password"
                 type="password"
                 autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                required
+                aria-invalid={errors.password !== undefined}
+                {...register("password")}
               />
-            </div>
+              <FieldError errors={[errors.password]} />
+            </Field>
 
-            {error && (
+            {/* Request-level errors render above the submit button; field-level
+                ones render under their field. */}
+            {failure !== null && (
               <p className="text-sm text-destructive" role="alert">
-                {error}
+                {errorText(failure, "login")}
               </p>
             )}
 
             <Button type="submit" disabled={isSubmitting} className="w-full">
-              Log In
+              {LABELS.signIn}
             </Button>
 
             <Link
