@@ -76,6 +76,40 @@ export class UsersService {
   }
 
   /**
+   * Used by TimeEntriesService for the shift list: *whose* list it is. The
+   * admin's `/shifts/:userId` and `/payroll/:userId` are twin pages for the same
+   * third person, and payroll has carried `userId`/`name` since step 6 — without
+   * this the shift list would need a second call to `GET /users` to print one
+   * label, downloading the whole team and every pending `setupCode` with it.
+   *
+   * It throws rather than returning null, which is what lets it *replace*
+   * `assertEmployeeExists()` on the admin route instead of running beside it:
+   * "does this employee exist" and "what are they called" are one question here,
+   * and therefore one query. Same code and same message, so the 404 that route
+   * already answered is unchanged.
+   *
+   * Deactivated employees pass, exactly as in `assertEmployeeExists()` — there
+   * is deliberately no `isActive` filter here. An admin must still be able to
+   * read and repair the history of someone who has left, including the open
+   * shift they can no longer log in to close.
+   */
+  async findEmployeeNameOrThrow(
+    id: number,
+  ): Promise<{ id: number; name: string }> {
+    const employee = await this.prisma.user.findFirst({
+      where: { id, role: Role.EMPLOYEE },
+      select: { id: true, name: true },
+    });
+    if (!employee) {
+      throw notFound(
+        ErrorCode.EMPLOYEE_NOT_FOUND,
+        `Employee with id ${id} not found.`,
+      );
+    }
+    return employee;
+  }
+
+  /**
    * Used by PayrollService for a single employee's breakdown: the name that
    * goes on the page and the rate the hours are multiplied by, and nothing
    * else. Another narrow, purpose-named reader with an explicit `select` —

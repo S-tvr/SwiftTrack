@@ -95,6 +95,14 @@ function makeService() {
     );
   const remove = jest.fn().mockResolvedValue(undefined);
   const assertEmployeeExists = jest.fn().mockResolvedValue(undefined);
+  // The name is derived from the id it was asked about, so a test can tell
+  // "the employee being viewed" from "anyone else" — which is the mistake worth
+  // catching on the admin route.
+  const findEmployeeNameOrThrow = jest
+    .fn()
+    .mockImplementation((id: number) =>
+      Promise.resolve({ id, name: `Employee ${id}` }),
+    );
 
   const prisma = {
     timeEntry: { findFirst, findMany, create, update, delete: remove },
@@ -109,7 +117,10 @@ function makeService() {
     resolveCycleRange,
     resolveWritableCycleStart,
   } as unknown as SettingsService;
-  const users = { assertEmployeeExists } as unknown as UsersService;
+  const users = {
+    assertEmployeeExists,
+    findEmployeeNameOrThrow,
+  } as unknown as UsersService;
 
   return {
     service: new TimeEntriesService(prisma, settings, users),
@@ -119,6 +130,7 @@ function makeService() {
     update,
     remove,
     assertEmployeeExists,
+    findEmployeeNameOrThrow,
     resolveCycleRange,
     resolveWritableCycleStart,
   };
@@ -599,6 +611,55 @@ describe('TimeEntriesService', () => {
       expect(result.entries).toEqual([]);
     });
 
+    /**
+     * Step 8d. The admin's /shifts/:userId and /payroll/:userId are twin pages
+     * for the same third person, and payroll has carried userId/name since step
+     * 6 — so without these the same admin got a name on one page and not the
+     * other, and this one would have needed a second call to GET /users (the
+     * whole team, every pending setupCode included) to print one label.
+     */
+    it('says whose list it is, on the employee route too', async () => {
+      // Returned on /me as well, where the page never prints it: one shape for
+      // both routes is what the shared ShiftList consumes without branching.
+      const { service, findEmployeeNameOrThrow } = makeService();
+
+      const result = await service.findCycleEntries(
+        EMPLOYEE.userId,
+        EMPLOYEE.role,
+      );
+
+      expect(findEmployeeNameOrThrow).toHaveBeenCalledWith(EMPLOYEE.userId);
+      expect(result).toMatchObject({
+        userId: EMPLOYEE.userId,
+        name: `Employee ${EMPLOYEE.userId}`,
+      });
+    });
+
+    /**
+     * ⭐ The one that catches the obvious mistake — labelling the admin's own
+     * name onto someone else's list.
+     */
+    it('names the employee being viewed on the admin route, not the caller', async () => {
+      const { service, findEmployeeNameOrThrow } = makeService();
+
+      const result = await service.findCycleEntriesForEmployee(5, '2026-07');
+
+      expect(findEmployeeNameOrThrow).toHaveBeenCalledWith(5);
+      expect(result).toMatchObject({ userId: 5, name: 'Employee 5' });
+    });
+
+    it('costs the admin route no extra query — the name lookup replaces the existence check', async () => {
+      // The reader throws the same 404 assertEmployeeExists did, so calling
+      // both would be two round trips for one question.
+      const { service, findEmployeeNameOrThrow, assertEmployeeExists } =
+        makeService();
+
+      await service.findCycleEntriesForEmployee(5, '2026-07');
+
+      expect(findEmployeeNameOrThrow).toHaveBeenCalledTimes(1);
+      expect(assertEmployeeExists).not.toHaveBeenCalled();
+    });
+
     it('selects open shifts by startTime and closed ones by overlap', async () => {
       // `endTime: { not: null }` alone would drop open shifts, and the approved
       // ShiftList renders an "Open" badge for exactly those.
@@ -784,8 +845,9 @@ describe('TimeEntriesService', () => {
     });
 
     it('404s on the admin route before listing, rather than returning an empty cycle', async () => {
-      const { service, assertEmployeeExists, findMany } = makeService();
-      assertEmployeeExists.mockRejectedValueOnce(
+      const { service, findEmployeeNameOrThrow, findMany, resolveCycleRange } =
+        makeService();
+      findEmployeeNameOrThrow.mockRejectedValueOnce(
         new NotFoundException('Employee with id 99 not found.'),
       );
 
@@ -793,6 +855,9 @@ describe('TimeEntriesService', () => {
         service.findCycleEntriesForEmployee(99, '2026-07'),
       ).rejects.toThrow(NotFoundException);
       expect(findMany).not.toHaveBeenCalled();
+      // Also before the cycle is resolved, which is what keeps a bad id
+      // answering 404 rather than racing a malformed ?cycle= for the 400.
+      expect(resolveCycleRange).not.toHaveBeenCalled();
     });
   });
 });

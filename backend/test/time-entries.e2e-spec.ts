@@ -480,6 +480,112 @@ describe('/time-entries', () => {
       // An open shift has no end, so it cannot be split.
       expect(body.entries[0].isSplit).toBe(false);
     });
+
+    /**
+     * Step 8d — whose list this is.
+     *
+     * The admin's `/shifts/:userId` and `/payroll/:userId` are twin pages for
+     * the same third person, and the payroll response has carried
+     * `userId`/`name` since step 6. Without them here the shift page would need
+     * a second call to `GET /users` to print one label — the whole team, every
+     * pending `setupCode` included, to render a heading.
+     */
+    it('names the employee on both routes, and returns the same fields either way', async () => {
+      const mine = await request(server)
+        .get('/time-entries/me')
+        .set('Authorization', `Bearer ${employee.token}`)
+        .expect(200);
+      const mineBody = mine.body as CycleEntriesBody;
+      expect(mineBody.userId).toBe(employee.id);
+      expect(mineBody.name).toBe(employee.name);
+
+      const asAdmin = await request(server)
+        .get(`/time-entries?userId=${employee.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const adminBody = asAdmin.body as CycleEntriesBody;
+      expect(adminBody.userId).toBe(employee.id);
+      expect(adminBody.name).toBe(employee.name);
+
+      // One shape for both routes (build-plan §5) — which is the reason /me
+      // carries a name the employee's own page has no use for.
+      expect(Object.keys(adminBody).sort()).toEqual(
+        Object.keys(mineBody).sort(),
+      );
+    });
+
+    it('gives the admin the name of the employee they asked for, not another', async () => {
+      // A second employee exists, so picking the wrong row is visible rather
+      // than accidentally right.
+      const other = await createActivatedEmployee(server, adminToken, {
+        name: 'Sigríður Ólafsdóttir',
+      });
+
+      const response = await request(server)
+        .get(`/time-entries?userId=${other.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      const body = response.body as CycleEntriesBody;
+      expect(body.userId).toBe(other.id);
+      expect(body.name).toBe('Sigríður Ólafsdóttir');
+    });
+
+    it('404s an id that is not an EMPLOYEE, the admin’s own included', async () => {
+      // Unchanged by step 8d: the reader that resolves the name throws exactly
+      // the 404 `assertEmployeeExists` used to, which is what let it replace it.
+      const admin = await prisma.user.findFirstOrThrow({
+        where: { role: 'ADMIN' },
+      });
+
+      const own = await request(server)
+        .get(`/time-entries?userId=${admin.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404);
+      expect((own.body as ErrorBody).code).toBe('EMPLOYEE_NOT_FOUND');
+
+      const unknown = await request(server)
+        .get('/time-entries?userId=999999')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(404);
+      expect((unknown.body as ErrorBody).code).toBe('EMPLOYEE_NOT_FOUND');
+    });
+
+    /**
+     * ⭐ No `isActive` filter on the reader, deliberately — the admin must still
+     * be able to read and repair the history of someone who has left, including
+     * the open shift they can no longer log in to close.
+     */
+    it('still names and lists a deactivated employee, so their history stays readable', async () => {
+      const leaver = await createActivatedEmployee(server, adminToken, {
+        name: 'Kristján Departed',
+      });
+      await seedShift(server, adminToken, leaver.id, {
+        startTime: `${MON}T08:00:00.000Z`,
+        endTime: `${MON}T16:00:00.000Z`,
+      });
+      await request(server)
+        .delete(`/users/${leaver.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      const current = await request(server)
+        .get(`/time-entries?userId=${leaver.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const currentBody = current.body as CycleEntriesBody;
+      expect(currentBody.name).toBe('Kristján Departed');
+
+      // MON is the day before this cycle opened, so the seeded shift sits in
+      // the previous one — whose key is read off the response, never computed.
+      const previous = await request(server)
+        .get(`/time-entries?userId=${leaver.id}&cycle=${currentBody.prevCycle}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const previousBody = previous.body as CycleEntriesBody;
+      expect(previousBody.name).toBe('Kristján Departed');
+      expect(previousBody.entries).toHaveLength(1);
+    });
   });
 
   /**

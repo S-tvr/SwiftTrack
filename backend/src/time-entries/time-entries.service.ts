@@ -170,6 +170,20 @@ export class TimeEntriesService {
     callerRole: Role,
     cycle?: string,
   ): Promise<CycleEntriesResponseDto> {
+    // Whose list this is — the page heading, and on the admin route the
+    // existence check as well, since a reader that throws answers both in one
+    // query. Awaited first rather than in parallel with the settings read on
+    // purpose: an id that is not an employee must keep answering 404 ahead of a
+    // malformed ?cycle= answering 400, which is how the admin route behaved
+    // when it asserted existence up front. Racing the two would make which
+    // error wins depend on the database's mood.
+    //
+    // On `/me` it can never fail: RolesGuard and JwtStrategy have already
+    // proved the caller is an existing, active EMPLOYEE — which is why no 404
+    // is declared on that operation (see architecture.md § Invariants on
+    // documenting only what a route can actually return).
+    const employee = await this.usersService.findEmployeeNameOrThrow(userId);
+
     // One settings read for both the cycle and the write window — they derive
     // from the same `cycleStartDay`, so asking twice would risk them being
     // computed from two different ones.
@@ -204,6 +218,8 @@ export class TimeEntriesService {
 
     return {
       ...cycleDto,
+      userId: employee.id,
+      name: employee.name,
       canWrite: this.canWriteInCycle(range, employeeWriteFloor, hasStarted),
       entries: entries.map((entry) =>
         this.toCycleEntryDto(entry, range, employeeWriteFloor),
@@ -211,12 +227,18 @@ export class TimeEntriesService {
     };
   }
 
-  /** Admin route: an unknown or non-employee id is a 404, not an empty list. */
+  /**
+   * Admin route: an unknown or non-employee id is a 404, not an empty list.
+   *
+   * Nothing is asserted here first, and that is the point — the reader inside
+   * `findCycleEntries` raises exactly that 404 while resolving the name the
+   * response has to carry anyway. Calling `assertEmployeeExists()` as well would
+   * be a second query for a question already answered.
+   */
   async findCycleEntriesForEmployee(
     employeeId: number,
     cycle?: string,
   ): Promise<CycleEntriesResponseDto> {
-    await this.usersService.assertEmployeeExists(employeeId);
     // Role passed explicitly rather than inferred: this route is ADMIN-only by
     // its guard, and saying so here keeps the flags honest if that ever moves.
     return this.findCycleEntries(employeeId, Role.ADMIN, cycle);

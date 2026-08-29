@@ -77,8 +77,10 @@ It never automatically moves to the next step without this confirmation, even if
   - `GET /time-entries/me` (EMPLOYEE, optional `?cycle=`) and `GET /time-entries?userId=&cycle=` (ADMIN) — **the same response shape**, because both feed the same `ShiftList` component with the same `CycleNavigator` (employee at `/shifts`, admin at `/shifts/:userId`). The admin route needs `?cycle=` for exactly the reason the employee one does: without it the ◀▶ has no key to send and no dates to print
     ```
     { cycle, prevCycle, nextCycle, cycleStart, cycleEnd,
-      entries: [ { id, startTime, endTime, notes, isSplit } ] }
+      userId, name, canWrite,
+      entries: [ { id, startTime, endTime, notes, isSplit, canEdit } ] }
     ```
+    `userId`/`name` were **added in step 8d**, and `canWrite`/`canEdit` in step 8c — all four are siblings of `entries`, never members of the cycle block. `name` comes back on `/me` too, carrying the caller's own name that the employee page never prints: the same "one shape for both routes" rule this bullet opens with, and exactly what `/payroll/me` has done since step 6. Without it the admin's `/shifts/:userId` would need a second call to `GET /users` — the whole team, every pending `setupCode` included — to print one heading, while its twin page `/payroll/:userId` got the name for free
     `isSplit` marks a shift that extends beyond this cycle — it is what explains the same row reappearing when the ◀▶ moves to the neighbouring cycle. ⚠️ **No hours figure** (spec §4, decision 5f): under rate zones one number per shift is not what anyone is paid, and a second hours figure would round at a different unit than payroll's cells and be able to disagree with it. Hours live only in `GET /payroll`
   - ⚠️ **The list query is NOT the payroll query.** Payroll takes closed shifts overlapping the cycle. The list must additionally show **open** shifts (`endTime = null`), which `endTime: { not: null }` would silently drop — and the approved `ShiftList` renders a red **"Open"** badge for exactly those, so an employee who forgot to clock out would have no screen on which to find and fix it. Open shifts cannot overlap-match (they have no end), so they are selected by `startTime` instead, per the invariant in architecture.md:
     ```ts
@@ -357,7 +359,7 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
 
 - [ ] **11. Shift History**
 
-  One page, two routes: employee at `/shifts` (their own, always), admin at `/shifts/:userId`. Same components, same response shape — the admin route differs only in which endpoint it calls and in showing the employee's name.
+  One page, two routes: employee at `/shifts` (their own, always), admin at `/shifts/:userId`. Same components, same response shape — the admin route differs only in which endpoint it calls and in showing the employee's name. ⚠️ That name comes from the **list response itself** (`userId`/`name`, added in step 8d) — never from a second call to `GET /users`, which would download the whole team, every pending `setupCode` included, to print one heading.
 
   **Data**: `GET /time-entries/me?cycle=` (employee) or `GET /time-entries?userId=&cycle=` (admin). Identical shape by design.
 

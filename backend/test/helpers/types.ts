@@ -45,6 +45,13 @@ export interface CycleEntriesBody {
   nextCycle: string;
   cycleStart: string;
   cycleEnd: string;
+  /**
+   * Siblings of `entries`, never part of the cycle block — they say *whose*
+   * list this is. Present on `/me` too, with the caller's own name, so the one
+   * shared ShiftList consumes either route without branching.
+   */
+  userId: number;
+  name: string;
   /** Sibling of `entries`, never part of the cycle block — it varies by caller. */
   canWrite: boolean;
   entries: Array<TimeEntryBody & { isSplit: boolean; canEdit: boolean }>;

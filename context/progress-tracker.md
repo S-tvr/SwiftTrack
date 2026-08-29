@@ -1277,7 +1277,72 @@ Endpoints/Components:
 3. Το αποδεκτό εύρημα του `/review` παραπάνω.
 4. Το **403 χωρίς `code`** (από Step 9) — παραμένει.
 
-**Επόμενο βήμα**: **Step 11** — Shift History. Πρώτη χρήση του `?cycle=` στο URL (`useSearchParams`, `replace` όχι `push`), του `CycleNavigator`, και των flags `canWrite`/`canEdit` του Step 8c. ⚠️ Το build-plan §11 απαιτεί **απόφαση μέσα στο βήμα** για το κενό που δεν καλύπτει κανένα από τα δύο flags: με ανοιχτή βάρδια, Add/Edit εμφανίζονται ενεργά και απαντούν `400 OPEN_SHIFT_EXISTS`.
+**Επόμενο βήμα**: **Step 11** — Shift History. Πρώτη χρήση του `?cycle=` στο URL (`useSearchParams`, `replace` όχι `push`), του `CycleNavigator`, και των flags `canWrite`/`canEdit` του Step 8c. ⚠️ Το build-plan §11 απαιτεί **απόφαση μέσα στο βήμα** για το κενό που δεν καλύπτει κανένα από τα δύο flags: με ανοιχτή βάρδια, Add/Edit εμφανίζονται ενεργά και απαντούν `400 OPEN_SHIFT_EXISTS`. *(Πριν από αυτό παρεμβλήθηκε το **Step 8d** — βλ. αμέσως παρακάτω.)*
+
+## Step 8d — `userId` + `name` στο list response των time-entries
+Status: ✅ Done
+Ημερομηνία: 2026-08-29
+Αρχεία που προστέθηκαν/άλλαξαν:
+- `backend/src/users/users.service.ts` — **νέος reader** `findEmployeeNameOrThrow(id)` → `{ id, name }`, ρητό `select`, ίδιο 404 `EMPLOYEE_NOT_FOUND`
+- `backend/src/time-entries/dto/cycle-entries-response.dto.ts` — δύο νέα πεδία `userId`/`name` με `@ApiProperty`, **αδέλφια** του `canWrite`/`entries`
+- `backend/src/time-entries/time-entries.service.ts` — το `findCycleEntries()` επιλύει τον υπάλληλο· το `findCycleEntriesForEmployee()` **έχασε** το `assertEmployeeExists`
+- `backend/src/users/users.service.spec.ts` (+3), `backend/src/time-entries/time-entries.service.spec.ts` (+3 και προσαρμογή 1 υπάρχοντος)
+- `backend/test/helpers/types.ts` — `CycleEntriesBody` με τα δύο πεδία· `backend/test/time-entries.e2e-spec.ts` (+4)
+- `context/swifttrack-phase1-final.md` §6 (και οι δύο γραμμές list), `context/build-plan.md` §5 (μπλοκ σχήματος) + §11 (από πού έρχεται το όνομα), `context/architecture.md` (νέο invariant δίπλα σε αυτό των `canWrite`/`canEdit`)
+Endpoints/Components:
+- `GET /time-entries/me` και `GET /time-entries?userId=` — νέα πεδία `userId` + `name`, response-level. Κανένα υπάρχον πεδίο, status code ή μήνυμα δεν άλλαξε
+- **202 → 208 unit, 94 → 98 e2e**
+
+### Γιατί υπήρχε το κενό — ασυμμετρία του API, όχι έλλειψη του πλάνου
+
+Ο admin έχει **δύο δίδυμες σελίδες** για τον ίδιο τρίτο: `/shifts/:userId` και `/payroll/:userId`. Το payroll επιστρέφει `userId`+`name` **από το Step 6**, και μάλιστα από τη **μία** μέθοδο που εξυπηρετεί και το `/payroll/me`. Το list response δεν το έκανε — άρα ο ίδιος admin, για τον ίδιο άνθρωπο, έπαιρνε όνομα στη μία σελίδα και όχι στην άλλη.
+
+Χωρίς αυτό, το Step 11 θα έκανε **δεύτερη κλήση σε `GET /users`** για να τυπώσει μία ετικέτα — κατεβάζοντας όλη την ομάδα, **μαζί με τα `setupCode` όλων των pending**. Ίδια οικογένεια με το `setupCode` του Step 2, το `?cycle=` του Step 4 και το `userId` του Step 5: κάτι που η σελίδα χρειάζεται και το API δεν έδινε.
+
+Backend βήμα ξεχωριστό από το 11, ακριβώς όπως το 8c: το `AGENTS.md` δεν επιτρέπει backend δουλειά μέσα σε frontend βήμα.
+
+### ⚠️ Η απόφαση για το `/me` — και το κόστος της, καταγεγραμμένο
+
+**Το `name` επιστρέφεται και στο `GET /time-entries/me`**, με το όνομα του ίδιου του καλούντα, παρότι η σελίδα του υπαλλήλου δεν το τυπώνει. Ένα σχήμα για τις δύο διαδρομές (build-plan §5), ώστε ο κοινός `ShiftList` να καταναλώνει και τις δύο χωρίς branch — και ακριβώς ό,τι κάνει ήδη το payroll.
+
+**Κόστος: ένα επιπλέον lookup σε primary key στη διαδρομή του υπαλλήλου, όπου σήμερα δεν υπήρχε κανένα.** Έγινε δεκτό συνειδητά. Στη διαδρομή του admin το κόστος είναι **μηδέν**: ο νέος reader **αντικατέστησε** το `assertEmployeeExists`, δεν προστέθηκε δίπλα του — «υπάρχει;» και «πώς λέγεται;» είναι εδώ ένα ερώτημα, άρα ένα query. Υπάρχει test ακριβώς γι' αυτό (`costs the admin route no extra query`).
+
+### Τρεις αποφάσεις υλοποίησης που δεν ήταν προφανείς
+
+**Α. Ο reader **πετάει**, δεν επιστρέφει `null`** (αντίθετα από το `findEmployeeRate`, που αφήνει τον `PayrollService` να πετάξει). Αυτό ακριβώς είναι που του επιτρέπει να αντικαταστήσει το `assertEmployeeExists` με ίδιο κωδικό και ίδιο μήνυμα, αντί να προστεθεί ως δεύτερη κλήση.
+
+**Β. Επιλύεται ΠΡΙΝ τον κύκλο, σειριακά — όχι με `Promise.all`.** Σήμερα ο admin έπαιρνε 404 για άγνωστο id ακόμη κι όταν το `?cycle=` ήταν κακοσχηματισμένο, γιατί το `assertEmployeeExists` έτρεχε πρώτο. Παράλληλη εκτέλεση θα έκανε το «ποιο σφάλμα κερδίζει» **κούρσα**. Το κόστος είναι ένα σειριακό round trip στη διαδρομή `/me`· η ντετερμινιστική προτεραιότητα 404-πριν-400 το αξίζει. Υπάρχει assertion (`resolveCycleRange` δεν κλήθηκε καθόλου).
+
+**Γ. Κανένα νέο `@ApiResponse 404` στο `GET /time-entries/me`.** Ο νέος reader **δεν μπορεί** να αποτύχει εκεί: ο `RolesGuard` και ο `JwtStrategy` (`findActiveById`) έχουν ήδη αποδείξει ότι ο καλών είναι υπαρκτός, ενεργός EMPLOYEE. Ίδιο ακριβώς σκεπτικό με το γιατί το `GET /users/me` δεν δηλώνει 404, ήδη γραμμένο στα invariants: **το Swagger δηλώνει μόνο ό,τι μπορεί πραγματικά να επιστραφεί**.
+
+Το `assertEmployeeExists` **παραμένει** — το `create()` το καλεί ακόμη, και εκεί το ερώτημα όντως είναι μόνο «υπάρχει;». Δύο στενοί readers, ο καθένας για την ερώτησή του, όπως λέει το invariant.
+
+### 🔢 Διόρθωση των test counts του tracker — μετρημένο, όχι εμπιστευμένο
+
+Το prompt του βήματος ζητούσε να επιβεβαιωθεί το «195 unit / 94 e2e» του 8c. **Δεν ίσχυε**: το baseline σε **ανέγγιχτο** δέντρο μέτρησε **202 unit / 94 e2e**. Το 8c είχε γράψει «195» στην ενότητα των αρχείων και «196» στην τελική του κατάσταση, ενώ οι διορθώσεις του `/review` που ακολούθησαν ανέβασαν τον αριθμό χωρίς να ενημερωθεί καμία από τις δύο. Επαληθεύτηκε ότι δεν μεσολάβησε άλλο backend commit: `git log -- backend/src backend/test` σταματά στο 8c. **Το e2e 94 ήταν σωστό.**
+
+### ⭐ Spike — 4 σκόπιμες βλάβες, 4 ομάδες κόκκινων στα σωστά tests
+
+Έγιναν **μαζί**, με αντίγραφα ασφαλείας για ακριβή επαναφορά:
+
+| Βλάβη | Αποτέλεσμα |
+|---|---|
+| A — αφαίρεση των `userId`/`name` από την απάντηση | 2 unit (`says whose list it is`, `names the employee being viewed`) + 3 e2e· **και `tsc` TS2739** — ο τύπος του DTO αποδείχθηκε φέρων |
+| B — `isActive: true` στο `where` του reader | 2 unit (σχήμα query) + 1 e2e (απενεργοποιημένος υπάλληλος → 404 αντί 200) |
+| C — επαναφορά του `assertEmployeeExists` στο wrapper | 1 unit (`costs the admin route no extra query`) |
+| D — ο reader μετά το `resolveCycleRange` | 1 unit (`404s on the admin route before listing`) |
+
+**6 failed / 208 unit** και **3 failed / 98 e2e**, μία ομάδα ανά βλάβη, καμία παράπλευρη. Επαναφορά, `grep SPIKE` → **0**.
+
+### Τι ΔΕΝ άλλαξε
+
+Κανένα υπάρχον πεδίο, status code, μήνυμα ή error code. Ούτε `canWrite` ούτε `canEdit`. Ούτε το `POST /time-entries` και ο έλεγχος `userId` του. Ούτε το `GET /time-entries/open`. **Τίποτα στο `frontend/`.** Καμία νέα εξάρτηση.
+
+### Επαλήθευση (πραγματικά εκτελεσμένη)
+
+`npm run build` καθαρό, `npm run lint` καθαρό, **208/208 unit** (από 202), **98/98 e2e** σε πραγματική `swifttrack_test` (από 94). `npx tsc --noEmit` καθαρό. Spike ×1 με 4 βλάβες και επαναφορά.
+
+**Επόμενο βήμα**: **Step 11** — Shift History, με το όνομα του υπαλλήλου πλέον διαθέσιμο μέσα στην ίδια απάντηση.
 
 ---
 

@@ -381,6 +381,63 @@ describe('UsersService', () => {
       });
     });
 
+    /**
+     * The shift list's counterpart to `findEmployeeRate`. It answers "whose
+     * list is this?" in the same query that proves the id is an employee at
+     * all, which is why the admin list route dropped `assertEmployeeExists`
+     * rather than calling both.
+     */
+    it('findEmployeeNameOrThrow returns id and name, and selects nothing else', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
+
+      await expect(service.findEmployeeNameOrThrow(7)).resolves.toEqual({
+        id: 7,
+        name: 'Jane Employee',
+      });
+      expect(user.findFirst).toHaveBeenCalledWith({
+        where: { id: 7, role: Role.EMPLOYEE },
+        select: { id: true, name: true },
+      });
+    });
+
+    it('findEmployeeNameOrThrow 404s an ADMIN id and an unknown one alike', async () => {
+      // The role filter is what collapses the two: an admin has no shifts of
+      // their own, so an empty cycle for their id would be a lie, not a list.
+      for (const id of [1, 999]) {
+        const { service, user } = makeService();
+        user.findFirst.mockResolvedValue(null);
+
+        await expect(service.findEmployeeNameOrThrow(id)).rejects.toThrow(
+          NotFoundException,
+        );
+        await expect(service.findEmployeeNameOrThrow(id)).rejects.toThrow(
+          `Employee with id ${id} not found.`,
+        );
+      }
+    });
+
+    /**
+     * ⭐ No `isActive` in the `where`, deliberately: the admin has to be able to
+     * read and repair the history of someone who has left — including the open
+     * shift they can no longer log in to close. A stub cannot prove absence of a
+     * filter by behaving differently, so what is pinned is the query itself; the
+     * outcome against real rows is asserted in time-entries.e2e-spec.ts.
+     */
+    it('findEmployeeNameOrThrow does not filter on isActive, so a departed employee still resolves', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue({ id: 7, name: 'Departed Employee' });
+
+      await expect(service.findEmployeeNameOrThrow(7)).resolves.toEqual({
+        id: 7,
+        name: 'Departed Employee',
+      });
+      expect(user.findFirst).toHaveBeenCalledWith({
+        where: { id: 7, role: Role.EMPLOYEE },
+        select: { id: true, name: true },
+      });
+    });
+
     it('findEmployeeRate returns null for a non-EMPLOYEE and never loads secrets', async () => {
       const { service, user } = makeService();
       user.findFirst.mockResolvedValue(null);
