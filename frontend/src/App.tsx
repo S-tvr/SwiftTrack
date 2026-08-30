@@ -8,6 +8,7 @@ import {
 } from "@/components/layout/ProtectedRoute"
 import { TimezoneNotice } from "@/components/layout/TimezoneNotice"
 import { Button } from "@/components/ui/button"
+import { Toaster } from "@/components/ui/sonner"
 import { AuthProvider, useAuth } from "@/context/AuthContext"
 import { errorText, LABELS } from "@/lib/messages"
 import { ClockPage } from "@/pages/ClockPage"
@@ -96,6 +97,11 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <AppGate />
+        {/* Outside AppGate on purpose: that component returns early while
+            bootstrapping and on a boot failure, and a toaster that unmounts
+            under those states would drop any toast fired near them. Inside the
+            router so a future toast may carry a <Link>. */}
+        <Toaster />
       </BrowserRouter>
     </AuthProvider>
   )

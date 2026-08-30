@@ -62,6 +62,68 @@ export function toIsoUtc(localValue: string): string {
   return `${date}T${hoursMinutes}:${seconds}.000Z`
 }
 
+const dayTimeFormatter = new Intl.DateTimeFormat(LOCALE, {
+  ...UTC,
+  weekday: "short",
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+})
+
+/**
+ * "Thu 07-May 11:05" — the shift list's Start and End cells.
+ *
+ * Assembled from `formatToParts` rather than a format string: the locale's own
+ * pattern is "Thu 07 May, 11:05", and the separators are what differ. Doing it
+ * this way keeps Intl in charge of the UTC conversion and the weekday/month
+ * names while pinning the punctuation.
+ *
+ * ⚠️ Deliberately carries **no year**, and that is safe rather than sloppy: a
+ * cycle spans about thirty days, so two rows can never share a day and month
+ * while belonging to different years. The years live in the cycle header above.
+ *
+ * The weekday is the point of the format. Rate zones are decided by it —
+ * Saturday and Sunday are paid at +45% all day — so a reader checking their
+ * payroll against this list needs to see which shifts were weekend shifts
+ * without counting dates.
+ */
+export function formatDayTime(iso: string): string {
+  const parts = dayTimeFormatter.formatToParts(new Date(iso))
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? ""
+
+  return `${part("weekday")} ${part("day")}-${part("month")} ${part("hour")}:${part("minute")}`
+}
+
+/**
+ * Now, in the same UTC ISO-8601 format the API uses. Here rather than inline in
+ * a component so that `new Date` stays inside this module — and so that the
+ * comparison it feeds is a **string** comparison against another instant of
+ * identical format, which is exact and needs no date arithmetic.
+ */
+export function nowIsoUtc(): string {
+  return new Date().toISOString()
+}
+
+/**
+ * The inverse of `toIsoUtc`: an API instant back into a `datetime-local` value,
+ * for prefilling the edit form.
+ *
+ * ⚠️ Implemented as a **string slice**, not through `Date`. The API always sends
+ * UTC (`2026-08-04T08:00:00.000Z`), and the input must show those same wall-clock
+ * digits — so anything that routes through the browser's local zone would open
+ * the edit form on a different time than the one being edited, and saving it
+ * unchanged would silently move the shift. `toIsoUtc(toDatetimeLocal(x)) === x`
+ * for every instant the API produces.
+ */
+export function toDatetimeLocal(iso: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/.exec(iso)
+  if (!match) throw new Error(`Not an ISO instant: "${iso}"`)
+  return match[1]
+}
+
 /** "25 Aug 2026, 14:30" — an instant from the API. */
 export function formatDateTime(iso: string): string {
   return dateTimeFormatter.format(new Date(iso))

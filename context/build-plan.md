@@ -251,7 +251,7 @@ Everything below applies to all of steps 9–13.
 **Never, in any frontend step:**
 - No `axios` — native `fetch`, wrapped once in `api/client.ts`
 - No TanStack Query or other server-state library
-- No toast library (see step 11 for the one recorded place to reconsider)
+- ~~No toast library~~ — **lifted in step 11**, as the reconsideration reserved here always allowed. `sonner` is now the one confirmation mechanism for a write that changes nothing on screen· see §11 and architecture.md § Invariants. It does **not** reopen clock-in, which stays toast-free for the reason recorded in §10
 - No arithmetic on payroll figures — no `Math.round`, no summing a column, no recomputing a total. Print what the server sent
 - No cycle-boundary maths — the backend returns `cycle`/`prevCycle`/`nextCycle`/`cycleStart`/`cycleEnd`, the client echoes them back
 - No new dependency without asking, with the exceptions already approved here: `zod`, `react-hook-form`, `@hookform/resolvers`, `vitest`, `@playwright/test`, and shadcn components pulled from the registry
@@ -370,7 +370,9 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
   - Omit the parameter entirely on first load — the backend resolves "the cycle containing now", which is **not** the current calendar month
   - A malformed value (someone edits the address bar) is a failed load: page-body error with Retry
 
-  **`ShiftList`** — columns **Date / Start / End / Notes / Open**, plus a marker driven by `isSplit`.
+  **`ShiftList`** — columns **# / Start / End / Notes / Actions**, plus a marker driven by `isSplit`.
+  - **`#` is the row's position in the cycle** (newest first, from 1) — a reading aid, never the entry's id
+  - ⚠️ **Start and End each carry the whole instant**, `Thu 07-May 11:05`, which is why there is **no shared Date column**: an overnight shift ends on a different day than it starts, and one cell could print only one of them. The **weekday** is load-bearing — weekends are paid at +45% all day, so it is what lets someone check a payslip against this list. No year, safely: a cycle spans ~30 days and the years are in the header above
   - ⚠️ **No hours or duration column.** The API deliberately returns no hours figure (spec §4, decision 5f), and the frontend must not compute one: a **split** shift appears in *both* cycles with its full `startTime`/`endTime`, so a duration column would show 7h twice for one 7-hour shift — reintroducing exactly the double-count that splitting exists to prevent. The clipped portion is not in this response and cannot be derived without cycle maths, which is forbidden. Hours live on the Payroll page, per zone, once
   - The red **"Open"** badge marks `endTime === null` — this list is the only screen where someone who forgot to clock out can find it
   - The split marker is what explains the same shift appearing in the neighbouring cycle
@@ -399,7 +401,13 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
 
   **`CycleNavigator`** (◀▶) — sends back the `prevCycle`/`nextCycle` key it was given and prints `cycleStart`/`cycleEnd` as received. **It computes nothing** — not even a month rollover.
 
-  ⚠️ **Recorded revisit — the one real case for a toast.** `ShiftForm` is a dialog that closes on success, so it cannot show its own confirmation. And a shift saved into a *different* cycle than the one on screen produces **no visible change at all**: the dialog closes, the list is identical, and it looks like nothing happened. If an inline message at the top of the list reads poorly here, adding `sonner` is a decision to take at this point — not an improvisation mid-step.
+  ✅ **The recorded revisit was taken here, and the answer is `sonner`.** `ShiftForm` is a dialog that closes on success, so it cannot show its own confirmation — and a shift saved into a *different* cycle than the one on screen produces **no visible change at all**: the dialog closes, the list is identical, and it looks like nothing happened.
+
+  The decision was made **in this step rather than in 13** on purpose: Team and Settings carry at least five more writes with the same property, and the alternative was five pages inventing five confirmations. Settings is the sharpest of them — saving there leaves the same page with the same values, which §13 already flags as needing an explicit confirmation more than any other screen.
+
+  ⚠️ This does **not** reopen clock-in. §10's reasoning holds unchanged: that write alters the button's label *and* adds a line beneath it, so its confirmation is already structural and permanent, where a toast lasts four seconds.
+
+  Two things about the component are recorded in architecture.md § Invariants rather than here, because they are measurements a future step must not re-derive: `npx shadcn add sonner` writes a file that **does not compile** in a Vite project (it imports `next-themes` and a Next.js route path), so `ui/sonner.tsx` is hand-trimmed· and the cross-cycle toast carries **no action button**, because naming the destination cycle would mean resolving cycle boundaries client-side, which an invariant forbids. Whether the shift is visible needs no arithmetic — the row is absent from the refetched list — so the toast says that and stops.
 
   **Vitest**: `toIsoUtc` round-trips for an overnight shift and one crossing a month boundary.
 

@@ -331,6 +331,31 @@ The sentence is a template, not a constant — the same device shows *"3 hours a
 
 ⚠️ It carries the **date**, not only the time, and that is the whole reason it exists: a button reading "Clock Out" cannot distinguish *"I am on shift"* from *"I forgot to clock out the day before yesterday"*. This line can, on the page an employee opens every day. It is also what makes a successful clock-in visible without a toast — it appears where there was nothing, and stays for the whole shift instead of for four seconds.
 
+**Shift history and its form** (step 11). None of this is in the binding table above, so it lives in `LABELS`/`NOTICES` and may be improved without a spec change:
+
+- Columns **# · Start · End · Notes · Actions**, the red **Open** badge in the End cell of a shift with no end, and the **Split** marker beside the start.
+  - **`#` is the row's position in the cycle**, newest first, starting at 1 — a reading aid for talking about a row, never the entry's id, which means nothing to someone holding a payslip.
+  - **Start and End each carry the whole instant**, formatted `Thu 07-May 11:05`. There is no shared Date column for a reason: an overnight shift **ends on a different day than it starts**, and one cell could only ever print one of the two. The **weekday** is load-bearing rather than decorative — Saturday and Sunday are paid at +45% all day, so it is what lets a reader check a payslip against this list without counting dates. No year: a cycle spans about thirty days, so two rows cannot collide, and the years are in the cycle header above.
+  - ⚠️ There is deliberately **no Hours column** — a split shift carries its full start and end in *both* cycles, so a duration printed here would count one shift twice (§4, decision 5f).
+- Empty cycle: *"No shifts in this cycle."*
+- Why Edit/Delete are off on a row: *"This pay cycle is closed. Ask your admin to change a shift this old."* · why Add Shift is off: *"This pay cycle is closed, so no shift can be added to it."* Both are read from `canEdit`/`canWrite`, never worked out from the dates on screen.
+- The split marker's explanation: *"This shift continues into the neighbouring cycle."*
+- Deleting: *"Delete this shift?"* / *"&lt;shift&gt; will be permanently deleted. This cannot be undone."* ⚠️ Permanent, unlike deactivating an employee — there is no soft delete and no restore for a time entry.
+
+**Toast confirmations** (step 11, `sonner` — see architecture.md § Invariants for why the "no toast library" rule was lifted here):
+
+> Shift saved.
+
+> Shift saved. It falls outside the cycle you're viewing, so it isn't in this list.
+
+> Shift deleted.
+
+The second is the case the toast was adopted for: a shift saved into a cycle other than the one on screen leaves the list identical, so a closing dialog looks like nothing happened. ⚠️ **It carries no "view that cycle" action, deliberately.** Whether the shift is visible is answered without arithmetic — the row is simply absent from the refetched list — but *which* cycle it landed in is not, and resolving that client-side is forbidden. A button that moved one cycle and still failed to show the shift would be worse than no button.
+
+**`OPEN_SHIFT_EXISTS` reads differently on Clock and on Shift History**, because the right next action differs while the fact is identical. On Clock the user pressed Clock In, so *"Please clock out first"* is literally the next step. On Shift History they are adding or editing a **past** shift while a live one runs, and the same sentence would push them to end a real shift early, add the row, and clock back in — splitting the very shift the rule protects. There it reads:
+
+> You're currently clocked in. You can add or change past shifts once you clock out.
+
 **Field validation, shown by zod before any request is sent** (step 9). Distinct from the table above, which answers a request that already failed. Each mirrors a rule the backend also enforces, so the two layers agree rather than duplicate:
 
 | Field rule | Backend counterpart | English message |

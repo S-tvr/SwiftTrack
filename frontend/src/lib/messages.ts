@@ -36,6 +36,39 @@ export const LABELS = {
   activateAccount: "Activate account",
   accountActivation: "Account Activation",
   backToLogin: "Back to sign in",
+
+  // ── Shift history (step 11) ──
+  addShift: "Add Shift",
+  editShift: "Edit shift",
+  deleteShift: "Delete shift",
+  /** Column headers. Deliberately **no Hours column**: a split shift carries its
+   *  full start and end in both cycles, so a duration printed here would count
+   *  one shift twice. Hours live on the Payroll page, per zone, once. */
+  columnNumber: "#",
+  /** Start and End each carry the **whole instant** ("Thu 07-May 11:05"), which
+   *  is why there is no separate Date column: an overnight shift ends on a
+   *  different date than it starts, and one shared Date cell could only ever
+   *  print one of the two. */
+  columnStart: "Start",
+  columnEnd: "End",
+  columnNotes: "Notes",
+  columnActions: "Actions",
+  /** The red badge on a shift with no end — this list is the only screen where
+   *  someone who forgot to clock out can find it. */
+  badgeOpen: "Open",
+  /** Marks a shift extending past this cycle, which is what explains the same
+   *  row appearing in the neighbouring one. */
+  badgeSplit: "Split",
+  previousCycle: "Previous cycle",
+  nextCycle: "Next cycle",
+  addShiftTitle: "Add shift",
+  editShiftTitle: "Edit shift",
+  startTime: "Start time",
+  endTime: "End time",
+  notes: "Notes",
+  save: "Save",
+  cancel: "Cancel",
+  delete: "Delete",
 } as const
 
 /**
@@ -51,6 +84,19 @@ export const VALIDATION = {
   setupCode: "The activation code is 4 digits.",
   /** Client-side only — the API takes no confirmation field. */
   passwordsDoNotMatch: "Passwords do not match.",
+
+  // ── ShiftForm (step 11) ──
+  startTimeRequired: "Enter a start time.",
+  /** End Time is **required**: the manual form only ever writes a *closed*
+   *  shift, which is what keeps "at most one open shift" enforced in the single
+   *  place that can create one — clock-in. */
+  endTimeRequired: "Enter an end time.",
+  /** Mirrors the backend's @IsNotBefore. Equal is allowed — a zero-length entry
+   *  is harmless and can carry notes. */
+  endBeforeStart: "End time cannot be before start time.",
+  /** Mirrors @IsNotInTheFuture on both fields. Caught here so the 400 that does
+   *  come back from a save is almost always a real overlap. */
+  timeInFuture: "Times cannot be in the future.",
 } as const
 
 /**
@@ -85,6 +131,55 @@ export const NOTICES = {
    * nothing, and stays for the whole shift rather than for four seconds.
    */
   clockedInSince: (startedAt: string) => `Clocked in since ${startedAt}.`,
+
+  // ── Shift history (step 11) ──
+
+  /** Beside the time fields in ShiftForm. Verbatim from spec §8a — this guards
+   *  the only path where a user's own clock can reach the data. */
+  shiftTimesAreUtc: "Enter times in Iceland time (UTC), not your local time.",
+
+  /** Empty cycle. An empty state, never a blank table. */
+  noShiftsInCycle: "No shifts in this cycle.",
+
+  /** Why Edit and Delete are disabled on a row. One flag governs both buttons,
+   *  so this one sentence explains both. */
+  rowLocked:
+    "This pay cycle is closed. Ask your admin to change a shift this old.",
+
+  /** Why Add Shift is disabled. Read from `canWrite`, never worked out from the
+   *  dates on screen — that would mean resolving cycle boundaries client-side. */
+  cycleLocked: "This pay cycle is closed, so no shift can be added to it.",
+
+  /** Tooltip on the split marker, explaining the duplicate before it reads as a
+   *  bug. */
+  splitShift: "This shift continues into the neighbouring cycle.",
+
+  // Toasts. `sonner` exists for exactly this: ShiftForm is a dialog that closes
+  // on success, so it cannot show its own confirmation.
+  shiftSaved: "Shift saved.",
+
+  /**
+   * The case the toast was adopted for: a shift saved into a cycle other than
+   * the one on screen leaves the list **identical**, so the dialog closing looks
+   * like nothing happened.
+   *
+   * ⚠️ No "view that cycle" action, and that is deliberate rather than lazy.
+   * Naming the destination would mean deciding which cycle the shift landed in,
+   * and the client may not resolve cycle boundaries. Whether it is visible is
+   * answered without arithmetic — the row is absent from the refetched list —
+   * but *where* it went is not, and a button that moved one cycle and still
+   * failed to show it would be worse than no button.
+   */
+  shiftSavedOtherCycle:
+    "Shift saved. It falls outside the cycle you're viewing, so it isn't in this list.",
+
+  shiftDeleted: "Shift deleted.",
+
+  /** The delete confirmation. Permanent — there is no soft delete and no restore
+   *  for a time entry, unlike an employee, who is only deactivated. */
+  deleteShiftTitle: "Delete this shift?",
+  deleteShiftBody: (shift: string) =>
+    `${shift} will be permanently deleted. This cannot be undone.`,
 } as const
 
 // ── Error codes ──────────────────────────────────────────────────────────────
@@ -210,6 +305,19 @@ const SCREEN_ERRORS: Partial<
   team: {
     ACCOUNT_ALREADY_ACTIVATED:
       "This employee has already activated their account. Refresh the list.",
+  },
+
+  // OPEN_SHIFT_EXISTS reaches two screens with the same fact and two different
+  // right actions. On Clock the user pressed Clock In, so "clock out first" is
+  // literally the next step. Here they are adding or editing a *past* shift
+  // while a live one is running — and telling them to clock out would push them
+  // to end a real shift early, add the row, and clock back in, splitting the
+  // shift they were protecting. The rule itself is wider than it needs to be
+  // (build-plan §11, option Γ, recorded open); this sentence is what stops the
+  // wording from making it harmful.
+  shifts: {
+    OPEN_SHIFT_EXISTS:
+      "You're currently clocked in. You can add or change past shifts once you clock out.",
   },
 }
 
