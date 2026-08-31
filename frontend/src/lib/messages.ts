@@ -120,6 +120,62 @@ export const LABELS = {
   /** The confirming action in the dialog. Names the consequence rather than
    *  saying "OK" — it is the button the admin is being asked to think about. */
   changeCycle: "Change cycle",
+
+  // ── Team (step 13-3) ──
+
+  /**
+   * The **third** badge, and the one a two-state design gets wrong. Binding UI
+   * copy, spec §8a.
+   *
+   * ⚠️ `isActive === false` decides this on its own, ahead of `hasActivated`: a
+   * deactivated employee still has a password, so keying off `hasActivated`
+   * would print "Active" beside someone who cannot sign in at all.
+   */
+  badgeDeactivated: "Deactivated",
+
+  /**
+   * The filter's label. Binding UI copy, spec §8a — **including the count**,
+   * which is not decoration: without it the toggle is invisible, and an admin
+   * whose seasonal employee returns creates a second account, hits
+   * `409 EMAIL_ALREADY_EXISTS`, and has no way to see that the first one is
+   * sitting right there, hidden.
+   *
+   * ⚠️ The first function in `LABELS`, which until now held only constants. It
+   * belongs here rather than in `NOTICES` because §8a files it under
+   * "Buttons / links / badges", not under client-owned prose — it is a control's
+   * label that happens to interpolate.
+   */
+  showDeactivated: (count: number) => `Show deactivated (${count})`,
+
+  /** Row actions. `Reactivate` **replaces** `Deactivate` on a deactivated row,
+   *  rather than sitting beside it disabled — never an action guaranteed to
+   *  fail. */
+  deactivate: "Deactivate",
+  reactivate: "Reactivate",
+  /** On pending rows only. Re-issues the code and its 3-day expiry. */
+  newCode: "New code",
+
+  addEmployee: "Add Employee",
+  /** Screen-reader names for the icon-only row buttons. */
+  editEmployee: "Edit employee",
+  addEmployeeTitle: "Add Employee",
+  editEmployeeTitle: "Edit Employee",
+
+  /** Column headers. `columnName` (13-1), `columnActions` (step 11) and `email`
+   *  (step 9) are reused verbatim rather than redeclared — they name the same
+   *  things, and two words for one column across two screens is what this file
+   *  exists to prevent. */
+  columnStatus: "Status",
+  columnHourlyRate: "Hourly Rate",
+
+  /** Form field labels. The rate carries its unit because the input is a bare
+   *  number with no currency beside it, unlike the payroll tables. */
+  name: "Name",
+  hourlyRateField: "Hourly Rate (ISK)",
+
+  /** Dismisses the setup-code dialog. Not "Cancel" — nothing is being cancelled,
+   *  the employee already exists by the time it opens. */
+  done: "Done",
 } as const
 
 /**
@@ -198,6 +254,26 @@ export const VALIDATION = {
   /** Mirrors @IsNotInTheFuture on both fields. Caught here so the 400 that does
    *  come back from a save is almost always a real overlap. */
   timeInFuture: "Times cannot be in the future.",
+
+  // ── EmployeeForm (step 13-3) ──
+
+  /** Mirrors @IsString() @MinLength(1) on CreateUserDto. */
+  nameRequired: "Enter a name.",
+
+  /**
+   * The **empty** rate field, not an invalid one.
+   *
+   * ⚠️ This message exists because of how the value is read: `hourlyRate` is a
+   * native `<input type="number">` bound with `valueAsNumber`, and an empty one
+   * yields **`NaN`**, not `undefined`. Left to itself, `z.number()` reports
+   * "Expected number, received nan" — a type error shown to an admin who simply
+   * has not typed anything yet.
+   */
+  hourlyRateRequired: "Enter an hourly rate.",
+
+  /** Mirrors @IsInt() @Min(1). Zero is excluded by the backend too: an employee
+   *  paid nothing per hour is a data-entry slip, not a wage. */
+  hourlyRateMin: "The hourly rate must be a whole number of at least 1 ISK.",
 } as const
 
 /**
@@ -367,6 +443,79 @@ export const NOTICES = {
    * evidence of the write is the Save button going quiet.
    */
   settingsSaved: "Settings saved.",
+
+  // ── Team (step 13-3) ──
+
+  // The roster being empty because **nobody is employed** is already said by
+  // `noEmployees` (step 13-1), which is reused verbatim. This page needs a
+  // second sentence because it has a second way to show an empty table:
+
+  /**
+   * Every employee is deactivated and the filter is closed, so the table is
+   * empty while the roster is not.
+   *
+   * ⚠️ Not an edge case that can be folded into "No employees yet." — that
+   * sentence would be **false**, and it points an admin at "create one" when the
+   * people they are looking for are one toggle away. The toggle and its count
+   * are on screen directly above, which is what makes this recoverable rather
+   * than a dead end.
+   */
+  allEmployeesDeactivated:
+    "Every employee is deactivated. Turn on “Show deactivated” to see them.",
+
+  /**
+   * The setup-code dialog, opened after a create **and** after a re-issue —
+   * one component, two call sites, because the two moments have the same
+   * problem: the code must leave the app in the admin's head or on paper, and
+   * a screen that merely refreshes hides that there is a second step at all.
+   *
+   * The title differs between the two so the admin can tell which one they are
+   * looking at, and — after a re-issue — that the previous code is now dead.
+   */
+  setupCodeTitle: "Activation code",
+  newCodeTitle: "New activation code",
+  setupCodeBody: (name: string) =>
+    `Give this code to ${name}. It is the only way they can sign in for the first time.`,
+
+  /**
+   * ⚠️ A **date**, not a duration. "Expires in 3 days" is arithmetic the reader
+   * has to do against a calendar they may not be looking at; a date can be
+   * written down beside the code. `validUntil` arrives already formatted from
+   * `lib/datetime.ts`.
+   */
+  setupCodeValidUntil: (validUntil: string) => `Valid until ${validUntil}.`,
+
+  /**
+   * The deactivation confirmation.
+   *
+   * ⚠️ **The build-plan's draft wording said "it cannot be undone from the app",
+   * and that is false** — `PATCH /users/:id/reactivate` was added in step 8c
+   * precisely so that it can be, and `Reactivate` is offered on the very row
+   * this dialog is about to create. The line was written before that endpoint
+   * existed and §13-3 marks the wording open. Saying it would scare an admin out
+   * of a reversible action, and the first person to test Reactivate would find
+   * the dialog lying to them.
+   *
+   * What the sentence does have to carry is the part that is **not** obvious:
+   * the row disappears (it is filtered, not deleted) and the payroll history
+   * survives. Both are the questions "deactivate" actually raises.
+   */
+  deactivateEmployeeTitle: "Deactivate this employee?",
+  deactivateEmployeeBody: (name: string) =>
+    `${name} will no longer be able to sign in, and their row moves behind “Show deactivated”. Their shifts and payroll history are kept, and you can reactivate them here at any time.`,
+
+  /**
+   * The one toast on this page, and the reason the rule from step 13-2 was
+   * worth fixing there: with the filter closed — the default — a successful
+   * deactivation makes the row **vanish**, which is exactly what a hard delete
+   * would look like. The toast names who it was and says the row still exists.
+   *
+   * The other five writes take none. Create opens the code dialog, which is
+   * louder than any toast· edit, reactivate and re-issue each leave their change
+   * visible in the refetched list, which is the rule's own condition.
+   */
+  employeeDeactivated: (name: string) =>
+    `${name} has been deactivated. Their row is under “Show deactivated”.`,
 } as const
 
 // ── Error codes ──────────────────────────────────────────────────────────────

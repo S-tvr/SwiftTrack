@@ -239,7 +239,7 @@ Everything below applies to all of steps 9–13.
 | **Replaced** | `PayrollBreakdown` → two components (step 12) |
 | **Deleted** | `MonthSummary` (step 10), `mocks/data.ts` (when its last importer goes) |
 
-⚠️ **`mocks/data.ts` was imported by 13 files when step 9 began** — including `App.tsx` and `Header.tsx`. Every frontend step detaches its own; the file is deleted only when the last one does. A step is not finished while a file it owns still imports from `@/mocks/data`. **After step 12 there are 5 left, and all of them belong to step 13**: `PayrollOverview` (13-1), `SettingsPage` (13-2), then `TeamPage`, `EmployeeList` and `EmployeeForm` (13-3) — so **13-3** is the sub-step that deletes the file, at **5 → 4 → 3 → 0**.
+✅ **`mocks/data.ts` is gone, deleted in 13-3 as planned.** It was imported by **13 files** when step 9 began — including `App.tsx` and `Header.tsx` — and every frontend step detached its own, the file going only when the last one did: **13 → 5** across steps 9–12, then `PayrollOverview` (13-1), `SettingsPage` (13-2), and finally `TeamPage`, `EmployeeList` and `EmployeeForm` together in 13-3, at **5 → 4 → 3 → 0**. `frontend/src/mocks/` held nothing else and was removed with it. The rule it enforced — *a step is not finished while a file it owns still imports from `@/mocks/data`* — has no remaining subject and is kept here only as the record of how the rewiring was sequenced.
 
 **Five doors, and nothing goes around them.** Each exists because a second implementation of the same thing is how this codebase gets a bug that nobody can see. *(Four until step 12, which added the fifth for the same reason the other four exist — see §12.)*
 
@@ -511,9 +511,17 @@ The three are independent — none reads another's data — and each detaches it
   | `true` | `true` | **Active** |
   | `false` | either | **third badge — deactivated** |
 
+  ⚠️ **The `either` in that last row hides a fourth state, and it decides more than the badge** — found in 13-3 and **measured against the running backend**, not reasoned about. `isActive: false, hasActivated: false` is reachable (deactivate anyone who never activated), and three facts compound:
+
+  - `deactivate` writes **only** `isActive: false` — the `setupCode` survives intact (verified: code `8776` still present after the `DELETE`)
+  - `POST /auth/set-initial-password` checks `isActive` **before** it looks at the code, so that surviving code returns **`401 ACCOUNT_DEACTIVATED`** (verified end to end)
+  - `POST /users/:id/reset-setup-code` refuses only an *already-activated* account, so on a deactivated one it returns **`200` and issues a fresh code** (verified: `7863`) — one that cannot work either
+
+  So the badge is correct as written, but a row in this state must **hide the code and offer no "New code"**. Otherwise the page invites an admin to hand over a secret that is guaranteed to fail — the same rule that makes `Reactivate` replace `Deactivate` one column over. The predicate is **`isPending()` in `api/users.ts`**, `isActive && !hasActivated`, and it is the single implementation: `!hasActivated` alone is the bug, and the spike proves it (inverting it turns two tests red).
+
   - **Deactivated employees are hidden by default**, behind a toggle that **shows a count** — `Show deactivated (3)`. The list only ever grows: nobody is deleted, so mixing them in degrades the page permanently, while a filter is ten lines. ⚠️ The count is not decoration: without it the toggle is invisible, and an admin whose seasonal employee returns will try to create a new account, hit `409 email already exists`, and have no way to understand why. Their account is there — just not on screen
   - On a deactivated row, **Deactivate becomes Reactivate** (`PATCH /users/:id/reactivate`, step 8c) — never an action that is guaranteed to fail
-  - Deactivating asks for confirmation, and the dialog says what actually happens: they can no longer sign in, their shifts and payroll history are kept, and it cannot be undone from the app. *(Wording open.)*
+  - Deactivating asks for confirmation, and the dialog says what actually happens: they can no longer sign in, their shifts and payroll history are kept, and ~~it cannot be undone from the app~~. ✅ **Wording resolved in 13-3, and the struck clause was false.** `PATCH /users/:id/reactivate` was added in **step 8c** precisely so that it *can* be undone, and `Reactivate` sits on the very row this dialog is about to create. The line predates that endpoint. Saying it would frighten an admin out of a reversible action, and the first person to press Reactivate would catch the dialog lying. What the sentence does have to carry is the part that is **not** obvious — that the row *disappears* (filtered, not deleted) and that payroll history survives: *"…will no longer be able to sign in, and their row moves behind “Show deactivated”. Their shifts and payroll history are kept, and you can reactivate them here at any time."*
   - Clicking an employee → their `/shifts/:userId`
   - Editing `hourlyRate` and `name` → `PUT /users/:id` (those two fields only)
 
@@ -529,13 +537,19 @@ The three are independent — none reads another's data — and each detaches it
 
   **Email is a create-only field.** `PUT /users/:id` accepts `name` and `hourlyRate` only, so `EmployeeForm` in edit mode must not offer it — an editable input whose value the API silently ignores is worse than no input.
 
+  ⚠️ **"Silently ignores" was wrong, and the correction makes this mandatory rather than tidy.** Measured in 13-3: `PUT` with an `email` property returns **`400 ["property email should not exist"]`** — the DTO is `PartialType(OmitType(CreateUserDto, ['email']))` under a global `ValidationPipe` with `forbidNonWhitelisted`. So the step-0 mockup's *disabled* input was not merely a poor affordance: had its value been submitted, **every edit would have failed**. The field is absent in edit mode, and the request body is built by branching on the mode, not by disabling a control.
+
   **`SCREEN_ERRORS.team` gets its first consumer.** The per-screen override was built in step 9 for exactly this: `ACCOUNT_ALREADY_ACTIVATED` reaches an employee on `/activate` about *their own* account and an admin here about *someone else's* — same fact, different useful sentence. It has been sitting unused since step 9; if this step finds nowhere to put the admin wording and writes it inline in JSX, the "every string comes from `messages.ts`" invariant breaks.
 
   **Deletes `mocks/data.ts`** (**3 → 0**) — `TeamPage`, `EmployeeList` and `EmployeeForm` are the last three importers.
 
-  ⚠️ **Two things to decide with the page in front of you** (both parked here rather than guessed at now):
-  - **Where the new code from "New code" surfaces.** The response carries it, and the pending row already prints it — so reusing the create dialog is nearly free. What is not decided is whether re-issuing should force that moment, as creating does, or just refresh the row.
-  - **Which of the six writes get a toast.** The rule comes from 13-2, but Team is where it bites: create and edit change the list visibly, while **deactivate makes the row vanish** behind the filter, which reads like a hard delete of someone whose payroll history is in fact kept.
+  ✅ **Both parked decisions taken in 13-3** (`/architect`, user's call on each):
+  - **The new code re-opens the same dialog** — `SetupCodeDialog`, one component with two call sites and a title that differs between them. Re-issuing has the *identical* problem to creating: the code has to leave the app in the admin's head or on paper, and a row that merely refreshes hides that there is a second step at all. The alternative — refreshing the row — was rejected because its only signal is four digits changing inside a table.
+  - **Only `deactivate` gets a toast.** Create opens the code dialog, which is louder than any toast· edit, reactivate and re-issue each leave their change visible in the refetched list, which is the rule's own condition for *not* needing one. Deactivate is the exception because with the filter closed — the default — the row **vanishes**, which is exactly what a hard delete would look like.
+
+  ⚠️ **Two things the plan did not anticipate, both found while building:**
+  - **`toast.error` is introduced here, and it is not a style choice.** `Reactivate` and `New code` fire straight from a row button — the first writes in the project with **no dialog and no form** to catch a rejection, so without it they fail silently. It is also the only path by which `SCREEN_ERRORS.team` can reach anybody: `ACCOUNT_ALREADY_ACTIVATED` comes back from `reset-setup-code` against a stale list, which is the exact case the step-9 override was written for.
+  - **The page has *two* empty states, not one.** `noEmployees` ("No employees yet.") covers `[]`. But **every employee being deactivated with the filter closed** empties the table while the roster is not empty — and there `noEmployees` would be plainly false, pointing an admin at "create one" when the people they want are one toggle away. Second sentence, and the toggle with its count is directly above it, which is what makes it recoverable rather than a dead end.
 
   **Vitest**: the three badge states from the `isActive`/`hasActivated` pair (including the deactivated-but-activated row that a two-badge design gets wrong)· the toggle's count· `Reactivate` replacing `Deactivate`· the code and its expiry **date** on a pending row· no email field in edit mode.
 
