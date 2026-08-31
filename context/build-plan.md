@@ -106,7 +106,7 @@ It never automatically moves to the next step without this confirmation, even if
   - Nothing extra is needed to keep a deactivated employee out: `JwtStrategy` re-checks `isActive` on every request (see architecture.md § Invariants), so a token issued before deactivation stops working everywhere at once — this module included.
 
 - [ ] **6. Payroll module — rate zones**
-  - `GET /payroll/me?cycle=` (EMPLOYEE), `GET /payroll/:userId?cycle=` (ADMIN) — **identical shape**, both feed the same shared `PayrollBreakdown`
+  - `GET /payroll/me?cycle=` (EMPLOYEE), `GET /payroll/:userId?cycle=` (ADMIN) — **identical shape**, both feed the same shared page *(built in step 12 as `PayrollSummary` + `PayrollDayTable`, and verified there to be byte-for-byte identical on the two routes)*
   - `GET /payroll/overview?cycle=` (ADMIN) — the whole team in one request
   - **Not a flat rate.** Four zones (spec §4 decision 5c, §7): Mon–Fri 08:00–17:00 base, 17:00–24:00 +33%, 00:00–08:00 +45%, Sat/Sun all day +45%. They tile the week exactly once, so surcharges never stack. A shift is cut at every zone boundary it crosses, on top of the cycle clipping from step 4
   - `rate-zones.util.ts` — all of it pure, no DB and no DI, in the shape of `cycle.util.ts`. Computed in **integer hundredths**, never decimal floats
@@ -237,16 +237,19 @@ Everything below applies to all of steps 9–13.
 | **Replaced** | `PayrollBreakdown` → two components (step 12) |
 | **Deleted** | `MonthSummary` (step 10), `mocks/data.ts` (when its last importer goes) |
 
-⚠️ **`mocks/data.ts` is imported by 13 files today** — including `App.tsx` and `Header.tsx`. Every frontend step detaches its own; the file is deleted only when the last one does. A step is not finished while a file it owns still imports from `@/mocks/data`.
+⚠️ **`mocks/data.ts` was imported by 13 files when step 9 began** — including `App.tsx` and `Header.tsx`. Every frontend step detaches its own; the file is deleted only when the last one does. A step is not finished while a file it owns still imports from `@/mocks/data`. **After step 12 there are 5 left, and all of them belong to step 13**: `PayrollOverview`, `EmployeeForm`, `EmployeeList`, `SettingsPage`, `TeamPage` — so step 13 is the step that deletes the file.
 
-**Four doors, and nothing goes around them.** Each exists because a second implementation of the same thing is how this codebase gets a bug that nobody can see:
+**Five doors, and nothing goes around them.** Each exists because a second implementation of the same thing is how this codebase gets a bug that nobody can see. *(Four until step 12, which added the fifth for the same reason the other four exist — see §12.)*
 
 | Door | Rule |
 |---|---|
 | `api/` | Every HTTP call. **No component or page ever calls `fetch`.** |
 | `hooks/useApiQuery` | Every read. **No page writes its own `useEffect` + `fetch`.** |
 | `lib/datetime.ts` | Every date/time format and parse. **No component calls `new Date`, `toLocaleString` or `toLocaleDateString`.** |
+| `lib/format.ts` | Every number a user reads — hours, rates, money. **No component calls `toFixed` or `toLocaleString`.** *(step 12)* |
 | `lib/messages.ts` | Every string a user reads — labels and error text alike. **Nothing written inline in JSX.** |
+
+⚠️ **`lib/` imports nothing from `api/`.** `api/client.ts` already depends on `lib/messages.ts`, so an import the other way closes a cycle that `verbatimModuleSyntax` hides today and a value import would make real. Caught in the step 12 review; the invariant is in architecture.md.
 
 **Never, in any frontend step:**
 - No `axios` — native `fetch`, wrapped once in `api/client.ts`
@@ -432,6 +435,13 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
   - Only dates with hours appear. An empty cycle is an **empty state**, not a blank table
 
   The mock helpers `hoursBetween`, `isWithinCycle` and `getMockCycle` are mock-only and must not survive into a real component.
+
+  ✅ **Three decisions taken in this step, recorded so step 13 copies rather than re-derives them.** All three are invariants in architecture.md now.
+  - **`lib/format.ts` — a fourth door**, alongside `api/`, `useApiQuery`, `datetime.ts` and `messages.ts`. `formatHours`/`formatRate`/`formatIsk`, locale pinned to `en-GB`. Decided here rather than in 13 for the same reason `sonner` was decided in 11: step 13 prints the same three kinds of figure in at least four more places (`totalCost`, the overview rows, `hourlyRate` on Team, the rate in `EmployeeForm`), and the alternative was four screens inventing four formats. ⚠️ `formatRate` **never** rounds — the measured cost is in the invariant.
+  - **The day table's headers come from a local map keyed by `zone`, falling back to `zones[].label`.** §8a fixes two different sets of words and both are binding. The percentage is never copied locally.
+  - **A zero renders as `—` in a day-table cell and as `0.00` in the Total row.** Deliberate: a totals row is a row of totals, and a dash there reads as "not computed" rather than "none".
+
+  ⚠️ **`?userId=` that is not an integer still fires a request** (`/payroll/abc` → `GET /payroll/NaN` → 400, discarded· the page has already rendered `EMPLOYEE_NOT_FOUND` from its own guard). Identical in `ShiftHistoryPage` since step 11, and **left alone knowingly**: fixing it on one of two twin pages is worse than the 400 it saves. If it is ever fixed it is fixed in both, or in `useApiQuery` — which would introduce a third state (`enabled`) that all three consumer pages would have to be re-read against.
 
 - [ ] **13. Admin — Team, Payroll Overview & Settings**
 

@@ -69,7 +69,75 @@ export const LABELS = {
   save: "Save",
   cancel: "Cancel",
   delete: "Delete",
+
+  // ── Payroll breakdown (step 12) ──
+  /** Summary column headers — binding UI copy, spec §8a. */
+  columnZone: "Zone",
+  columnHours: "Hours",
+  columnRate: "Rate",
+  columnTotalPay: "Total Pay",
+  /** The day table's Date column, and the label on both tables' bottom row.
+   *  §8a gives the day table a `Total` column *and* a Total row; one word
+   *  serves both. */
+  columnDate: "Date",
+  total: "Total",
+  /** Icelandic króna. Appended to the Total Pay column only — the Rate column
+   *  is ISK *per hour*, so the bare unit would misname it. */
+  currency: "ISK",
+  /** A zone with no hours on a date. A dash rather than "0.00" so the eye finds
+   *  the cells that carry hours. */
+  emptyCell: "—",
 } as const
+
+/**
+ * Short zone names for the **day table's column headers**, keyed by the stable
+ * `zone` rather than by the label.
+ *
+ * ⚠️ Why a local map exists at all, given that the server sends a name: §8a
+ * fixes **two** different sets of words, and both are binding. The summary
+ * prints `zones[].label` verbatim ("Evening +33%") because the surcharge is
+ * checkable there against the Rate and Total Pay beside it. The day table
+ * carries no money at all, so a percentage in its headers is unverifiable
+ * noise across six columns — §8a names those headers `Date / Day / Evening /
+ * Night / Weekend / Total`, and this map is where they live.
+ *
+ * What is **not** copied is the part that could misstate a wage: the percentage
+ * is never written here, only the word. And the columns themselves are still
+ * generated from `zones[]` — count, order and key all come from the response —
+ * so a fifth zone appears with no frontend change, wearing its full label.
+ *
+ * ⚠️ Keyed by plain `string`, deliberately, and **not** `satisfies
+ * Record<PayZone, string>`. Importing `PayZone` from `api/payroll` closed a
+ * cycle — `messages` → `api/payroll` → `api/client` → `messages` — which today
+ * is erased by `verbatimModuleSyntax` but becomes a real runtime cycle the
+ * moment anyone turns that `import type` into a value import, with a load order
+ * that can differ between dev and the production bundle. `lib/` is the base
+ * layer and points at nothing above it.
+ *
+ * The exhaustiveness check that costs is worth less than it looks: it guarded
+ * "a zone was added to `PayZone` without a short label", which is exactly the
+ * case the fallback below is designed to absorb — that column renders with the
+ * server's full label instead. Nothing is ever wrong about a wage.
+ */
+const SHORT_ZONE_LABELS: Record<string, string> = {
+  DAY: "Day",
+  EVENING: "Evening",
+  NIGHT: "Night",
+  WEEKEND: "Weekend",
+}
+
+/**
+ * The day table's header for one zone. Falls back to the label the server sent,
+ * which is what keeps an unknown fifth zone renderable.
+ *
+ * `Object.hasOwn` rather than `in`, for the same reason as `toErrorCode` below:
+ * `in` would accept `"toString"` as a zone.
+ */
+export function zoneShortLabel(zone: string, fullLabel: string): string {
+  return Object.hasOwn(SHORT_ZONE_LABELS, zone)
+    ? SHORT_ZONE_LABELS[zone]
+    : fullLabel
+}
 
 /**
  * Field-level messages, shown by zod **before** any request is sent. Distinct
@@ -174,6 +242,29 @@ export const NOTICES = {
     "Shift saved. It falls outside the cycle you're viewing, so it isn't in this list.",
 
   shiftDeleted: "Shift deleted.",
+
+  // ── Payroll breakdown (step 12) ──
+
+  /** A cycle with no closed shifts. An empty state, never two tables of zeros. */
+  noHoursInCycle: "No hours in this cycle.",
+
+  /**
+   * The `hasOpenShift` warning, in two versions.
+   *
+   * ⚠️ Same fact, two audiences — the third time this pattern appears, after
+   * `ACCOUNT_ALREADY_ACTIVATED` (step 9) and `OPEN_SHIFT_EXISTS` (step 11). Not
+   * in `SCREEN_ERRORS`, which is keyed by error code and this is not an error:
+   * the page picks by route, which it always knows.
+   *
+   * Deliberately says "hasn't been clocked out" rather than "is clocked in
+   * now": the flag is matched on `startTime` within this cycle, so it covers
+   * both the live shift and the one somebody forgot three weeks ago — and the
+   * second is the case that needs explaining.
+   */
+  openShiftOwn:
+    "You have a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until you close it.",
+  openShiftOther:
+    "This employee has a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until it's closed.",
 
   /** The delete confirmation. Permanent — there is no soft delete and no restore
    *  for a time entry, unlike an employee, who is only deactivated. */

@@ -150,7 +150,7 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | GET | `/payroll/me?cycle=2026-07` | EMPLOYEE | My own payroll breakdown (the admin has no payroll of their own — doesn't work hours). Returns the cycle block, `hourlyRate`, `totalHours`, `totalPay`, `hasOpenShift`, the four `zones` and the `days` table (see §7) |
-| GET | `/payroll/:userId?cycle=2026-07` | ADMIN | Payroll for a specific employee — **identical shape** to `/me`, since both feed the same shared `PayrollBreakdown`. A deactivated employee resolves normally (they still worked the hours)· any id that is not an EMPLOYEE, the admin's own included, is a 404 |
+| GET | `/payroll/:userId?cycle=2026-07` | ADMIN | Payroll for a specific employee — **identical shape** to `/me`, since both feed the same shared page (`PayrollSummary` + `PayrollDayTable`, step 12· measured byte-for-byte identical on the two routes). A deactivated employee resolves normally (they still worked the hours)· any id that is not an EMPLOYEE, the admin's own included, is a 404 |
 | GET | `/payroll/overview?cycle=2026-07` | ADMIN | The whole team for one cycle in **one** request: `totalCost` plus a row per employee (`userId`, `name`, `totalHours`, `totalPay`, `hasOpenShift`). Every active employee appears, even with zero hours, **plus** any deactivated employee with hours in this cycle — someone who left mid-cycle still has to be paid and still has to show up in the costs. Deliberately one call rather than one per employee: the alternative is N round trips and the team's total added up in the browser, which would put payroll arithmetic in the frontend |
 
 ### Settings
@@ -355,6 +355,18 @@ The second is the case the toast was adopted for: a shift saved into a cycle oth
 **`OPEN_SHIFT_EXISTS` reads differently on Clock and on Shift History**, because the right next action differs while the fact is identical. On Clock the user pressed Clock In, so *"Please clock out first"* is literally the next step. On Shift History they are adding or editing a **past** shift while a live one runs, and the same sentence would push them to end a real shift early, add the row, and clock back in — splitting the very shift the rule protects. There it reads:
 
 > You're currently clocked in. You can add or change past shifts once you clock out.
+
+**Payroll Breakdown** (step 12). None of this is in the binding table above, so it lives in `LABELS`/`NOTICES` and may be improved without a spec change:
+
+- Empty cycle: *"No hours in this cycle."* — it replaces **both** tables rather than rendering them full of zeros.
+- The **`hasOpenShift` warning, in two wordings**, chosen by route. The fact is identical and the audience is not — the third instance of this pattern, after `ACCOUNT_ALREADY_ACTIVATED` (step 9) and `OPEN_SHIFT_EXISTS` (step 11):
+  - own (`/payroll`): *"You have a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until you close it."*
+  - someone else's (`/payroll/:userId`): *"This employee has a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until it's closed."*
+
+  ⚠️ It says *"hasn't been clocked out"* rather than *"is clocked in now"* deliberately: the flag is matched on `startTime` inside the cycle, so it covers both the live shift and the one somebody forgot three weeks ago — and the second is the case that needs explaining.
+- **`ISK` is appended to the Total Pay column only**, never to Rate — a rate is ISK *per hour*, so the bare unit would misname it.
+- **`—` in a day-table cell with no hours**, so the eye finds the cells that carry hours. ⚠️ The **Total row keeps `0.00`**: a totals row is a row of totals, and a dash there reads as "not computed" rather than "none".
+- The four **short zone names** for the day table's headers (`Day` / `Evening` / `Night` / `Weekend`) are the binding ones from the table above, held client-side keyed by `zone` — see architecture.md § Frontend invariants for why they are not derived from `zones[].label`, and why the **percentage** is never held locally.
 
 **Field validation, shown by zod before any request is sent** (step 9). Distinct from the table above, which answers a request that already failed. Each mirrors a rule the backend also enforces, so the two layers agree rather than duplicate:
 
