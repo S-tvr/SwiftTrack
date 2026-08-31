@@ -4,6 +4,8 @@ Development order. Each step must be completed (and working) before the next one
 
 ⚠️ **Steps 9–13b were rewritten on 2026-08-26**, after the backend was complete, to describe the API that actually exists rather than the one imagined in step 0. **Step 13a (client-side validation polish) was removed** in the same pass: it existed to defer form validation until the rules were known, and the rules have been known since the backend closed, so its content became a rule applied from step 9 onward instead of a cleanup pass at the end. The reasoning for every decision is in `progress-tracker.md` under that date.
 
+⚠️ **Step 13 was then split into `13-1`/`13-2`/`13-3` on 2026-08-31**, before any of it was built — three pages in one step was roughly the sum of steps 10, 11 and 12 put together. The `-N` suffix follows `8b-1`/`8b-2` rather than letters, because `13b` is the Playwright step and `13a` is the one abolished above. Full reasoning at the head of §13.
+
 ---
 
 ## Execution Rule (read first)
@@ -237,7 +239,7 @@ Everything below applies to all of steps 9–13.
 | **Replaced** | `PayrollBreakdown` → two components (step 12) |
 | **Deleted** | `MonthSummary` (step 10), `mocks/data.ts` (when its last importer goes) |
 
-⚠️ **`mocks/data.ts` was imported by 13 files when step 9 began** — including `App.tsx` and `Header.tsx`. Every frontend step detaches its own; the file is deleted only when the last one does. A step is not finished while a file it owns still imports from `@/mocks/data`. **After step 12 there are 5 left, and all of them belong to step 13**: `PayrollOverview`, `EmployeeForm`, `EmployeeList`, `SettingsPage`, `TeamPage` — so step 13 is the step that deletes the file.
+⚠️ **`mocks/data.ts` was imported by 13 files when step 9 began** — including `App.tsx` and `Header.tsx`. Every frontend step detaches its own; the file is deleted only when the last one does. A step is not finished while a file it owns still imports from `@/mocks/data`. **After step 12 there are 5 left, and all of them belong to step 13**: `PayrollOverview` (13-1), `SettingsPage` (13-2), then `TeamPage`, `EmployeeList` and `EmployeeForm` (13-3) — so **13-3** is the sub-step that deletes the file, at **5 → 4 → 3 → 0**.
 
 **Five doors, and nothing goes around them.** Each exists because a second implementation of the same thing is how this codebase gets a bug that nobody can see. *(Four until step 12, which added the fifth for the same reason the other four exist — see §12.)*
 
@@ -443,7 +445,56 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
 
   ⚠️ **`?userId=` that is not an integer still fires a request** (`/payroll/abc` → `GET /payroll/NaN` → 400, discarded· the page has already rendered `EMPLOYEE_NOT_FOUND` from its own guard). Identical in `ShiftHistoryPage` since step 11, and **left alone knowingly**: fixing it on one of two twin pages is worse than the 400 it saves. If it is ever fixed it is fixed in both, or in `useApiQuery` — which would introduce a third state (`enabled`) that all three consumer pages would have to be re-read against.
 
-- [ ] **13. Admin — Team, Payroll Overview & Settings**
+### Step 13 — split into three (2026-08-31)
+
+⚠️ **Split before any of it was built.** As one step it was three pages, ~9 endpoints and ~6 components — roughly the sum of steps 10, 11 and 12, each of which was a single page. The reasoning is the one that already split `8b` into `8b-1`/`8b-2`, and the naming follows it deliberately: a step closes with a manual sweep, a `/review` and a spike, and step 12's `/review` produced **six findings across two components**. Across six components at once a red result is ambiguous — and this project has **five recorded measurement errors, every one of them in the harness rather than the code**.
+
+⚠️ **`13a` and `13b` are deliberately not reused as labels.** `13b` is the Playwright step and is referenced in ~12 places across the four context files — and it was itself named `13b` rather than `14` precisely to avoid this class of rename. `13a` was **abolished** on 2026-08-26 and the spec says so in writing (*"There is no step 13a"*); reviving the label would give two different things the same name in the same file.
+
+**The order is Overview → Settings → Team**, which is *not* the order §8 lists the pages in. Each pass earns the next:
+
+| | Why it sits here |
+|---|---|
+| **13-1 Overview** | A pure read that introduces **no new pattern at all** — it copies `CycleNavigator` (step 11), `lib/format.ts` and the `<tfoot>`/`<th scope="row">` structure (step 12). The cheapest possible proof that step 12's patterns actually transfer. |
+| **13-2 Settings** | The first write, on the smallest surface in the project (one `<select>`, two endpoints) — and the page where the **toast-after-write rule** is fixed, for the same reason `sonner` itself was decided in step 11 rather than here: the alternative is each page inventing its own confirmation. |
+| **13-3 Team** | Last because it is the only one that is genuinely large — six endpoints, two dialogs, three badges, a filter. By then the toast rule and the confirmation-dialog pattern exist to be copied instead of invented. |
+
+The three are independent — none reads another's data — and each detaches its own importers of `@/mocks/data` (**5 → 4 → 3 → 0**), so **13-3 is the step that deletes the file**.
+
+---
+
+- [ ] **13-1. Admin — Payroll Overview**
+
+  **`PayrollOverviewPage`** — one call to `GET /payroll/overview?cycle=`, `?cycle=` in the URL as in steps 11–12.
+  - Response shape, read off `PayrollOverviewResponseDto` rather than assumed: the shared cycle block (the DTO extends `CycleRangeDto`), `totalCost`, and **`rows[]`** of `{ userId, name, totalHours, totalPay, hasOpenShift }`. ⚠️ The array is **`rows`**, not `employees`
+  - Rows arrive **sorted by name**, already include any deactivated employee with hours in the cycle, and carry their own totals. The mockup's per-employee `reduce` and its client-side `hasOpenShift` both go
+  - `totalCost` is printed **as sent** — never re-added from the rows. Same rule as step 12's Total row and the same reason: the server's figure is an exact sum of already-rounded wages, while a browser re-sum is a second, competing answer
+  - Clicking an employee → `/payroll/:userId?cycle=<same cycle>`. ⚠️ Carrying the cycle is the whole reason it lives in the URL: without it the admin drills into a number they saw in July and lands in August
+  - The open-shift indicator comes from the response
+  - `api/payroll.ts` gains `getPayrollOverview()` and its types, beside the two readers from step 12
+  - An **empty `rows[]`** is an empty state, not a table of nothing — a company with no employees yet, or none with hours. The `totalCost` line is meaningless there and does not render
+  - Detaches `PayrollOverview.tsx` from `@/mocks/data` (**5 → 4**)
+
+  **Nothing is invented here, and that is the point.** `CycleNavigator`, `useApiQuery`, `?cycle=` in the URL with `replace`, `lib/format.ts`, the `<tfoot>` carrying `<th scope="row">` — all of it already exists. If any of it fails to transfer, this is the cheapest place in the project to find that out.
+
+  **Vitest**: `rows[]` rendered as given· `totalCost` printed and never summed· the drill-down link carrying the cycle· loading, error and empty states.
+
+- [ ] **13-2. Admin — Settings**
+
+  **`SettingsPage`** — `GET /settings`, `PUT /settings`.
+  - ⚠️ **`api/settings.ts` does not exist yet.** `architecture.md` § Folder Structure lists it, but nothing has needed it until now — this step creates it. `SettingsResponseDto` is `{ cycleStartDay, cycleEndDay }`, and `PUT` requires **both**
+  - ⚠️ The mockup's two free number inputs (1–31) become **one `<select>` of 11–25**, with the end day beside it as derived **text** ("Cycle ends on the 24th of the following month"). The request still sends both fields; the admin simply cannot produce an invalid pair. Backend validation stays regardless — the two are layers, not duplicates
+  - react-hook-form + zod, as every form since step 9. ⚠️ **No `z.coerce`** — a `<select>` yields a string, and the answer is `z.number()` plus `register(..., { valueAsNumber: true })`, measured in architecture.md § Stack Traps #3
+  - ⚠️ **Saving changes nothing visible on screen** — same page, same values. This page needs an explicit confirmation more than any other, or the admin clicks Save three times
+  - Detaches `SettingsPage.tsx` from `@/mocks/data` (**4 → 3**)
+
+  **The toast rule is decided in this step and copied by 13-3**, rather than each page choosing for itself — the same move `sonner` (step 11) and `lib/format.ts` (step 12) already made, and for the same reason.
+
+  ⚠️ **Open, to decide with the page in front of you: does changing `cycleStartDay` warn?** It appears in none of the three context files, and it is the sharpest thing on this screen. Payroll is recomputed on every request and never frozen, so moving the boundary **re-slices every past cycle** — the same property that made admin-editable rate-zone percentages a *forbidden* feature (architecture.md § Invariants). Here the field is deliberately editable, so the answer is not to lock it but to say what it does.
+
+  **Vitest**: the `<select>` offers exactly 11–25· the derived end-day text follows the selection· submit sends **both** fields· `valueAsNumber` really yields a number, not a string.
+
+- [ ] **13-3. Admin — Team**
 
   **`TeamPage`** — where an admin lands after login. Data: `GET /users`, which returns EMPLOYEE rows only (never the admin) and **includes deactivated ones**.
 
@@ -467,17 +518,21 @@ The paramless routes are EMPLOYEE-only because the endpoints behind them (`/time
   - The code **also stays in the list** on every pending row, with its expiry, so it survives a dialog closed too quickly and so an admin can see one about to lapse and chase it
   - A **New code** button on pending rows → `POST /users/:id/reset-setup-code` (step 8c)
 
-  **`PayrollOverviewPage`** — one call to `GET /payroll/overview?cycle=`, `?cycle=` in the URL as in steps 11–12.
-  - Rows arrive **sorted**, already include any deactivated employee with hours in the cycle, and carry their own totals. The mockup's per-employee `reduce` and its client-side `hasOpenShift` both go
-  - `totalCost` is printed **as sent** — never re-added from the rows
-  - Clicking an employee → `/payroll/:userId?cycle=<same cycle>`. ⚠️ Carrying the cycle is the whole reason it lives in the URL: without it the admin drills into a number they saw in July and lands in August
-  - The open-shift indicator comes from the response
+  ⚠️ **Note the deliberate difference between the two admin pages:** Payroll Overview (13-1) *shows* deactivated employees when they have hours in the cycle, Team *hides* them by default. Not an inconsistency — Overview is one cycle's payroll, Team is a staff roster. Do not "fix" one to match the other.
 
-  **`SettingsPage`** — `GET /settings`, `PUT /settings`.
-  - ⚠️ The mockup's two free number inputs (1–31) become **one `<select>` of 11–25**, with the end day beside it as derived **text** ("Cycle ends on the 24th of the following month"). The request still sends both fields; the admin simply cannot produce an invalid pair. Backend validation stays regardless — the two are layers, not duplicates
-  - ⚠️ **Saving changes nothing visible on screen** — same page, same values. This page needs an explicit confirmation more than any other, or the admin clicks Save three times
+  **Six endpoints, and the client has one of them.** `api/users.ts` today holds `getMe()` and nothing else. This step adds the other five reads/writes and the **`UserResponse`** type — ⚠️ **declared standalone, never derived from `UserProfile`**. That is the client side of an existing invariant: the admin's view of other people carries `setupCode`/`setupCodeExpiresAt`/`isActive`/`hasActivated`, the self-view carries none of them, and subtractive derivation leaks by default. All four write endpoints return the **full** `UserResponseDto`, `reset-setup-code` included — so the new code comes back in the response and needs no follow-up read.
 
-  ⚠️ **Note the deliberate difference between the two admin pages:** Payroll Overview *shows* deactivated employees (when they have hours in the cycle), Team *hides* them by default. Not an inconsistency — Overview is one cycle's payroll, Team is a staff roster. Do not "fix" one to match the other.
+  **Email is a create-only field.** `PUT /users/:id` accepts `name` and `hourlyRate` only, so `EmployeeForm` in edit mode must not offer it — an editable input whose value the API silently ignores is worse than no input.
+
+  **`SCREEN_ERRORS.team` gets its first consumer.** The per-screen override was built in step 9 for exactly this: `ACCOUNT_ALREADY_ACTIVATED` reaches an employee on `/activate` about *their own* account and an admin here about *someone else's* — same fact, different useful sentence. It has been sitting unused since step 9; if this step finds nowhere to put the admin wording and writes it inline in JSX, the "every string comes from `messages.ts`" invariant breaks.
+
+  **Deletes `mocks/data.ts`** (**3 → 0**) — `TeamPage`, `EmployeeList` and `EmployeeForm` are the last three importers.
+
+  ⚠️ **Two things to decide with the page in front of you** (both parked here rather than guessed at now):
+  - **Where the new code from "New code" surfaces.** The response carries it, and the pending row already prints it — so reusing the create dialog is nearly free. What is not decided is whether re-issuing should force that moment, as creating does, or just refresh the row.
+  - **Which of the six writes get a toast.** The rule comes from 13-2, but Team is where it bites: create and edit change the list visibly, while **deactivate makes the row vanish** behind the filter, which reads like a hard delete of someone whose payroll history is in fact kept.
+
+  **Vitest**: the three badge states from the `isActive`/`hasActivated` pair (including the deactivated-but-activated row that a two-badge design gets wrong)· the toggle's count· `Reactivate` replacing `Deactivate`· the code and its expiry **date** on a pending row· no email field in edit mode.
 
 - [ ] **13b. Frontend E2E (Playwright)**
 

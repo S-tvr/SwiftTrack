@@ -437,11 +437,11 @@ The second is the case the toast was adopted for: a shift saved into a cycle oth
 10. Frontend: Clock Page — **the clock in/out button and nothing else**· the step-0 month summary is removed (see §8)
 11. Frontend: Shift History (shared component, employee + admin)
 12. Frontend: Payroll Breakdown (shared component, employee + admin) — replaces the step-0 draft with two components
-13. Frontend: Admin — Team, Payroll Overview, Settings
+13. Frontend: Admin — **split into three on 2026-08-31**, in this order: **13-1** Payroll Overview · **13-2** Settings · **13-3** Team. Not the order §8 lists the pages in: Overview is a pure read that copies step 12's patterns without inventing one, Settings is the smallest write and fixes the confirmation rule, and Team — six endpoints, two dialogs, three badges — comes last so it copies both instead of deciding them. 13-3 is also what deletes `mocks/data.ts`
 13b. Frontend E2E (Playwright) — after 13, because the flows do not exist before it
 14. README (build/deploy instructions)
 
-⚠️ Steps 9–13b were rewritten on 2026-08-26 against the finished API· the per-page specifications live in `build-plan.md`, and the reasoning in `progress-tracker.md` under that date. There is **no step 13a** — the client-side validation pass it described became a rule applied from step 9 onward (every form uses react-hook-form + zod from the start), since the validation rules have been known since the backend closed.
+⚠️ Steps 9–13b were rewritten on 2026-08-26 against the finished API· the per-page specifications live in `build-plan.md`, and the reasoning in `progress-tracker.md` under that date. There is **no step 13a** — the client-side validation pass it described became a rule applied from step 9 onward (every form uses react-hook-form + zod from the start), since the validation rules have been known since the backend closed. ⚠️ That abolished label is **not** reused by the split above, and neither is `13b`, which is the Playwright step: the sub-steps take the `-N` suffix already established by `8b-1`/`8b-2`.
 
 ---
 
