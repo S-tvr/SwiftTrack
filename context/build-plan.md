@@ -472,7 +472,8 @@ The three are independent — none reads another's data — and each detaches it
   - Clicking an employee → `/payroll/:userId?cycle=<same cycle>`. ⚠️ Carrying the cycle is the whole reason it lives in the URL: without it the admin drills into a number they saw in July and lands in August
   - The open-shift indicator comes from the response
   - `api/payroll.ts` gains `getPayrollOverview()` and its types, beside the two readers from step 12
-  - An **empty `rows[]`** is an empty state, not a table of nothing — a company with no employees yet, or none with hours. The `totalCost` line is meaningless there and does not render
+  - An **empty `rows[]`** is an empty state, not a table of nothing. ⚠️ **This line said "a company with no employees yet, *or none with hours*", and the second half was wrong** — corrected in 13-1 against real data: every **active** employee is listed even at zero hours, so "nobody worked this cycle" arrives as a table of zeros and is not this state at all. `rows[]` is empty only when there is nobody employed
+  - ⚠️ **The `totalCost` card still renders there, at 0** — this line previously said it "does not render", and the decision was reversed in 13-1 (`/architect`, user's call). Hiding it makes an empty team read as a **broken screen** rather than an empty one, and the card is the page: the total is what the admin opened it for, with the table below explaining where it comes from
   - Detaches `PayrollOverview.tsx` from `@/mocks/data` (**5 → 4**)
 
   **Nothing is invented here, and that is the point.** `CycleNavigator`, `useApiQuery`, `?cycle=` in the URL with `replace`, `lib/format.ts`, the `<tfoot>` carrying `<th scope="row">` — all of it already exists. If any of it fails to transfer, this is the cheapest place in the project to find that out.

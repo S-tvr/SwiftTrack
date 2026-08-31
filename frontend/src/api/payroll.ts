@@ -139,3 +139,75 @@ export function getPayrollForUser(
 ): Promise<PayrollResponse> {
   return request<PayrollResponse>(`/payroll/${userId}${cycleQuery(cycle)}`)
 }
+
+/**
+ * One employee's line on the admin overview.
+ *
+ * Flat: the row carries `userId`/`name` and three figures, and nothing else
+ * about the person.
+ *
+ * ⚠️ There is no `isActive` here, and that is a limit of the page rather than an
+ * oversight. A deactivated employee with hours in the cycle appears in this list
+ * — they still have to be paid — and is indistinguishable from an active one.
+ * Marking them would need a field the response does not carry.
+ */
+export interface PayrollOverviewRow {
+  userId: number
+  name: string
+  /** Exact sum of that employee's day cells — the same figure their own
+   *  breakdown shows, produced by the same calculation on the server. */
+  totalHours: number
+  /** Whole ISK. */
+  totalPay: number
+  /**
+   * A shift started inside this cycle and is still open, so hours exist that
+   * are **not** in `totalPay` beside it. Cycle-scoped on purpose: a shift
+   * running right now is not a reason to flag a cycle from three months ago.
+   */
+  hasOpenShift: boolean
+}
+
+/**
+ * The whole team for one cycle, in a single request — never one call per
+ * employee, which would put the team's total in the browser.
+ *
+ * ⚠️ The array is **`rows`**, not `employees`.
+ */
+export interface PayrollOverviewResponse {
+  /** e.g. "2026-07". Send it back untouched; never assemble one. */
+  cycle: string
+  prevCycle: string
+  nextCycle: string
+  /** First instant of the cycle, UTC ISO-8601. */
+  cycleStart: string
+  /** Last instant of the cycle, UTC ISO-8601. */
+  cycleEnd: string
+  /**
+   * What the business pays for this cycle — whole ISK, a sum of already-rounded
+   * wages computed on the server.
+   *
+   * ⚠️ **Print it as sent.** Re-adding `rows[]` in the browser answers a
+   * different question — "what does this array total?" — which happens to have
+   * the same answer today and stops having it the moment anything filters the
+   * table. This figure is a fact about the cycle, not about what is on screen.
+   */
+  totalCost: number
+  /**
+   * Every active employee, zero hours included, plus any deactivated one with
+   * hours in this cycle. Sorted by name by the server.
+   *
+   * Empty **only** when there are no employees at all — "nobody worked this
+   * cycle" is a list of zeros, not an empty one.
+   */
+  rows: PayrollOverviewRow[]
+}
+
+/** ADMIN — the team overview for one cycle. The employee equivalent does not
+ *  exist and should not: an employee sees only their own breakdown. */
+export function getPayrollOverview(
+  cycle?: string,
+): Promise<PayrollOverviewResponse> {
+  return request<PayrollOverviewResponse>(
+    `/payroll/overview${cycleQuery(cycle)}`,
+  )
+}

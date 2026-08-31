@@ -361,9 +361,11 @@ The second is the case the toast was adopted for: a shift saved into a cycle oth
 - Empty cycle: *"No hours in this cycle."* — it replaces **both** tables rather than rendering them full of zeros.
 - The **`hasOpenShift` warning, in two wordings**, chosen by route. The fact is identical and the audience is not — the third instance of this pattern, after `ACCOUNT_ALREADY_ACTIVATED` (step 9) and `OPEN_SHIFT_EXISTS` (step 11):
   - own (`/payroll`): *"You have a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until you close it."*
-  - someone else's (`/payroll/:userId`): *"This employee has a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until it's closed."*
+  - someone else's (`/payroll/:userId` **and** the Payroll Overview): *"This employee has a shift in this cycle that hasn't been clocked out. Its hours are missing from these figures until it's closed."*
 
   ⚠️ It says *"hasn't been clocked out"* rather than *"is clocked in now"* deliberately: the flag is matched on `startTime` inside the cycle, so it covers both the live shift and the one somebody forgot three weeks ago — and the second is the case that needs explaining.
+
+  ⚠️ The second sentence said *"from this **breakdown**"* until step 13-1, and was corrected there: it is reused verbatim as the overview's row-marker tooltip, where "breakdown" names a **different page** than the one the reader is on. A third variant was rejected rather than overlooked — the two wordings above are split because the *audience* changes, and between those two screens it does not: it is an admin about someone else on both. *"These figures"* is true of the breakdown's tables and of the overview's row alike.
 - **`ISK` is appended to the Total Pay column only**, never to Rate — a rate is ISK *per hour*, so the bare unit would misname it.
 - **`—` in a day-table cell with no hours**, so the eye finds the cells that carry hours. ⚠️ The **Total row keeps `0.00`**: a totals row is a row of totals, and a dash there reads as "not computed" rather than "none".
 - The four **short zone names** for the day table's headers (`Day` / `Evening` / `Night` / `Weekend`) are the binding ones from the table above, held client-side keyed by `zone` — see architecture.md § Frontend invariants for why they are not derived from `zones[].label`, and why the **percentage** is never held locally.

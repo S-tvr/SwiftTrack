@@ -87,6 +87,28 @@ export const LABELS = {
   /** A zone with no hours on a date. A dash rather than "0.00" so the eye finds
    *  the cells that carry hours. */
   emptyCell: "—",
+
+  // ── Payroll overview (step 13-1) ──
+  /** §8a fixes no column headers for this page, so these two are the client's
+   *  own. `columnHours` and `columnTotalPay` above are reused verbatim: they
+   *  name the same two quantities the employee sees on their own breakdown, and
+   *  two words for one figure across two screens is what messages.ts exists to
+   *  prevent. */
+  columnName: "Name",
+  /** The column carrying the open-shift marker. The header is what gives the
+   *  icon a meaning for a reader who never hovers it. */
+  columnOpenShift: "Open Shift",
+  /**
+   * The card above the table — what the business pays for this cycle.
+   *
+   * ⚠️ Not "Total Monthly Cost", which is what the step 0 mockup said. A cycle
+   * runs from the 25th to the 24th by default and its start day is configurable
+   * (11–25), so it is **not** a calendar month: an admin reading "monthly" would
+   * file this figure under July while it covers 25 Jul – 24 Aug. The
+   * CycleNavigator directly above prints the real dates, so this title only has
+   * to avoid naming the period wrongly.
+   */
+  totalCost: "Total Cost",
 } as const
 
 /**
@@ -260,11 +282,31 @@ export const NOTICES = {
    * now": the flag is matched on `startTime` within this cycle, so it covers
    * both the live shift and the one somebody forgot three weeks ago — and the
    * second is the case that needs explaining.
+   *
+   * ⚠️ `openShiftOther` says "these figures", not "this breakdown", because it
+   * serves **two** pages: the breakdown's warning line and the overview's row
+   * marker (step 13-1). "Breakdown" is the name of one specific page, so on the
+   * overview it pointed somewhere the reader was not. A third variant was
+   * rejected — the split above exists because the *audience* changes, and here
+   * it does not: it is an admin about someone else on both screens.
    */
   openShiftOwn:
     "You have a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until you close it.",
   openShiftOther:
-    "This employee has a shift in this cycle that hasn't been clocked out. Its hours are missing from this breakdown until it's closed.",
+    "This employee has a shift in this cycle that hasn't been clocked out. Its hours are missing from these figures until it's closed.",
+
+  // ── Payroll overview (step 13-1) ──
+
+  /**
+   * The only empty state this page has.
+   *
+   * ⚠️ An empty `rows[]` means there are **no employees at all** — every active
+   * employee is listed even with zero hours, so "nobody worked this cycle" is a
+   * table of zeros and not this sentence. `NOTICES.noHoursInCycle` from step 12
+   * would therefore be wrong here, which is why this is a second string rather
+   * than a reuse.
+   */
+  noEmployees: "No employees yet.",
 
   /** The delete confirmation. Permanent — there is no soft delete and no restore
    *  for a time entry, unlike an employee, who is only deactivated. */
