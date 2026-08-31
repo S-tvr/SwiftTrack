@@ -370,6 +370,15 @@ The second is the case the toast was adopted for: a shift saved into a cycle oth
 - **`—` in a day-table cell with no hours**, so the eye finds the cells that carry hours. ⚠️ The **Total row keeps `0.00`**: a totals row is a row of totals, and a dash there reads as "not computed" rather than "none".
 - The four **short zone names** for the day table's headers (`Day` / `Evening` / `Night` / `Weekend`) are the binding ones from the table above, held client-side keyed by `zone` — see architecture.md § Frontend invariants for why they are not derived from `zones[].label`, and why the **percentage** is never held locally.
 
+**Settings** (step 13-2). None of this is in the binding table above, so it lives in `LABELS`/`NOTICES` and may be improved without a spec change. The card title, the field label and the button (**Pay Cycle**, **Cycle Start Day**, **Save Settings**) are kept from the approved step-0 mockup:
+
+- The end day, stated rather than offered as a field: *"Cycle ends on the 24th of the following month."* ⚠️ The number is the **only** thing interpolated, and it comes from `deriveCycleEndDay()` — the single implementation of `end = start - 1` on the client. The ordinal is produced by `formatOrdinalDay` in `lib/format.ts`, never assembled in the sentence.
+- Permanently under the select, and the one thing on this screen an admin cannot discover by using it: *"Changing this day moves the boundary of every pay cycle, including ones already paid. Their totals are recalculated, not frozen."*
+- The confirmation, on submit — *"Change the pay cycle?"* / *"Cycles will run from the 25th to the 24th of the following month. Cycles that have already been paid are re-cut at the new boundary, so their totals can change. No shift is altered — only which cycle its hours fall into."* The action reads **Change cycle**, naming the consequence rather than saying "OK".
+
+  ⚠️ The last sentence is load-bearing rather than reassurance: what actually moves is the *apportionment* of hours between cycles, and a shift crossing the new boundary is split differently. No `TimeEntry` row is touched.
+- The toast: *"Settings saved."* This page is the reason the toast rule exists — a successful save leaves the same page with the same values.
+
 **Field validation, shown by zod before any request is sent** (step 9). Distinct from the table above, which answers a request that already failed. Each mirrors a rule the backend also enforces, so the two layers agree rather than duplicate:
 
 | Field rule | Backend counterpart | English message |

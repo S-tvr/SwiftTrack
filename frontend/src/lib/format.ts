@@ -80,3 +80,32 @@ export function formatRate(value: number): string {
 export function formatIsk(value: number): string {
   return iskFormatter.format(value)
 }
+
+/**
+ * English ordinal suffixes, selected by `Intl` rather than hand-rolled — the
+ * naive "last digit" rule gets **11th, 12th and 13th** wrong, and 11 and 12 are
+ * both inside the range this project actually uses (cycle days 10-25).
+ */
+const ORDINAL_SUFFIXES: Record<string, string> = {
+  one: "st",
+  two: "nd",
+  few: "rd",
+  other: "th",
+}
+
+const ordinalRules = new Intl.PluralRules(LOCALE, { type: "ordinal" })
+
+/**
+ * A day of the month as an ordinal — `24` → `"24th"` (step 13-2).
+ *
+ * Used for the pay cycle's end day, which the Settings page states as a
+ * sentence rather than offering as a second input. Like everything else in this
+ * file it **computes nothing**: it is handed a day and returns its name.
+ *
+ * The fallback is unreachable for `en-GB` (its ordinal rules cover all four
+ * categories) and exists so an unknown category can never render `undefined`
+ * inside a sentence — the same defensive shape as `zoneShortLabel`.
+ */
+export function formatOrdinalDay(day: number): string {
+  return `${day}${ORDINAL_SUFFIXES[ordinalRules.select(day)] ?? "th"}`
+}

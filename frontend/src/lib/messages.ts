@@ -109,6 +109,17 @@ export const LABELS = {
    * to avoid naming the period wrongly.
    */
   totalCost: "Total Cost",
+
+  // ── Settings (step 13-2) ──
+  /** §8a fixes only the *page* title for this screen, so the three below are
+   *  taken from the approved step-0 mockup, which is the visual specification
+   *  the frontend steps rewire rather than redraw. */
+  payCycle: "Pay Cycle",
+  cycleStartDay: "Cycle Start Day",
+  saveSettings: "Save Settings",
+  /** The confirming action in the dialog. Names the consequence rather than
+   *  saying "OK" — it is the button the admin is being asked to think about. */
+  changeCycle: "Change cycle",
 } as const
 
 /**
@@ -313,6 +324,49 @@ export const NOTICES = {
   deleteShiftTitle: "Delete this shift?",
   deleteShiftBody: (shift: string) =>
     `${shift} will be permanently deleted. This cannot be undone.`,
+
+  // ── Settings (step 13-2) ──
+
+  /**
+   * Beside the select, where the end day used to be a second input. It is
+   * **derived**, always exactly the day before the start, so offering it as a
+   * field could only ever let an admin produce a pair the API rejects.
+   *
+   * `endDay` arrives already formatted from `lib/format.ts`, exactly as
+   * `difference` and `startedAt` above arrive from `lib/datetime.ts`: the
+   * template holds the sentence, the door holds the number.
+   */
+  cycleEndDerived: (endDay: string) =>
+    `Cycle ends on the ${endDay} of the following month.`,
+
+  /**
+   * Under the select, permanently — the one thing on this screen an admin
+   * cannot discover by using it.
+   *
+   * Payroll is recomputed on every request and never frozen (architecture.md
+   * § Invariants), so moving this boundary re-slices **past** cycles too. That
+   * is the same property which makes the rate-zone percentages a forbidden
+   * field on `AppSettings`; here the field is deliberately editable, so the
+   * answer is to say what it does rather than to lock it.
+   */
+  cycleBoundaryWarning:
+    "Changing this day moves the boundary of every pay cycle, including ones already paid. Their totals are recalculated, not frozen.",
+
+  /**
+   * The confirmation, shown on submit. The static line above explains the
+   * setting; this one arrives at the moment the change is actually made, and
+   * spells out both halves — what moves, and what does not.
+   */
+  changeCycleTitle: "Change the pay cycle?",
+  changeCycleBody: (startDay: string, endDay: string) =>
+    `Cycles will run from the ${startDay} to the ${endDay} of the following month. Cycles that have already been paid are re-cut at the new boundary, so their totals can change. No shift is altered — only which cycle its hours fall into.`,
+
+  /**
+   * The toast, and the case that fixes the rule for step 13-3: a successful
+   * save leaves the **same page with the same values**, so without it the only
+   * evidence of the write is the Save button going quiet.
+   */
+  settingsSaved: "Settings saved.",
 } as const
 
 // ── Error codes ──────────────────────────────────────────────────────────────

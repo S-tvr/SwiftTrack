@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 
-import { formatHours, formatIsk, formatRate } from "./format"
+import {
+  formatHours,
+  formatIsk,
+  formatOrdinalDay,
+  formatRate,
+} from "./format"
 
 // Pure functions, no DOM — the `node` environment, like datetime.spec.ts.
 //
@@ -73,6 +78,46 @@ describe("formatIsk", () => {
     for (const amount of everyAmountFromTheWorkedExample) {
       expect(Number.isInteger(amount)).toBe(true)
     }
+  })
+})
+
+describe("formatOrdinalDay", () => {
+  it("gets the teens right, which is why Intl does this and not a last-digit rule", () => {
+    // The naive "1 → st, 2 → nd, 3 → rd" rule produces "11st" and "12nd", and
+    // both days are inside the range this project uses.
+    expect(formatOrdinalDay(11)).toBe("11th")
+    expect(formatOrdinalDay(12)).toBe("12th")
+    expect(formatOrdinalDay(13)).toBe("13th")
+  })
+
+  it("covers every end day the settings page can produce (10-24)", () => {
+    // cycleStartDay is 11-25, so the derived end day spans exactly these.
+    const expected = [
+      "10th",
+      "11th",
+      "12th",
+      "13th",
+      "14th",
+      "15th",
+      "16th",
+      "17th",
+      "18th",
+      "19th",
+      "20th",
+      "21st",
+      "22nd",
+      "23rd",
+      "24th",
+    ]
+
+    expect(
+      Array.from({ length: 15 }, (_, index) => formatOrdinalDay(index + 10)),
+    ).toEqual(expected)
+  })
+
+  it("names the default cycle's two days", () => {
+    expect(formatOrdinalDay(25)).toBe("25th")
+    expect(formatOrdinalDay(24)).toBe("24th")
   })
 })
 
