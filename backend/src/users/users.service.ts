@@ -283,6 +283,35 @@ export class UsersService {
     });
   }
 
+  /**
+   * Used by AuthService.changePassword() to verify the caller's current
+   * password without loading the rest of the row. A narrow, purpose-named
+   * reader with an explicit `select` — never a general `findById()`, which has
+   * already leaked `password`/`setupCode` to a caller twice in this project
+   * (the removed Step 2 `findById()`, the reused Step 3 response DTO).
+   */
+  async findCredentialsById(
+    id: number,
+  ): Promise<{ id: number; password: string | null } | null> {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, password: true },
+    });
+  }
+
+  /**
+   * Used by AuthService.changePassword() once the current password has been
+   * verified. Deliberately separate from activateAccount(): that one also
+   * clears setupCode/setupCodeExpiresAt, which do not apply here — the caller
+   * is already activated, or they could not have authenticated to reach this.
+   */
+  async updatePasswordHash(id: number, hashedPassword: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id },
+      data: { password: hashedPassword },
+    });
+  }
+
   /** Any user, regardless of role — used by /users/me, which serves both roles. */
   private async findUserByIdOrThrow(id: number): Promise<User> {
     const user = await this.prisma.user.findUnique({ where: { id } });

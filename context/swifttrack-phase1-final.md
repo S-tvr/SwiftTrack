@@ -120,6 +120,7 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 |---|---|---|---|
 | POST | `/auth/login` | — | Returns a JWT. Fails with a clear message if `password` is still null (account not activated) |
 | POST | `/auth/set-initial-password` | — | `{ email, setupCode, newPassword }` — activates the employee's account |
+| PATCH | `/auth/change-password` | Both | `{ currentPassword, newPassword }` — lets an already-activated user (either role) rotate their own password. *(Added in step 8e.)* Acts only on the caller's own row, from the JWT — never a body field. Not behind `ThrottlerGuard`: unlike `login`, a request here already requires a valid token, so brute-forcing `currentPassword` needs a stolen session first, not just a guessable email. Does **not** invalidate tokens already issued — this API has no refresh/revocation mechanism (§13, a Phase 1 gap already accepted for `login`), so a token minted before the change stays valid until its own 14-day expiry |
 
 > No `/auth/register` route. The first admin is created only via the seed script.
 
@@ -422,6 +423,7 @@ The second is the case the toast was adopted for: a shift saved into a cycle oth
 | Manual add/edit: timestamp in the future (§7a rule 4) | "Start time cannot be in the future." / "End time cannot be in the future." |
 | Manual add: EMPLOYEE sent a `userId` | "userId can only be set by an admin." |
 | Manual add: ADMIN sent no `userId` | "userId is required when an admin creates a shift." |
+| Change password: `currentPassword` does not match *(step 8e)* | "Your current password is incorrect." |
 
 > **This table describes, it does not prescribe.** It lists the wording each case carries in the code today, so a reader can see it without grepping — it is not a contract the implementation must satisfy. An agent may improve any of these strings, and adding a row is optional for a case not listed.
 >

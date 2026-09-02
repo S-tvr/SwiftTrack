@@ -101,4 +101,48 @@ export class AuthService {
     const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
     await this.usersService.activateAccount(email, hashedPassword);
   }
+
+  /**
+   * Lets an already-authenticated user (either role) set a new password
+   * themselves — the one gap login/set-initial-password left open: neither
+   * activated-account recovery nor a self-service rotation existed before this.
+   *
+   * `userId` comes from the caller's own JWT (never a body field), so this can
+   * only ever act on the caller's own row — there is no "change someone else's
+   * password" version of this method.
+   *
+   * ⚠️ Does not invalidate tokens already issued: this API has no refresh/
+   * revocation mechanism (a deliberate Phase 1 gap, see architecture.md), so a
+   * token minted before the change stays valid until its own 14-day expiry.
+   */
+  async changePassword(
+    userId: number,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const user = await this.usersService.findCredentialsById(userId);
+    // `user.password` is null only for a never-activated account, and an
+    // unactivated account cannot hold a valid JWT in the first place — so this
+    // is unreachable in practice, not a case the caller can trigger.
+    if (!user || user.password === null) {
+      throw unauthorized(
+        ErrorCode.INVALID_CURRENT_PASSWORD,
+        'Your current password is incorrect.',
+      );
+    }
+
+    const passwordMatches = await bcrypt.compare(
+      currentPassword,
+      user.password,
+    );
+    if (!passwordMatches) {
+      throw unauthorized(
+        ErrorCode.INVALID_CURRENT_PASSWORD,
+        'Your current password is incorrect.',
+      );
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await this.usersService.updatePasswordHash(userId, hashedPassword);
+  }
 }

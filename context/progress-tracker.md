@@ -1897,3 +1897,67 @@ Endpoints/Components:
 2. **Τα tests γράφονται ΜΕΣΑ στο Step 6**, όπως έγινε στο Step 5 (απόφαση του χρήστη). Το §8a αναφέρει ακόμα «Tests for `getPayrollForCycle()`» — αν το βήμα τα αφήσει εκεί, γράφονται δύο φορές ή καθόλου. Στο τέλος του βήματος ενημέρωσε το §8a σε «υπάρχουν ήδη από το Step 6 — επέκτεινε».
 3. **`GET /payroll/:userId` με id που δεν είναι EMPLOYEE → 404**, μέσω `assertEmployeeExists()` που ήδη υπάρχει — ίδια συμπεριφορά με το `GET /time-entries?userId=`.
 4. Το payroll query είναι **μόνο κλειστές** βάρδιες (`endTime: { not: null, gt: start }, startTime: { lt: endExclusive }`) — σκόπιμα **διαφορετικό** από της λίστας, που περιλαμβάνει και τις ανοιχτές. Μην τα ενοποιήσεις.
+
+---
+
+## Step 8e — `PATCH /auth/change-password`
+Status: ✅ Done
+Date: 2026-09-01
+Files added/changed:
+- `backend/src/common/error-codes.ts` — new code `INVALID_CURRENT_PASSWORD`
+- `backend/src/auth/dto/change-password.dto.ts` — new (`currentPassword` `@MinLength(1)`, `newPassword` `@MinLength(8)`, mirroring `LoginDto`/`SetInitialPasswordDto`)
+- `backend/src/auth/auth.service.ts` — new `changePassword(userId, currentPassword, newPassword)`
+- `backend/src/auth/auth.controller.ts` — new route
+- `backend/src/users/users.service.ts` — two new narrow methods: `findCredentialsById()` (reader, `select: { id, password }`), `updatePasswordHash()` (writer)
+- `backend/src/auth/auth.service.spec.ts` — extended (`describe('changePassword', ...)`, 5 new tests)
+- `backend/test/change-password.e2e-spec.ts` — new, 8 tests
+- `context/`: spec §6 (new endpoint row + messages table row), architecture.md (folder structure, the 401-per-class exception, a new invariant), build-plan.md (new **8e** entry)
+
+Endpoints/Components:
+- `PATCH /auth/change-password` (Both roles, `JwtAuthGuard` only) — `{ currentPassword, newPassword }` → 200. `@SkipThrottle()`, deliberately not rate limited (user's explicit call, this session) — the trade-off is documented in code and in architecture.md rather than left implicit.
+- Tests: backend unit **208 → 213** (5 new), backend e2e **98 → 106** (8 new). Both baselines match what Step 8d recorded, and both deltas were re-measured in the review pass below rather than asserted.
+- No new dependency, no frontend change.
+
+### Why this step exists
+Found while auditing the finished app for real operational gaps (not a spec miss): `AuthService` had exactly two entry points, and neither gave an **already-activated** account a way to rotate or recover its password. `reset-setup-code` refuses an already-activated account by design; `deactivate`/`reactivate` never touch `password`. The only remedy before this step was a direct database edit — a real gap, distinct from (and narrower than) the "should there be a second admin" question that was raised and set aside first: multi-admin support was explicitly ruled out of scope (no clear need for this app's single-tenant target), while "the one admin has no way to change their own password" was accepted as worth fixing.
+
+### Two decisions made in this session, both the user's call
+1. **No rate limiting on this route.** Considered and explicitly declined — `@SkipThrottle()` used rather than silence, so the exception is visible at the call site. Reasoning: a request here already requires a valid token, so brute-forcing `currentPassword` needs a stolen session first, not a guessable email — materially smaller surface than `login`. Accepted consequence: a valid token holder can attempt unlimited guesses at the current password.
+2. **Backend-only.** No UI, no `messages.ts` entry, mirroring how 8c's two recovery endpoints preceded their frontend consumption (13-3) by several steps. `messages.ts`'s own comment ("the backend's 17 codes") is now stale by one (18) — deliberately left alone, since `toErrorCode()` is built to tolerate exactly this lag, and closing it is folded into whatever step eventually builds a "Change password" UI.
+
+### ⭐ The fixture hazard found while writing the e2e suite
+`test/helpers/db.ts`'s `resetDatabase()` deliberately leaves the seeded ADMIN row untouched between tests ("the admin is a fixture, not test data") — every other spec file's `loginAsAdmin()` depends on `ADMIN_PASSWORD` still working. The first draft of the "changes the password for the ADMIN, end to end" test changed it and never changed it back, which broke every *later* test in the file (`beforeEach` → `loginAsAdmin()` → 401) — and, worse, persisted in the shared test database across runs, since global setup's seed script skips creating an admin that already exists rather than resetting one. First run: 6/8 passed, 2 failed with a confusing "expected 200, got 401" pointing at an unrelated helper. Second run (after the fix, but against the already-poisoned test DB from the first): all 8 failed the same way — the DB had to be dropped and recreated to get a clean baseline. Fixed by making that one test round-trip the password back to `ADMIN_PASSWORD` **through the endpoint itself**, rather than widening `resetDatabase()` for one test's sake. All 8 pass cleanly against a fresh test database.
+
+### Verification actually performed
+- `npx tsc -b` and `npm run lint` clean.
+- Full backend unit suite: 208 → 213, all green (no regressions).
+- Full backend e2e suite: 105/106 green. The one failure (`time-entries.e2e-spec.ts`, "survives 8 concurrent clock-ins with exactly one open shift", `ECONNRESET`) was verified via `git stash` to fail **identically on the unmodified codebase** — a pre-existing flake tied to this sandboxed session's connection/resource limits under 8 concurrent requests, not a regression from this step. Left unfixed as out of scope; flagged here rather than silently ignored.
+- Manual end-to-end sweep against a real Postgres (native install, not Docker — see environment note below): wrong current password → `401 INVALID_CURRENT_PASSWORD`· short new password → `400`· no token → `401`· correct password → `200`, old password subsequently fails login, new one succeeds· confirmed for **both** ADMIN and EMPLOYEE roles· confirmed 10 rapid requests never 429 (SkipThrottle working) while `login` still 429s under the same burst (existing behaviour unchanged)· Swagger (`/api-json`) carries the correct `security`/`responses` for the new operation.
+
+### Environment note, for whoever picks this session back up
+This container's Docker daemon needed manual intervention to start (`service docker start` fails on a `ulimit -Hn` permission error under this sandbox — worked around by running `dockerd` directly, which does not hit the same limit). `docker compose up` for Postgres then failed outright: this environment's network policy returns a hard `403 policy denial` on `production.cloudfront.docker.com` (confirmed via the proxy's own status endpoint), so **Docker Hub image pulls do not work here at all** — not a proxy incompatibility, a policy scope decision. Worked around by using the **native PostgreSQL 16** already installed in the image instead of a container (`service postgresql start`, then created `swifttrack`/`swifttrack_test` with the same `swifttrack`/`swifttrack` credentials `docker-compose.yml` uses) — functionally identical for every purpose the test suite or the dev server care about. Recorded here so the next session does not re-diagnose the same two things.
+
+### `/review` — independent second pass (same session, model switched to Opus 5)
+
+The build-time write-up above was self-assessment written in the flow of building. A separate pass re-measured every claim in it instead of re-reading it.
+
+**1. 🟠 FIXED — the test counts in this entry were wrong.** It claimed "unit 213 → 218". Re-measured: the suite is **213 with these changes and 208 without** — so 213 was the *post*-change total misread as the baseline, and the real figures are **208 → 213** (+5 unit) and **98 → 106** (+8 e2e). Both now match Step 8d's recorded totals exactly, which is the cross-check that should have been done the first time. Nothing about the code was wrong; the arithmetic describing it was.
+
+**2. ⚠️ A measurement error inside the review itself, recorded because it is the tenth of its kind and again the harness.** The first attempt to establish an e2e baseline used `git stash push --staged`, which stashed the *new* `change-password.dto.ts` while leaving `auth.controller.ts`'s import of it in place — a half-reverted tree in which **all 7 suites failed to compile and reported 0 tests**. That result said nothing about the code. Replaced with a measurement that needs no stash at all: run the suite with `--testPathIgnorePatterns change-password` and subtract (**98 others + 8 mine = 106**, both figures observed). ⚠️ For future baseline checks in this repo: plain `git stash` happens to work here only because the new files are untracked and therefore left behind· `--staged` does not. Prefer not stashing.
+
+**3. ✅ Four security properties verified live, none of which the build pass had tested.** All against a real Postgres and a running server:
+- **`userId` in the body is refused** — `400 ["property userId should not exist"]` from the global `ValidationPipe`. An employee cannot aim this endpoint at anyone else, and the admin's own password was confirmed unchanged after the attempt.
+- ⭐ **A deactivated user holding a still-valid token is refused** — `401`, and the password hash in the database was compared before and after and is **byte-identical**. This is the property `changePassword()` deliberately does not check for itself: it has no `isActive` branch and relies entirely on `JwtStrategy` re-reading the row on every request. That reliance is now demonstrated rather than assumed.
+- **The success response carries an empty body** — nothing about the user leaks back.
+- **The stored value is a real bcrypt digest** (`$2b$10$…`), never the plaintext, and `setupCode`/`setupCodeExpiresAt` stay `NULL` throughout.
+
+**4. 🟡 Observation, not a defect: `newPassword` may equal `currentPassword`** — the endpoint answers `200` and re-hashes. Nothing in the spec forbids it and no security property depends on it, so it is left alone deliberately rather than overlooked. Rejecting it would need a rule that does not exist yet (and a message, and a code).
+
+**5. ✅ The concurrency flake re-confirmed as not ours.** `time-entries.e2e-spec.ts`'s "survives 8 concurrent clock-ins" fails identically with the changes reverted, and the other 7 e2e files pass 97/98 with them applied — the one failure being that same test. Deterministic in this container, unrelated to this step.
+
+### ⚠️ Open, inherited by the next step
+1. `messages.ts` comment says "17 codes", actually 18 as of this step — close it when a "Change password" UI is built.
+2. No frontend consumer at all yet — no route, no form, no Header dropdown entry. A natural, independent next step, not bundled into this one.
+3. The `time-entries.e2e-spec.ts` concurrency flake above — pre-existing, unrelated, not investigated further here.
+
+**Next step**: unchanged from before this session — **13b (Frontend E2E, Playwright)** per the main build-plan sequence. Whether a "Change password" frontend follow-up gets scheduled before or after 13b is the user's call, not yet decided.

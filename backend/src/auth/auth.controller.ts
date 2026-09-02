@@ -1,7 +1,23 @@
-import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { CurrentUser } from './current-user.decorator';
+import { JwtAuthGuard } from './jwt-auth.guard';
+import type { JwtPayload } from './jwt-payload.interface';
 import { LoginDto } from './dto/login.dto';
 import { SetInitialPasswordDto } from './dto/set-initial-password.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
@@ -81,6 +97,41 @@ export class AuthController {
     await this.authService.setInitialPassword(
       dto.email,
       dto.setupCode,
+      dto.newPassword,
+    );
+  }
+
+  @Patch('change-password')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @SkipThrottle()
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Change the logged-in user’s own password (both roles)',
+    description:
+      'The one gap login/set-initial-password left open: an already-activated account had no self-service way to rotate or recover its password short of a database edit. Acts only on the caller’s own row — userId comes from the JWT, never from the body. ⚠️ Not rate-limited, unlike the other two auth routes: unlike login, a request here already requires a valid token, so brute-forcing currentPassword needs a stolen session first, not just a guessable email. ⚠️ Does not invalidate tokens already issued — this API has no refresh/revocation mechanism (a deliberate Phase 1 gap), so a token minted before the change stays valid until its own 14-day expiry.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Password changed — stored hashed, as everywhere else.',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Validation failed — newPassword under 8 characters, or a property the DTO does not declare.',
+  })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Missing/invalid token (guard-level, no code), or code `INVALID_CURRENT_PASSWORD` — currentPassword did not match.',
+  })
+  async changePassword(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: ChangePasswordDto,
+  ): Promise<void> {
+    await this.authService.changePassword(
+      user.userId,
+      dto.currentPassword,
       dto.newPassword,
     );
   }

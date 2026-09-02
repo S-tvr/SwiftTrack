@@ -52,6 +52,13 @@ export const ErrorCode = {
   INVALID_SETUP_CODE: 'INVALID_SETUP_CODE',
   /** The setup code has lapsed. The admin can issue a new one. */
   SETUP_CODE_EXPIRED: 'SETUP_CODE_EXPIRED',
+  /**
+   * `PATCH /auth/change-password` with a `currentPassword` that does not match.
+   * A distinct code from `INVALID_CREDENTIALS` on purpose: the caller here is
+   * already authenticated, so there is no account to enumerate — collapsing the
+   * two would just make the message vaguer for no security benefit.
+   */
+  INVALID_CURRENT_PASSWORD: 'INVALID_CURRENT_PASSWORD',
 
   // ── users ───────────────────────────────────────────────────────────────
   /** No user with this id/email, regardless of role. */

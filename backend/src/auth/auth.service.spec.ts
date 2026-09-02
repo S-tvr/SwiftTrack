@@ -46,6 +46,7 @@ const ALREADY_ACTIVATED = 'This account has already been activated.';
 const INVALID_CODE = 'Invalid activation code.';
 const EXPIRED_CODE =
   'This activation code has expired. Please contact your admin.';
+const INVALID_CURRENT_PASSWORD = 'Your current password is incorrect.';
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -69,11 +70,17 @@ function makeService(user: User | null) {
   const activateAccount = jest.fn().mockResolvedValue(user);
   const toProfileDto = jest.fn().mockReturnValue({ id: 7, name: 'Jane' });
   const signAsync = jest.fn().mockResolvedValue('signed.jwt.token');
+  const findCredentialsById = jest
+    .fn()
+    .mockResolvedValue(user ? { id: user.id, password: user.password } : null);
+  const updatePasswordHash = jest.fn().mockResolvedValue(undefined);
 
   const usersService = {
     findByEmail,
     activateAccount,
     toProfileDto,
+    findCredentialsById,
+    updatePasswordHash,
   } as unknown as UsersService;
   const jwtService = { signAsync } as unknown as JwtService;
 
@@ -83,6 +90,8 @@ function makeService(user: User | null) {
     activateAccount,
     toProfileDto,
     signAsync,
+    findCredentialsById,
+    updatePasswordHash,
   };
 }
 
@@ -304,6 +313,66 @@ describe('AuthService', () => {
         .catch(() => undefined);
 
       expect(activateAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('changePassword', () => {
+    it('hashes and stores the new password on success', async () => {
+      compare.mockResolvedValue(true);
+      const { service, updatePasswordHash } = makeService(makeUser());
+
+      await service.changePassword(7, 'correct-current', 'a-new-password');
+
+      expect(updatePasswordHash).toHaveBeenCalledTimes(1);
+      const [id, hashed] = updatePasswordHash.mock.calls[0] as [number, string];
+      expect(id).toBe(7);
+      // Never the plaintext (architecture.md § Invariants) — hash is the real
+      // implementation here, so this is an actual bcrypt digest.
+      expect(hashed).not.toBe('a-new-password');
+      expect(hashed).toMatch(/^\$2[aby]\$\d{2}\$/);
+    });
+
+    it('only ever reads/writes the caller’s own id, from the argument — never a body field', async () => {
+      compare.mockResolvedValue(true);
+      const { service, findCredentialsById, updatePasswordHash } = makeService(
+        makeUser({ id: 42 }),
+      );
+
+      await service.changePassword(42, 'correct-current', 'a-new-password');
+
+      expect(findCredentialsById).toHaveBeenCalledWith(42);
+      expect(updatePasswordHash).toHaveBeenCalledWith(42, expect.any(String));
+    });
+
+    it('rejects a wrong current password, and writes nothing', async () => {
+      compare.mockResolvedValue(false);
+      const { service, updatePasswordHash } = makeService(makeUser());
+
+      await expect(
+        service.changePassword(7, 'wrong-current', 'a-new-password'),
+      ).rejects.toThrow(INVALID_CURRENT_PASSWORD);
+      expect(updatePasswordHash).not.toHaveBeenCalled();
+    });
+
+    it('raises 401, not some other status, for a wrong current password', async () => {
+      compare.mockResolvedValue(false);
+      const { service } = makeService(makeUser());
+
+      await expect(
+        service.changePassword(7, 'wrong-current', 'a-new-password'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('never reaches bcrypt.compare for a row with no password set', async () => {
+      const { service, updatePasswordHash } = makeService(
+        makeUser({ password: null }),
+      );
+
+      await expect(
+        service.changePassword(7, 'anything', 'a-new-password'),
+      ).rejects.toThrow(INVALID_CURRENT_PASSWORD);
+      expect(compare).not.toHaveBeenCalled();
+      expect(updatePasswordHash).not.toHaveBeenCalled();
     });
   });
 });
