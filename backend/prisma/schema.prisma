@@ -30,6 +30,12 @@ model User {
   isActive            Boolean   @default(true)
   setupCode           String?
   setupCodeExpiresAt  DateTime?
+  // Bumped whenever every token issued for this user must stop working. Signed
+  // into the JWT and compared on every request by JwtStrategy, which already
+  // reads this row to check isActive — so revocation costs no extra query.
+  // Only change-password bumps it: activation cannot have issued a token yet,
+  // and deactivation is already enforced live through isActive.
+  tokenVersion        Int       @default(0)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 

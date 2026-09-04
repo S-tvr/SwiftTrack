@@ -29,6 +29,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     isActive: true,
     setupCode: '4321',
     setupCodeExpiresAt: new Date('2026-01-04T00:00:00.000Z'),
+    tokenVersion: 0,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,
@@ -357,14 +358,17 @@ describe('UsersService', () => {
      * that often, which is why the explicit `select` is part of the contract
      * rather than an optimisation.
      */
-    it('findActiveById selects only id and role, and requires isActive', async () => {
+    it('findActiveById selects only id, role and tokenVersion, and requires isActive', async () => {
       const { service, user } = makeService();
 
       await service.findActiveById(7);
 
+      // tokenVersion joined the three in step 8f: JwtStrategy compares it
+      // against the token on every request, which is what makes a password
+      // change able to revoke sessions without a second query.
       expect(user.findFirst).toHaveBeenCalledWith({
         where: { id: 7, isActive: true },
-        select: { id: true, role: true },
+        select: { id: true, role: true, tokenVersion: true },
       });
     });
 

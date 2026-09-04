@@ -15,6 +15,7 @@ import {
 import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ChangePasswordResponseDto } from './dto/change-password-response.dto';
 import { CurrentUser } from './current-user.decorator';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import type { JwtPayload } from './jwt-payload.interface';
@@ -33,13 +34,13 @@ export class AuthController {
   @ApiOperation({
     summary: 'Log in with email + password, returns a JWT',
     description:
-      'The token is valid for 14 days and there is no refresh mechanism. It carries only { userId, role }, which is why the user object is returned alongside it — the Header needs a name on every page. An unknown email answers 401, never 404: at this endpoint the caller has proved nothing, so it learns nothing.',
+      'The token is valid for 12 hours and there is no refresh mechanism. It carries { userId, role, tokenVersion }, and the user object is returned alongside it because the Header needs a name on every page. An unknown email answers 401, never 404: at this endpoint the caller has proved nothing, so it learns nothing.',
   })
   @ApiResponse({
     status: 200,
     type: LoginResponseDto,
     description:
-      "A 14-day access token plus the caller's own profile (UserProfileDto, never carrying setupCode).",
+      "A 12-hour access token plus the caller's own profile (UserProfileDto, never carrying setupCode).",
   })
   @ApiResponse({
     status: 400,
@@ -109,27 +110,29 @@ export class AuthController {
   @ApiOperation({
     summary: 'Change the logged-in user’s own password (both roles)',
     description:
-      'The one gap login/set-initial-password left open: an already-activated account had no self-service way to rotate or recover its password short of a database edit. Acts only on the caller’s own row — userId comes from the JWT, never from the body. ⚠️ Not rate-limited, unlike the other two auth routes: unlike login, a request here already requires a valid token, so brute-forcing currentPassword needs a stolen session first, not just a guessable email. ⚠️ Does not invalidate tokens already issued — this API has no refresh/revocation mechanism (a deliberate Phase 1 gap), so a token minted before the change stays valid until its own 14-day expiry.',
+      'The one gap login/set-initial-password left open: an already-activated account had no self-service way to rotate or recover its password short of a database edit. Acts only on the caller’s own row — userId comes from the JWT, never from the body. ⚠️ Not rate-limited, unlike the other two auth routes: unlike login, a request here already requires a valid token, so brute-forcing currentPassword needs a stolen session first, not just a guessable email. **Revokes every token issued before this call** (step 8f) by bumping the row’s tokenVersion, which JwtStrategy compares on every request — so the caller’s own token dies too, and a replacement is returned in the body. Every other session is logged out on its next request.',
   })
   @ApiResponse({
     status: 200,
-    description: 'Password changed — stored hashed, as everywhere else.',
+    type: ChangePasswordResponseDto,
+    description:
+      'Password changed — stored hashed, as everywhere else — and all previously issued tokens revoked. The body carries the replacement token for this session.',
   })
   @ApiResponse({
     status: 400,
     description:
-      'Validation failed — newPassword under 8 characters, or a property the DTO does not declare.',
+      'Codes: `INVALID_CURRENT_PASSWORD` (deliberately a 400 and not a 401 — the client logs the user out on any 401 carrying a token, so a typo here would throw them out of the app and blame an expired session), `NEW_PASSWORD_SAME_AS_CURRENT`. Also reached without a code by the ValidationPipe — newPassword under 8 characters, or a property the DTO does not declare.',
   })
   @ApiResponse({
     status: 401,
     description:
-      'Missing/invalid token (guard-level, no code), or code `INVALID_CURRENT_PASSWORD` — currentPassword did not match.',
+      'Missing or invalid token — guard-level, carries no code. Includes a token whose tokenVersion is stale, i.e. one issued before a previous password change.',
   })
-  async changePassword(
+  changePassword(
     @CurrentUser() user: JwtPayload,
     @Body() dto: ChangePasswordDto,
-  ): Promise<void> {
-    await this.authService.changePassword(
+  ): Promise<ChangePasswordResponseDto> {
+    return this.authService.changePassword(
       user.userId,
       dto.currentPassword,
       dto.newPassword,

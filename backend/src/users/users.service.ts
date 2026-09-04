@@ -38,12 +38,16 @@ export class UsersService {
    * deleted) since the token was issued.
    *
    * `select` is deliberate — this runs on every request, and password/setupCode
-   * have no business being loaded into memory that often.
+   * have no business being loaded into memory that often. `tokenVersion` earns
+   * its place there (step 8f): the strategy compares it against the token, and
+   * reading it here is what makes revocation cost no extra query.
    */
-  async findActiveById(id: number): Promise<{ id: number; role: Role } | null> {
+  async findActiveById(
+    id: number,
+  ): Promise<{ id: number; role: Role; tokenVersion: number } | null> {
     return this.prisma.user.findFirst({
       where: { id, isActive: true },
-      select: { id: true, role: true },
+      select: { id: true, role: true, tokenVersion: true },
     });
   }
 
@@ -289,13 +293,17 @@ export class UsersService {
    * reader with an explicit `select` — never a general `findById()`, which has
    * already leaked `password`/`setupCode` to a caller twice in this project
    * (the removed Step 2 `findById()`, the reused Step 3 response DTO).
+   *
+   * `role` joined the select in step 8f, for the one reason that justifies
+   * widening it: changePassword now signs a replacement token, and a token
+   * carries the role. Still no `setupCode`, still not a general reader.
    */
   async findCredentialsById(
     id: number,
-  ): Promise<{ id: number; password: string | null } | null> {
+  ): Promise<{ id: number; password: string | null; role: Role } | null> {
     return this.prisma.user.findUnique({
       where: { id },
-      select: { id: true, password: true },
+      select: { id: true, password: true, role: true },
     });
   }
 
@@ -304,12 +312,24 @@ export class UsersService {
    * verified. Deliberately separate from activateAccount(): that one also
    * clears setupCode/setupCodeExpiresAt, which do not apply here — the caller
    * is already activated, or they could not have authenticated to reach this.
+   *
+   * The name says both halves because it does both (step 8f): bumping
+   * `tokenVersion` in the **same** UPDATE is what revokes every token issued
+   * before this moment, atomically and without a second write. The new value is
+   * returned so the caller can sign a replacement token without re-reading the
+   * row — including the one for the caller themselves, whose own token this
+   * call has just invalidated.
    */
-  async updatePasswordHash(id: number, hashedPassword: string): Promise<void> {
-    await this.prisma.user.update({
+  async updatePasswordAndRevokeTokens(
+    id: number,
+    hashedPassword: string,
+  ): Promise<number> {
+    const updated = await this.prisma.user.update({
       where: { id },
-      data: { password: hashedPassword },
+      data: { password: hashedPassword, tokenVersion: { increment: 1 } },
+      select: { tokenVersion: true },
     });
+    return updated.tokenVersion;
   }
 
   /** Any user, regardless of role — used by /users/me, which serves both roles. */

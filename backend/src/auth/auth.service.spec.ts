@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   NotFoundException,
   UnauthorizedException,
@@ -47,6 +48,8 @@ const INVALID_CODE = 'Invalid activation code.';
 const EXPIRED_CODE =
   'This activation code has expired. Please contact your admin.';
 const INVALID_CURRENT_PASSWORD = 'Your current password is incorrect.';
+const SAME_AS_CURRENT =
+  'Your new password must be different from your current one.';
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -59,6 +62,7 @@ function makeUser(overrides: Partial<User> = {}): User {
     isActive: true,
     setupCode: null,
     setupCodeExpiresAt: null,
+    tokenVersion: 0,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     ...overrides,
@@ -70,17 +74,28 @@ function makeService(user: User | null) {
   const activateAccount = jest.fn().mockResolvedValue(user);
   const toProfileDto = jest.fn().mockReturnValue({ id: 7, name: 'Jane' });
   const signAsync = jest.fn().mockResolvedValue('signed.jwt.token');
-  const findCredentialsById = jest
+  const findCredentialsById = jest.fn().mockResolvedValue(
+    user
+      ? {
+          id: user.id,
+          password: user.password,
+          role: user.role,
+        }
+      : null,
+  );
+  // Returns the **incremented** counter, as the real one does — the service
+  // signs the replacement token with whatever comes back from here, so a stub
+  // echoing the old value would let a wrong token pass the test.
+  const updatePasswordAndRevokeTokens = jest
     .fn()
-    .mockResolvedValue(user ? { id: user.id, password: user.password } : null);
-  const updatePasswordHash = jest.fn().mockResolvedValue(undefined);
+    .mockResolvedValue((user?.tokenVersion ?? 0) + 1);
 
   const usersService = {
     findByEmail,
     activateAccount,
     toProfileDto,
     findCredentialsById,
-    updatePasswordHash,
+    updatePasswordAndRevokeTokens,
   } as unknown as UsersService;
   const jwtService = { signAsync } as unknown as JwtService;
 
@@ -91,7 +106,7 @@ function makeService(user: User | null) {
     toProfileDto,
     signAsync,
     findCredentialsById,
-    updatePasswordHash,
+    updatePasswordAndRevokeTokens,
   };
 }
 
@@ -106,10 +121,12 @@ describe('AuthService', () => {
       const result = await service.login('jane@example.com', 'correct');
 
       expect(result.accessToken).toBe('signed.jwt.token');
-      // Exactly the two claims, and role comes off the row rather than input.
+      // Exactly the three claims, all read off the row rather than the input —
+      // tokenVersion included, which is what JwtStrategy compares per request.
       expect(signAsync).toHaveBeenCalledWith({
         userId: 7,
         role: Role.EMPLOYEE,
+        tokenVersion: 0,
       });
       // Never UserResponseDto: that one carries setupCode, the secret that
       // unlocks an unactivated account (architecture.md § Invariants).
@@ -319,12 +336,16 @@ describe('AuthService', () => {
   describe('changePassword', () => {
     it('hashes and stores the new password on success', async () => {
       compare.mockResolvedValue(true);
-      const { service, updatePasswordHash } = makeService(makeUser());
+      const { service, updatePasswordAndRevokeTokens } =
+        makeService(makeUser());
 
       await service.changePassword(7, 'correct-current', 'a-new-password');
 
-      expect(updatePasswordHash).toHaveBeenCalledTimes(1);
-      const [id, hashed] = updatePasswordHash.mock.calls[0] as [number, string];
+      expect(updatePasswordAndRevokeTokens).toHaveBeenCalledTimes(1);
+      const [id, hashed] = updatePasswordAndRevokeTokens.mock.calls[0] as [
+        number,
+        string,
+      ];
       expect(id).toBe(7);
       // Never the plaintext (architecture.md § Invariants) — hash is the real
       // implementation here, so this is an actual bcrypt digest.
@@ -334,37 +355,75 @@ describe('AuthService', () => {
 
     it('only ever reads/writes the caller’s own id, from the argument — never a body field', async () => {
       compare.mockResolvedValue(true);
-      const { service, findCredentialsById, updatePasswordHash } = makeService(
-        makeUser({ id: 42 }),
-      );
+      const { service, findCredentialsById, updatePasswordAndRevokeTokens } =
+        makeService(makeUser({ id: 42 }));
 
       await service.changePassword(42, 'correct-current', 'a-new-password');
 
       expect(findCredentialsById).toHaveBeenCalledWith(42);
-      expect(updatePasswordHash).toHaveBeenCalledWith(42, expect.any(String));
+      expect(updatePasswordAndRevokeTokens).toHaveBeenCalledWith(
+        42,
+        expect.any(String),
+      );
+    });
+
+    it('returns a replacement token signed with the bumped tokenVersion', async () => {
+      compare.mockResolvedValue(true);
+      const { service, signAsync } = makeService(makeUser({ tokenVersion: 3 }));
+
+      const result = await service.changePassword(
+        7,
+        'correct-current',
+        'a-new-password',
+      );
+
+      expect(result).toEqual({ accessToken: 'signed.jwt.token' });
+      // 4, not 3 — signing the old value would hand back a token that the very
+      // update this method just performed has already revoked, logging the
+      // caller out on their next request.
+      expect(signAsync).toHaveBeenCalledWith({
+        userId: 7,
+        role: Role.EMPLOYEE,
+        tokenVersion: 4,
+      });
     });
 
     it('rejects a wrong current password, and writes nothing', async () => {
       compare.mockResolvedValue(false);
-      const { service, updatePasswordHash } = makeService(makeUser());
+      const { service, updatePasswordAndRevokeTokens } =
+        makeService(makeUser());
 
       await expect(
         service.changePassword(7, 'wrong-current', 'a-new-password'),
       ).rejects.toThrow(INVALID_CURRENT_PASSWORD);
-      expect(updatePasswordHash).not.toHaveBeenCalled();
+      expect(updatePasswordAndRevokeTokens).not.toHaveBeenCalled();
     });
 
-    it('raises 401, not some other status, for a wrong current password', async () => {
+    it('raises 400, not 401, for a wrong current password', async () => {
       compare.mockResolvedValue(false);
       const { service } = makeService(makeUser());
 
+      // The status matters as much as the message here: api/client.ts logs the
+      // user out on any 401 that carried a token, so a 401 would throw them out
+      // of the app for a typo and blame an expired session (step 8f).
       await expect(
         service.changePassword(7, 'wrong-current', 'a-new-password'),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('refuses a new password identical to the current one, and writes nothing', async () => {
+      compare.mockResolvedValue(true);
+      const { service, updatePasswordAndRevokeTokens } =
+        makeService(makeUser());
+
+      await expect(
+        service.changePassword(7, 'same-password', 'same-password'),
+      ).rejects.toThrow(SAME_AS_CURRENT);
+      expect(updatePasswordAndRevokeTokens).not.toHaveBeenCalled();
     });
 
     it('never reaches bcrypt.compare for a row with no password set', async () => {
-      const { service, updatePasswordHash } = makeService(
+      const { service, updatePasswordAndRevokeTokens } = makeService(
         makeUser({ password: null }),
       );
 
@@ -372,7 +431,7 @@ describe('AuthService', () => {
         service.changePassword(7, 'anything', 'a-new-password'),
       ).rejects.toThrow(INVALID_CURRENT_PASSWORD);
       expect(compare).not.toHaveBeenCalled();
-      expect(updatePasswordHash).not.toHaveBeenCalled();
+      expect(updatePasswordAndRevokeTokens).not.toHaveBeenCalled();
     });
   });
 });

@@ -22,6 +22,8 @@ import type { ErrorBody } from './helpers/types';
  */
 
 const INVALID_CURRENT_PASSWORD = 'Your current password is incorrect.';
+const SAME_AS_CURRENT =
+  'Your new password must be different from your current one.';
 
 describe('PATCH /auth/change-password', () => {
   let app: INestApplication;
@@ -70,26 +72,54 @@ describe('PATCH /auth/change-password', () => {
       .expect(400);
   });
 
-  it('rejects a wrong current password with 401 INVALID_CURRENT_PASSWORD, and changes nothing', async () => {
+  // ⚠️ 400, not 401, and the status is the point of the test as much as the
+  // code is. `api/client.ts` logs the user out on any 401 that carried a token
+  // — by a deliberate rule keyed off the Authorization header rather than a
+  // list of endpoints — and this route must send one. A 401 here threw the user
+  // out of the app for a typo and told them their session had expired (8f).
+  it('rejects a wrong current password with 400 INVALID_CURRENT_PASSWORD, and changes nothing', async () => {
     const employee = await createActivatedEmployee(server, adminToken);
 
     const response = await request(server)
       .patch('/auth/change-password')
       .set('Authorization', `Bearer ${employee.token}`)
       .send({ currentPassword: 'not-it', newPassword: 'a-new-password' })
-      .expect(401);
+      .expect(400);
 
     expect((response.body as ErrorBody).code).toBe('INVALID_CURRENT_PASSWORD');
     expect((response.body as ErrorBody).message).toBe(INVALID_CURRENT_PASSWORD);
 
     // The old password still works — a rejected attempt must not disturb it.
     await login(server, employee.email, employee.password);
+    // ...and neither must it revoke the session that made the attempt.
+    await request(server)
+      .get('/users/me')
+      .set('Authorization', `Bearer ${employee.token}`)
+      .expect(200);
+  });
+
+  it('rejects a newPassword identical to the current one with 400', async () => {
+    const employee = await createActivatedEmployee(server, adminToken);
+
+    const response = await request(server)
+      .patch('/auth/change-password')
+      .set('Authorization', `Bearer ${employee.token}`)
+      .send({
+        currentPassword: employee.password,
+        newPassword: employee.password,
+      })
+      .expect(400);
+
+    expect((response.body as ErrorBody).code).toBe(
+      'NEW_PASSWORD_SAME_AS_CURRENT',
+    );
+    expect((response.body as ErrorBody).message).toBe(SAME_AS_CURRENT);
   });
 
   it('changes the password for an EMPLOYEE, end to end', async () => {
     const employee = await createActivatedEmployee(server, adminToken);
 
-    await request(server)
+    const response = await request(server)
       .patch('/auth/change-password')
       .set('Authorization', `Bearer ${employee.token}`)
       .send({
@@ -97,6 +127,10 @@ describe('PATCH /auth/change-password', () => {
         newPassword: 'a-brand-new-password',
       })
       .expect(200);
+
+    // The replacement token is the only thing the body carries — no profile,
+    // which the caller already had, and certainly no password field.
+    expect(Object.keys(response.body as object)).toEqual(['accessToken']);
 
     // The old password is now rejected...
     await request(server)
@@ -106,6 +140,44 @@ describe('PATCH /auth/change-password', () => {
 
     // ...and the new one works.
     await login(server, employee.email, 'a-brand-new-password');
+  });
+
+  // ⭐ The test the revocation half of 8f exists for. Two live sessions for one
+  // user — the shape of "I changed my password because someone else has it".
+  it('revokes every token issued before the change, and hands back a working replacement', async () => {
+    const employee = await createActivatedEmployee(server, adminToken);
+    // A second device, signed in with the same credentials.
+    const otherDevice = await login(server, employee.email, employee.password);
+
+    const response = await request(server)
+      .patch('/auth/change-password')
+      .set('Authorization', `Bearer ${employee.token}`)
+      .send({
+        currentPassword: employee.password,
+        newPassword: 'a-brand-new-password',
+      })
+      .expect(200);
+
+    const replacement = (response.body as { accessToken: string }).accessToken;
+
+    // The other device is out on its very next request — the whole point.
+    await request(server)
+      .get('/users/me')
+      .set('Authorization', `Bearer ${otherDevice}`)
+      .expect(401);
+
+    // So is the token that made the change: revocation is not selective, which
+    // is exactly why a replacement has to come back in the body.
+    await request(server)
+      .get('/users/me')
+      .set('Authorization', `Bearer ${employee.token}`)
+      .expect(401);
+
+    // And the replacement works, so the session that did the change survives.
+    await request(server)
+      .get('/users/me')
+      .set('Authorization', `Bearer ${replacement}`)
+      .expect(200);
   });
 
   // ⚠️ The seeded admin is a shared fixture `resetDatabase` deliberately does
@@ -163,12 +235,16 @@ describe('PATCH /auth/change-password', () => {
     expect(after.setupCode).toBe(before.setupCode);
     expect(after.setupCodeExpiresAt).toEqual(before.setupCodeExpiresAt);
     expect(after.password).not.toBe(before.password);
+    // Exactly one bump, in the same UPDATE as the hash (step 8f).
+    expect(after.tokenVersion).toBe(before.tokenVersion + 1);
   });
 
   it('is not rate limited — SkipThrottle, unlike login and set-initial-password', async () => {
     const employee = await createActivatedEmployee(server, adminToken);
 
     // 6 would 429 on login's 5-per-60s bucket; this route must ignore it.
+    // 400 rather than 429 is what proves it: a throttled request never reaches
+    // the service, so it could not answer with a domain status at all.
     for (let i = 0; i < 6; i++) {
       await request(server)
         .patch('/auth/change-password')
@@ -177,7 +253,7 @@ describe('PATCH /auth/change-password', () => {
           currentPassword: 'wrong-on-purpose',
           newPassword: 'x'.repeat(8),
         })
-        .expect(401);
+        .expect(400);
     }
   });
 });

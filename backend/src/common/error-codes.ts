@@ -57,8 +57,21 @@ export const ErrorCode = {
    * A distinct code from `INVALID_CREDENTIALS` on purpose: the caller here is
    * already authenticated, so there is no account to enumerate — collapsing the
    * two would just make the message vaguer for no security benefit.
+   *
+   * ⚠️ Carried by a **400, not a 401** — changed in step 8f and not to be moved
+   * back. `api/client.ts` logs the user out on any 401 that carried a token, by
+   * a deliberate rule that keys off the Authorization header rather than a list
+   * of endpoints. This route must send that header, so answering 401 here threw
+   * the user out of the app for a typo and told them their session had expired.
    */
   INVALID_CURRENT_PASSWORD: 'INVALID_CURRENT_PASSWORD',
+  /**
+   * `PATCH /auth/change-password` where `newPassword` equals `currentPassword`.
+   * Kept apart from a ValidationPipe 400: the DTO cannot see across two fields,
+   * and this needs a sentence of its own — "use at least 8 characters" would be
+   * the wrong answer to a password that is already long enough.
+   */
+  NEW_PASSWORD_SAME_AS_CURRENT: 'NEW_PASSWORD_SAME_AS_CURRENT',
 
   // ── users ───────────────────────────────────────────────────────────────
   /** No user with this id/email, regardless of role. */

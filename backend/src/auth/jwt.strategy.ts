@@ -29,12 +29,21 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
    *
    * role is read from the row for the same reason: it is current, not whatever
    * was true when the token was signed.
+   *
+   * tokenVersion (step 8f) is the same argument a third time, and the reason a
+   * password change can revoke tokens at all: the row's counter is bumped by
+   * changePassword, so every token signed before it stops matching here. This
+   * costs no extra query — the row was already being read for isActive.
    */
   async validate(payload: JwtPayload): Promise<JwtPayload> {
     const user = await this.usersService.findActiveById(payload.userId);
-    if (!user) {
+    if (!user || user.tokenVersion !== payload.tokenVersion) {
       throw new UnauthorizedException();
     }
-    return { userId: user.id, role: user.role };
+    return {
+      userId: user.id,
+      role: user.role,
+      tokenVersion: user.tokenVersion,
+    };
   }
 }
