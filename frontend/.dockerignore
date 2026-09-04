@@ -1,0 +1,17 @@
+node_modules
+dist
+
+# VITE_API_URL comes from the build ARG. A copied .env would take precedence and
+# silently bake the host's value into the image instead.
+.env
+.env.local
+.env.*.local
+
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md
+
+# nginx.conf is deliberately NOT ignored — the runtime stage COPYs it from the
+# build context, and excluding it here would fail the build.

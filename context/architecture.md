@@ -7,6 +7,7 @@
 | Backend    | NestJS                   | REST API, modules, guards, business logic        |
 | ORM        | Prisma                   | DB schema, migrations, typed queries             |
 | Database   | PostgreSQL (Docker)      | Persistence — User, TimeEntry, AppSettings        |
+| Packaging  | Docker Compose           | Step 14: db + backend + frontend in one command. `docker compose up db` still serves the local dev flow |
 | Frontend   | React (Vite)             | SPA client                                       |
 | Styling    | Tailwind CSS + shadcn/ui | UI components and styling                        |
 | Auth       | JWT (`@nestjs/jwt` + `@nestjs/passport`/`passport-jwt`) | Stateless auth, role-based access |
@@ -104,8 +105,13 @@ Length is checked in written order, so the reversed form measures the untrimmed 
 
 ```
 /
-├── docker-compose.yml
+├── docker-compose.yml                     → db + backend + frontend· `up db` alone for local dev
+├── .env.example                           → optional overrides for the compose defaults
+├── .gitattributes                         → forces LF on *.sh — a CRLF entrypoint dies as "bad interpreter"
+├── docker/postgres/init-test-db.sql       → creates swifttrack_test on first volume init (e2e prerequisite)
 ├── backend/
+│   ├── Dockerfile                         → build stage (npm ci → generate → nest build) + slim runtime
+│   ├── docker-entrypoint.sh               → migrate deploy → db seed → guarded demo seed → server
 │   ├── prisma.config.ts                   → Prisma 7 config: schema path, migrations path, seed command, datasource url
 │   ├── prisma/
 │   │   ├── schema.prisma                  → User, TimeEntry, AppSettings models
@@ -157,6 +163,8 @@ Length is checked in written order, so the reversed form measures the untrimmed 
 │   │       └── dto/                       → settings-response, update-settings, cycle-range, is-day-before.validator
 │   └── test/
 └── frontend/
+    ├── Dockerfile                         → Vite build (VITE_API_URL as a build ARG) → nginx serving dist/
+    ├── nginx.conf                         → static serving + SPA history fallback for BrowserRouter routes
     ├── src/
     │   ├── main.tsx
     │   ├── vite-env.d.ts                  → declares VITE_API_URL (without it, import.meta.env.VITE_API_URL is `any`)
@@ -688,7 +696,7 @@ Rules the AI agent (Claude Code) must never violate:
 
 - Controllers contain no business logic and no direct Prisma calls — only services touch Prisma.
 - Every service function whose data is scoped to a specific user (time entries, personal payroll, own profile) takes `userId` explicitly as a parameter and uses it in the query's `where` clause — never an implicit or missing filter. This does **not** apply to functions that are inherently global by design (e.g. `getAllEmployees()`, `getSettings()`, `login()`) — those correctly have no `userId` param. The rule only guards against *accidentally* returning unfiltered data where a user-scope should exist.
-- No `PrismaClient` is ever instantiated outside `PrismaService`, with one sanctioned exception: `backend/prisma/seed.ts`, which runs standalone via `tsx` (outside the Nest app, so there's no DI container to inject `PrismaService` through) and therefore constructs its own `PrismaClient` the same way `PrismaService` does (same driver adapter). No other file gets this exception.
+- No `PrismaClient` is ever instantiated outside `PrismaService`, with exactly two sanctioned exceptions — **`backend/prisma/seed.ts` and `backend/prisma/seed-demo.ts`**. Both run standalone via `tsx` (outside the Nest app, so there is no DI container to inject `PrismaService` through) and therefore construct their own `PrismaClient` the same way `PrismaService` does (same driver adapter). The exception is granted by *how the file runs*, not by its name: any future standalone `tsx` script under `prisma/` inherits it, and **nothing that runs inside Nest ever does** — a module, service, controller or guard instantiating its own client is always a bug. ⚠️ This bullet named only `seed.ts` until step 14· `seed-demo.ts` had been the second case since it was written, and the invariant simply had not been updated to match.
 - `AuthService` never queries Prisma directly for `User` data — it always goes through `UsersService` (e.g. `usersService.findByEmail()`), which is the single owner of all `User`-model queries. This also fixes the build order: `Users` module is built before `Auth` module, since `Auth` depends on it.
 - `TimeEntry.endTime = null` entries are never included in payroll totals — only "closed" shifts count.
 - Only `RolesGuard` + `@Roles('ADMIN')` may restrict a route — never inline role checks scattered in controllers.

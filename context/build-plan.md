@@ -588,7 +588,20 @@ The three are independent — none reads another's data — and each detaches it
 
   **Why after step 13**: the flows do not exist earlier. "Admin edits an employee's rate" cannot be written before Team is wired.
 
-- [ ] **14. README**
+- [x] **14. README** — ✅ **Done 2026-09-03**, taken **before 13b** (packaging is what the examiner meets first· 13b remains open). Widened from "README" to full packaging at the user's request: `docker compose up` now runs **db + backend + frontend**, which is why spec §2 and architecture.md's stack table were both edited in the same step. `docker compose up db` still starts the database alone, so nothing about steps 1-13's local flow changed.
+
+  **Every parked item below is closed. How:**
+  - `prisma generate` on a clean clone → **option (β)**, as this plan preferred: `prisma.config.ts` no longer calls `env()`, and `"postinstall": "prisma generate"` was added. Verified by copying the backend to a temp directory **without `.env`** and running `npm install` — exit 0, client generated.
+  - `frontend/.env` on a clean clone → the README orders both `.env` copies **before** their `npm` commands, and states that Vite inlines at build time. In Docker it is a build `ARG`, never a runtime `environment:` entry.
+  - `start:prod` in a real deploy → **now actually deployed.** `dist/src/main.js` confirmed correct inside the image. ⚠️ It also surfaced a bug this plan could not have predicted — see the `importFileExtension` note in `progress-tracker.md` Step 14.
+  - "Settings not initialised" → the entrypoint runs `prisma db seed` on every boot, so the message cannot reach a Docker user at all· the manual instruction is in the README for the non-Docker path.
+  - `seed:demo` → documented, **and** wired into the container behind a `SEED_DEMO_ONLY_IF_EMPTY` guard so a restart never deletes an examiner's data.
+  - The e2e prerequisite "create the database by hand" → **gone.** `docker/postgres/init-test-db.sql` creates `swifttrack_test` on first volume init. Verified: 106/106 e2e green against a database nobody created manually.
+  - `npm audit` → 9 findings remain (1 moderate, 8 high) on a clean install, unchanged in kind from the `@nestjs/swagger`/`js-yaml` chain recorded in Step 3. Not fixed here· noted so it is not rediscovered.
+  - `.mcp.json` → still declined, unchanged.
+
+  <details><summary>Original step description (kept for the record)</summary>
+
   - Build/deploy instructions, seed script instructions
   - **The parked items that have accumulated — this is their destination.** They are listed here so step 14 does not have to go looking through `progress-tracker.md` for them:
     - ⚠️ **`prisma generate` on a clean clone.** `backend/src/generated/` is gitignored, so nothing compiles until it runs. The official fix is `"postinstall": "prisma generate"`, which **cannot be added as-is**: Prisma 7 has an open regression where `prisma generate` fails without `DATABASE_URL`, because `env()` in `prisma.config.ts` throws while the config loads — and a clean clone has no `.env`, so `npm install` itself would fail ([prisma#28590](https://github.com/prisma/prisma/issues/28590)). Three options, with (β) preferred: (α) postinstall plus a README that orders "copy `.env` before `npm install`", (β) `process.env.DATABASE_URL ?? 'placeholder'` instead of `env()`, then postinstall, (γ) no postinstall, an explicit `npm run setup`
@@ -599,6 +612,8 @@ The three are independent — none reads another's data — and each detaches it
     - **The e2e suite's prerequisites**: copy `.env.test.example` to `.env.test`, and create the database once with `docker compose exec db psql -U swifttrack -d postgres -c "CREATE DATABASE swifttrack_test;"`. `globalSetup` runs the migrations and the seed, but does **not** create the database itself — that needs a connection to `postgres` with create rights
     - **Step 13b's prerequisites** on top of those: `npx playwright install` (browser binaries are not in `node_modules`), and the fact that a run needs **three** processes up — Postgres, backend, frontend
     - **`.mcp.json`** — **declined on 2026-08-28, not merely unbuilt.** The reasoning is under § Read this before any frontend step, and it is worth restating only so nobody re-opens it as an oversight: the shadcn MCP's discovery value was outweighed by it pinning a second, floating copy of the shadcn CLI, and the registry is queryable over plain HTTP anyway. The **Playwright MCP** is a genuinely open question for step 13b, where an agent driving a real browser is the point — decide it there
+
+  </details>
 
 ---
 

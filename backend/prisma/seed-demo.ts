@@ -185,8 +185,28 @@ function buildShifts(
   return shifts;
 }
 
+/**
+ * Set only by the Docker entrypoint, which runs this script on every container
+ * start. This script deletes every EMPLOYEE row before rebuilding, so unguarded
+ * it would erase anything created since the last restart. Unset when the script
+ * is run by hand, where "rebuild the demo roster" is exactly what was asked for.
+ */
+async function shouldSkipBecauseNotEmpty(): Promise<boolean> {
+  if (process.env.SEED_DEMO_ONLY_IF_EMPTY !== 'true') return false;
+
+  const existing = await prisma.user.count({ where: { role: 'EMPLOYEE' } });
+  if (existing === 0) return false;
+
+  console.log(
+    `${existing} employee(s) already present — skipping demo seed to preserve existing data.`,
+  );
+  return true;
+}
+
 async function main(): Promise<void> {
   assertNotTestDatabase();
+
+  if (await shouldSkipBecauseNotEmpty()) return;
 
   const settings = await prisma.appSettings.findUnique({ where: { id: 1 } });
   if (!settings) {

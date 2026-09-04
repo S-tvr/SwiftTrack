@@ -1,0 +1,19 @@
+node_modules
+dist
+coverage
+
+# Regenerated inside the image by the postinstall hook. Excluding it keeps the
+# build deterministic instead of inheriting whatever the host last generated.
+src/generated
+
+# Must never enter the image: prisma.config.ts starts with `import 'dotenv/config'`,
+# so a copied .env would silently override the environment compose injects.
+.env
+.env.test
+.env.*.local
+
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md

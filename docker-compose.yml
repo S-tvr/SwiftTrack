@@ -1,14 +1,37 @@
+# SwiftTrack — full stack for local use and for review.
+#
+#   docker compose up          → database + API + web app, seeded and ready
+#   docker compose up db       → database only, for running the backend and
+#                                frontend natively (see README § Local development)
+#
+# Every credential below is a development placeholder with an inline default, so
+# `docker compose up` works on a clean clone with no configuration. Override any of
+# them from a root .env (see .env.example). Do not reuse them anywhere real.
+#
+# All three services publish to 127.0.0.1 only. That is deliberate: this file ships
+# with a known JWT secret and a documented admin password, so binding to 0.0.0.0
+# would hand anyone on the same network an admin login and a Postgres shell. The
+# browser reaches everything over loopback anyway. Set BIND_HOST=0.0.0.0 to expose
+# it on purpose — and read the note above the frontend's VITE_API_URL first, because
+# that value has to move with it.
+
 services:
   db:
     image: postgres:16
+    # Survives a laptop sleeping, a Docker Desktop restart or a transient crash,
+    # without coming back up after an explicit `docker compose stop`.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: swifttrack
       POSTGRES_PASSWORD: swifttrack
       POSTGRES_DB: swifttrack
     ports:
-      - "5432:5432"
+      - "${BIND_HOST:-127.0.0.1}:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Creates swifttrack_test on first init, so `npm run test:e2e` has the
+      # separate database its _test-suffix guard requires without a manual step.
+      - ./docker/postgres/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
     # Without this, `docker compose up -d` returns while Postgres is still
     # initialising, and an immediate `prisma migrate dev` fails to connect.
     healthcheck:
@@ -16,5 +39,69 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      # db is the compose service name — resolved inside the network, not by the browser.
+      DATABASE_URL: postgresql://swifttrack:swifttrack@db:5432/swifttrack
+      PORT: 3000
+      # The single origin allowed by CORS. Must match the URL the browser actually
+      # uses for the frontend, including the port.
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # --- development placeholders, override via a root .env ---
+      JWT_SECRET: ${JWT_SECRET:-dev-only-not-for-production}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@swifttrack.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}
+      # false → start with an empty roster (admin only, no demo employees)
+      SEED_DEMO: ${SEED_DEMO:-true}
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # The app has no /health route, and node:*-slim has no curl. GET /api is the
+    # Swagger UI and the cheapest guaranteed 200; Node 22 supplies a global fetch.
+    # start_period covers migrations plus both seeds on a first boot.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    restart: unless-stopped
+    build:
+      context: ./frontend
+      args:
+        # Vite inlines this at build time, and the browser is what resolves it, so
+        # it must be host-reachable. Changing it requires a rebuild
+        # (docker compose build frontend), not just a restart — and FRONTEND_URL
+        # above has to be moved to the matching host in the same breath.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:5173:80"
+    # Waits for a responding API so port 5173 never serves an app that cannot log in.
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Nothing depends on the frontend, so this gates no startup order. It is here so
+    # that `up --wait` means "nginx answers a request" rather than "the nginx process
+    # exists" — without it the app can refuse a connection a moment after compose
+    # reports ready. wget is busybox's, already in nginx:alpine.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
 volumes:
   pgdata:

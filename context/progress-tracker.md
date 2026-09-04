@@ -1961,3 +1961,80 @@ The build-time write-up above was self-assessment written in the flow of buildin
 3. The `time-entries.e2e-spec.ts` concurrency flake above — pre-existing, unrelated, not investigated further here.
 
 **Next step**: unchanged from before this session — **13b (Frontend E2E, Playwright)** per the main build-plan sequence. Whether a "Change password" frontend follow-up gets scheduled before or after 13b is the user's call, not yet decided.
+
+---
+
+## Step 14 — Docker + README (delivery packaging)
+Status: ✅ Done
+Date: 2026-09-03
+
+**Taken out of order: before 13b (Playwright), which stays open.** Deliberate, at the user's request — the project is about to be shown to an examiner, and packaging is the first thing they meet. Nothing in 13b depends on this step, or this step on 13b.
+
+**Scope widened from what build-plan §14 said.** §14 was "README". The user asked for the whole stack in Docker so that the delivery is `git clone` → `docker compose up` → log in. That contradicted spec §2 ("DB only in Docker· backend/frontend run locally"), so spec §2 and architecture.md's stack table were edited in the same step rather than left to drift.
+
+### Files added/changed
+- **New**: `backend/Dockerfile`, `backend/.dockerignore`, `backend/docker-entrypoint.sh`, `frontend/Dockerfile`, `frontend/.dockerignore`, `frontend/nginx.conf`, `docker/postgres/init-test-db.sql`, `.env.example` (root), `.gitattributes`
+- **Changed**: `docker-compose.yml` (backend + frontend services), `README.md` (full rewrite, English), `backend/prisma.config.ts`, `backend/prisma/schema.prisma`, `backend/package.json` (`postinstall`), `backend/prisma/seed-demo.ts` (guard), `frontend/index.html` (title was still the scaffold's `frontend`)
+- **Deleted**: `backend/README.md`, `frontend/README.md` — untouched NestJS and Vite scaffold boilerplate. Verified before deleting: **zero** occurrences of "SwiftTrack" in either.
+- **Context**: spec §2, architecture.md (stack table + folder structure), build-plan.md §14 (ticked, all parked items closed inline)
+
+### The four decisions, all the user's call
+1. **Full stack in Docker**, not DB-only. `docker compose up db` still starts the database alone, so the local dev flow that built steps 1-13 is untouched.
+2. **Development defaults inline in compose**, via `${VAR:-default}`, overridable from an optional root `.env`. The user asked directly whether committing them to a public GitHub repo is acceptable· answer given: yes, because they are placeholders for a throwaway local database, the compose file already committed `POSTGRES_PASSWORD: swifttrack`, and secret scanners key on real token shapes. Conditions attached and implemented: obviously-placeholder values, `${VAR:-default}` so a real deployment overrides without editing the file, an inline comment, and a README note.
+3. **Demo data auto-seeds on first boot** — the examiner sees a populated app, not an empty one.
+4. **`context/`, `AGENTS.md`, `CLAUDE.md`, `.agents/` stay in the repo, with no reference from the README.** README is in English.
+
+### ⭐ The bug this step existed to catch — `importFileExtension`
+
+`start:prod` had been "fixed and verified locally, never deployed" since step 6. Deploying it for the first time broke immediately:
+
+```
+Error: Cannot find module './internal/class.ts'
+Require stack: /app/dist/src/generated/prisma/client.js
+```
+
+**The same Prisma 7.9.1 generated different source on the two machines.** The host's `src/generated/prisma/client.ts` had `import … from "./internal/class.js"`· the container's had `"./internal/class.ts"`. `tsc` rewrites neither specifier, so the container's compiled output required a `.ts` file that does not exist next to the emitted `.js`.
+
+Cause, confirmed against Prisma's official generator documentation rather than assumed: the `prisma-client` generator's **`importFileExtension` option defaults to "inferred from environment"**. The host's checked-in output was simply stale — generated at some earlier point in an environment that inferred `.js`.
+
+Fixed by stating it: `importFileExtension = "js"` in the generator block, with the reasoning in a comment. Regenerating on the host now produces `.js` explicitly, and the container agrees.
+
+⚠️ **The general lesson, and it is the same one as `VITE_API_URL` and the step-1 fallback:** an inferred default that happens to be right on the development machine proves nothing about anywhere else. Anything in this project whose default is "inferred from environment" should be stated outright.
+
+### The second finding — `tsconfig.json` and ts-jest
+
+`docker compose exec backend npm test` first ran 199/213 with one suite failing to compile: `TS1240: Unable to resolve signature of property decorator`, on every `@ApiPropertyOptional`/`@IsInt` in a DTO. Cause: the runtime image did not carry `tsconfig.json`, so **ts-jest fell back to TypeScript defaults where `experimentalDecorators` is off**, and read Nest's decorators as TC39 standard decorators. One line in the Dockerfile fixed it. Worth recording because the error names decorators and says nothing about a missing config file.
+
+### Design notes worth keeping
+- **No nginx `/api` reverse proxy.** `/api` is the Swagger UI mount and the API has no global prefix, so the usual `location /api → backend` would collide. The browser talks to the backend directly, cross-origin — the same arrangement the 106 e2e tests were written against.
+- **Frontend published on host 5173** so `FRONTEND_URL`'s existing default stays true and no CORS documentation goes stale.
+- **`VITE_API_URL` is a build `ARG`, never a runtime `environment:` entry**, and must be host-reachable — a compose service name would not resolve in the visitor's browser. Confirmed baked into the bundle by grepping the served JS.
+- **devDependencies are kept in the runtime image** because `prisma db seed` runs `tsx prisma/seed.ts`; an `--omit=dev` image could not run its own migrations. Consequence: the backend image is **1.14 GB** (frontend, nginx + static, is 74.7 MB). Accepted for a locally-built deliverable rather than adding a separate one-shot migration service.
+- **`.gitattributes` forces LF on `*.sh`.** This repo was developed with `core.autocrlf=true`; a CRLF entrypoint is copied verbatim into a Linux image and dies as `bad interpreter: /bin/sh^M`.
+- **All three services publish to `127.0.0.1`, not `0.0.0.0`** — via `${BIND_HOST:-127.0.0.1}`. Raised by the `/review` pass and fixed after it: this compose ships a **known** `JWT_SECRET` and a README-published admin password, so a wildcard bind hands anyone on the same network (campus wifi, coworking) an admin login and a Postgres shell with `swifttrack/swifttrack`. The browser only ever uses loopback, so nothing is lost. Parameterised rather than hardcoded because the README already documented a LAN scenario, which would otherwise have silently stopped working — `BIND_HOST=0.0.0.0` restores it, and must be set **together with** `VITE_API_URL` and `FRONTEND_URL`. Both branches verified through `docker compose config` (`host_ip: 127.0.0.1` by default, `0.0.0.0` with the override).
+- **`restart: unless-stopped` on all three.** Chosen over `always` so an explicit `docker compose stop` is respected rather than undone.
+- **The demo-seed guard is opt-in via `SEED_DEMO_ONLY_IF_EMPTY`**, set by the entrypoint only. Run by hand, `npm run seed:demo` still rebuilds the roster, which is what that command means.
+
+### Verification actually performed
+Every item below was run, not reasoned about.
+
+- **Clean first boot**: `docker compose down -v` then `up`. 4 migrations applied from an empty database → admin created → demo data seeded → Nest started. All three services report healthy — `db` via `pg_isready`, `backend` via a `fetch` against `/api`, `frontend` via `wget --spider` (added after the review pointed out it had none, which made `up --wait` return on "the nginx process exists" rather than "nginx answers"). Only `backend` gates anything: `frontend` waits on it, and nothing waits on `frontend`.
+- **Login and CORS**: admin login returns a token· `Access-Control-Allow-Origin: http://localhost:5173` present· `/users/me` and `/users` answer correctly· `anna@demo.local` logs in 200 and the deactivated `kristjan@demo.local` is refused 401.
+- **Payroll**: `/payroll/overview` returns real figures and `hasOpenShift: true` for the one clocked-in employee (**Elín**, not Björn — the README was corrected after reading `seed-demo.ts`).
+- **Frontend container**: `/` serves the SPA· `/team`, `/shifts`, `/payroll`, `/settings`, `/payroll/2`, `/shifts/3` all 200 (history fallback works)· a genuinely missing `/assets/nope.js` still 404s· `http://localhost:3000` confirmed baked into the served bundle· title now `SwiftTrack`.
+- **The guard**: created an employee through the API, `docker compose restart backend` → log reads "6 employee(s) already present — skipping demo seed", and the created row survived. Admin seed reported "already exists, skipping".
+- **`swifttrack_test` created automatically** by the init script — verified in `pg_database`, with nobody creating it by hand.
+- **Backend unit suite in the container**: `docker compose exec backend npm test` → **213/213**, matching the baseline Step 8e recorded exactly.
+- **Backend e2e**: **106/106 green** against that auto-created test database. Note this is *better* than Step 8e's 105/106 — the `time-entries.e2e-spec.ts` concurrency flake did not reproduce here, consistent with it being environmental.
+- **The clean-clone test**: the backend copied to a temp directory **without `.env`, without `src/generated`**, then `npm install` → exit 0, postinstall generated the client, import specifier `.js`. This is the parked build-plan item and it is now closed by measurement rather than by argument.
+- **Frontend suite**: **15 files / 209 tests, all green.**
+
+  ⚠️ **The eleventh measurement error in this project, and again the harness, not the code.** The first frontend run reported `14 passed (14)` / `191 passed` plus a bare `Errors 1 error` with a `listOnTimeout` stack — which reads exactly like a real failure. It was run *concurrently with the backend e2e suite*, and the two together starved the machine: that run took **224s**, the clean one **116s**. One file timed out and vanished from the count. `vitest list` collected all 15 either way, which was the first clue. **Do not run the frontend suite alongside the backend e2e suite** — the result is not trustworthy, and it fails in a way that looks like a code defect.
+
+### ⚠️ Open, inherited by the next step
+1. **13b (Playwright) is still unbuilt** — unchanged, and now the only remaining build-plan item.
+2. **`npm audit`**: a clean install reports 9 findings (1 moderate, 8 high), same family as the `@nestjs/swagger`/`js-yaml` chain recorded in Step 3. Not addressed.
+4. **Backend image size** (1.14 GB) — reducible with a separate one-shot migration service if it ever matters.
+5. The two items Step 8e left open (`messages.ts` says "17 codes", and no Change-password UI) are untouched.
+
+**Next step**: **13b (Frontend E2E, Playwright)** — now the last open item in the build plan.

@@ -11,7 +11,8 @@ Time tracking & payroll calculation app for **a single business**. The admin (em
 |---|---|
 | Backend | NestJS |
 | ORM | Prisma |
-| Database | PostgreSQL (DB only in Docker· backend/frontend run locally) |
+| Database | PostgreSQL |
+| Containers | Docker Compose runs the whole stack (db + backend + frontend) as of step 14· `docker compose up db` still starts the database alone for local development, which is how steps 1-13 were built |
 | Frontend | React (Vite) + Tailwind CSS |
 | Auth | JWT |
 | API Docs | Swagger |

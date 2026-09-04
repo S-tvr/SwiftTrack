@@ -2,6 +2,13 @@ generator client {
   provider     = "prisma-client"
   output       = "../src/generated/prisma"
   moduleFormat = "cjs"
+  // Defaults to "inferred from environment", which is not reproducible: the same
+  // Prisma 7.9.1 emitted `./internal/class.js` on the development machine and
+  // `./internal/class.ts` inside the Docker image, and the second one crashes at
+  // startup with MODULE_NOT_FOUND — tsc rewrites neither specifier. We compile to
+  // JavaScript and run `node dist/src/main.js`, so `.js` is the correct answer
+  // everywhere and is now stated rather than guessed.
+  importFileExtension = "js"
 }
 
 datasource db {
