@@ -19,18 +19,27 @@ function homeFor(role: Role): string {
  *   /clock, /shifts, /payroll              EMPLOYEE  (they call the /me routes)
  *   /shifts/:userId, /payroll/:userId      ADMIN
  *   /team, /payroll-overview, /settings    ADMIN
+ *   /change-password                       both roles — omit `allow`
  *
  * The server is the real defence and already holds it — this keeps the UI from
  * disagreeing with it, and is written out because generated authorization
  * defaults to permissive.
  *
  * ⚠️ A wrong-role visit redirects to that role's own home, never a blank screen.
+ *
+ * ⚠️ `allow` is **optional**, and omitting it means "signed in, either role" —
+ * never "no check at all". The sign-in check above always runs. It became
+ * optional in step 13-4 for `/change-password`, the first route both roles
+ * reach, matching the two endpoints that were already role-free for the same
+ * reason (`GET /users/me`, `GET /settings`).
  */
-export function ProtectedRoute({ allow }: { allow: Role }) {
+export function ProtectedRoute({ allow }: { allow?: Role }) {
   const { user } = useAuth()
 
   if (user === null) return <Navigate to="/login" replace />
-  if (user.role !== allow) return <Navigate to={homeFor(user.role)} replace />
+  if (allow !== undefined && user.role !== allow) {
+    return <Navigate to={homeFor(user.role)} replace />
+  }
 
   return <Outlet />
 }

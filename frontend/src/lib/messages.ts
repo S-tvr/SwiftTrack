@@ -13,6 +13,7 @@ export const PAGE_TITLES = {
   team: "Team",
   payrollOverview: "Payroll Overview",
   settings: "Settings",
+  changePassword: "Change Password",
 } as const
 
 export const LABELS = {
@@ -36,6 +37,12 @@ export const LABELS = {
   activateAccount: "Activate account",
   accountActivation: "Account Activation",
   backToLogin: "Back to sign in",
+
+  // ── Change password (step 13-4) ──
+  currentPassword: "Current password",
+  /** The submit button. Deliberately not "Save": this signs other devices out,
+   *  which is a heavier act than saving a form. */
+  updatePassword: "Update password",
 
   // ── Shift history (step 11) ──
   addShift: "Add Shift",
@@ -241,6 +248,10 @@ export const VALIDATION = {
   setupCode: "The activation code is 4 digits.",
   /** Client-side only — the API takes no confirmation field. */
   passwordsDoNotMatch: "Passwords do not match.",
+  /** Mirrors @MinLength(1) on ChangePasswordDto.currentPassword. There is no
+   *  length rule to state: the real check is whether it matches, and only the
+   *  server can answer that. */
+  currentPasswordRequired: "Enter your current password.",
 
   // ── ShiftForm (step 11) ──
   startTimeRequired: "Enter a start time.",
@@ -288,6 +299,17 @@ export const NOTICES = {
   /** Replaces the activation form on success. Without it the form simply
    *  empties and it looks like nothing happened. */
   accountActivated: "Your account is ready. You can now sign in.",
+
+  /**
+   * Shown after a successful password change (step 13-4).
+   *
+   * ⚠️ The second sentence is not decoration. The change revokes every token
+   * this user holds, so anyone signed in on another device is dropped on their
+   * next action — and to them that looks like a bug unless someone said it would
+   * happen. This line is the only place the app says it.
+   */
+  passwordChanged:
+    "Your password has been changed. Any other devices signed in as you have been signed out.",
 
   /** The timezone bar. A template, not a constant: the same device reads
    *  "3 hours ahead" in August and "2 hours ahead" in January, which is exactly
@@ -521,10 +543,10 @@ export const NOTICES = {
 // ── Error codes ──────────────────────────────────────────────────────────────
 
 /**
- * The 17 codes the backend can send, copied from
+ * The 19 codes the backend can send, copied from
  * `backend/src/common/error-codes.ts`. Hand-written rather than shared through
  * a package: the two projects have separate tsconfigs and dependency trees, and
- * a workspace refactor is a bigger change than a list of 17 strings (decision Ζ,
+ * a workspace refactor is a bigger change than a list of 19 strings (decision Ζ,
  * step 8c).
  *
  * If this list and the backend's drift, the compiler cannot see it — but
@@ -538,6 +560,8 @@ export type ServerErrorCode =
   | "ACCOUNT_ALREADY_ACTIVATED"
   | "INVALID_SETUP_CODE"
   | "SETUP_CODE_EXPIRED"
+  | "INVALID_CURRENT_PASSWORD"
+  | "NEW_PASSWORD_SAME_AS_CURRENT"
   | "USER_NOT_FOUND"
   | "EMPLOYEE_NOT_FOUND"
   | "EMAIL_ALREADY_EXISTS"
@@ -580,6 +604,12 @@ export const ERRORS = {
   INVALID_SETUP_CODE: "Invalid activation code.",
   SETUP_CODE_EXPIRED:
     "This activation code has expired. Please contact your admin.",
+  /** ⚠️ Arrives on a **400**, not a 401 — see the note in `api/auth.ts`. If it
+   *  ever came back as a 401 the client would log the user out mid-form and
+   *  this sentence would never be seen. */
+  INVALID_CURRENT_PASSWORD: "Your current password is incorrect.",
+  NEW_PASSWORD_SAME_AS_CURRENT:
+    "Your new password must be different from your current one.",
 
   // users
   USER_NOT_FOUND: "No account was found with that email address.",

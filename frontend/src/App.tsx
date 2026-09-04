@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
 import { AuthProvider, useAuth } from "@/context/AuthContext"
 import { errorText, LABELS } from "@/lib/messages"
+import { ChangePasswordPage } from "@/pages/ChangePasswordPage"
 import { ClockPage } from "@/pages/ClockPage"
 import { LoginPage } from "@/pages/LoginPage"
 import { PayrollOverviewPage } from "@/pages/PayrollOverviewPage"
@@ -71,6 +72,13 @@ function AppGate() {
 
       <Route element={<AppLayout />}>
         <Route index element={<HomeRedirect />} />
+
+        {/* The one route both roles reach — `allow` omitted, which still
+            requires a session. It mirrors PATCH /auth/change-password, which
+            carries JwtAuthGuard and no @Roles for the same reason. */}
+        <Route element={<ProtectedRoute />}>
+          <Route path="/change-password" element={<ChangePasswordPage />} />
+        </Route>
 
         {/* Paramless routes are EMPLOYEE-only because the endpoints behind
             them are /me routes. An admin has no shifts and no hourlyRate. */}

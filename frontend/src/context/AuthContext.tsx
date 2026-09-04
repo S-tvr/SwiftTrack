@@ -74,6 +74,17 @@ interface AuthContextValue {
   /** Shown on /login so being thrown out reads as an explanation. */
   sessionExpired: boolean
   login: (email: string, password: string) => Promise<void>
+  /**
+   * Swaps the stored token for a fresh one, without touching `user` — nothing
+   * about the person changed, only their credential.
+   *
+   * Exists for `PATCH /auth/change-password`, which revokes every token this
+   * user holds and hands back a replacement. Without this the caller's own
+   * session would be dead the moment it succeeded, and the next request would
+   * bounce them to /login claiming the session expired — the same failure this
+   * step was created to remove, arriving one request later.
+   */
+  replaceToken: (token: string) => void
   logout: () => void
 }
 
@@ -157,6 +168,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(response.user)
   }, [])
 
+  // No state to set: `user` is unchanged by a password change, and the token is
+  // not rendered anywhere. Writing it through the same `storeToken` login uses
+  // keeps localStorage and the module-level `currentToken` that api/client.ts
+  // reads from ever disagreeing.
+  const replaceToken = useCallback((token: string) => {
+    storeToken(token)
+  }, [])
+
   const logout = useCallback(() => {
     storeToken(null)
     setUser(null)
@@ -177,6 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         retryBootstrap,
         sessionExpired,
         login,
+        replaceToken,
         logout,
       }}
     >

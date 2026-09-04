@@ -28,6 +28,10 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 - Drill down into any employee's shift history or payroll breakdown
 - Settings — the day the pay cycle starts and ends
 
+**Both roles**
+
+- Change your own password. Every other signed-in device is signed out; the one making the change stays in
+
 **Pay calculation** happens on the server and is never frozen: it is recomputed from the raw shifts on every request. Hours are split across four rate zones, and a shift crossing a boundary is divided between them.
 
 | Zone | When | Rate |
@@ -48,7 +52,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 | Database | PostgreSQL 16 |
 | Frontend | React 19, Vite 8, React Router 7 |
 | Styling | Tailwind CSS v4 (CSS-first, no config file), shadcn/ui on Base UI |
-| Auth | JWT bearer tokens (`@nestjs/jwt` + Passport), 14-day expiry |
+| Auth | JWT bearer tokens (`@nestjs/jwt` + Passport), 12-hour expiry, revoked on password change |
 | Validation | `class-validator` DTOs behind a global `ValidationPipe` |
 | API docs | Swagger |
 | Tests | Jest (backend), Vitest (frontend) |
@@ -172,7 +176,7 @@ cd backend && npm run seed:demo
 
 ## Testing
 
-**Backend** — 213 unit tests and 106 full-stack tests against a real database:
+**Backend** — 215 unit tests and 108 full-stack tests against a real database:
 
 ```bash
 cd backend
@@ -188,7 +192,7 @@ npm run test:e2e
 
 `swifttrack_test` is created automatically the first time the `db` container initialises. The suite refuses to run against any database whose name does not end in `_test`, because it truncates tables between tests.
 
-**Frontend** — 209 component and unit tests:
+**Frontend** — 219 component and unit tests:
 
 ```bash
 cd frontend

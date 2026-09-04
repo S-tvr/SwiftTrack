@@ -1964,6 +1964,97 @@ The build-time write-up above was self-assessment written in the flow of buildin
 
 ---
 
+## Step 8f — Change-password contract fix, token revocation, shorter expiry
+Status: ✅ Done
+Date: 2026-09-04
+Files added/changed:
+- `backend/prisma/schema.prisma` + migration `20260904025413_add_token_version` — `User.tokenVersion Int @default(0)`
+- `backend/src/auth/jwt-payload.interface.ts` — third claim, `tokenVersion`
+- `backend/src/auth/jwt.strategy.ts` — rejects a stale `tokenVersion`
+- `backend/src/auth/auth.service.ts` — `login` signs the counter· `changePassword` refuses with 400, rejects an unchanged password, and returns a replacement token
+- `backend/src/auth/auth.module.ts` — `JWT_EXPIRY` `'14d'` → `'12h'`
+- `backend/src/auth/auth.controller.ts` — codes moved to the 400, 200 typed, three "14 days" strings
+- `backend/src/auth/dto/change-password-response.dto.ts` — new
+- `backend/src/common/error-codes.ts` — new `NEW_PASSWORD_SAME_AS_CURRENT`· a warning on `INVALID_CURRENT_PASSWORD` about why it is a 400
+- `backend/src/users/users.service.ts` — `findActiveById` + `findCredentialsById` selects widened· `updatePasswordHash` → `updatePasswordAndRevokeTokens`
+- Tests: `auth.service.spec.ts`, `users.service.spec.ts`, `test/change-password.e2e-spec.ts`
+- `context/`: spec §3 (domain model), §6 (endpoint row), §8a (message row)· architecture.md (folder structure, auth flow, the 8e invariant, the JWT invariant, a new `tokenVersion` invariant)· build-plan.md (8e cross-reference + new **8f** entry)· README.md
+
+Endpoints/Components:
+- `PATCH /auth/change-password` → **`{ accessToken }`** instead of an empty body. Wrong current password → **400** (was 401). New refusal: `newPassword === currentPassword` → 400.
+- Tests: unit **213 → 215**, e2e **106 → 108**. Both baselines match what 8e recorded.
+
+### Why this step exists — and why it is uncomfortable
+It is the exact failure the **step-8b gate** was built to prevent, arriving late because 8e was added *after* that gate with "frontend deliberately out of scope". `api/client.ts` logs the user out on **any** 401 that carried an `Authorization` header — a deliberate rule keyed off the header rather than a list of endpoints, stated in its own comment. `change-password` answered 401 for a wrong `currentPassword` and **must** send that header, unlike `login`/`set-initial-password`, which escape by passing `auth: false`. A typo would have wiped the token, bounced the user to `/login`, and blamed an expired session — never showing the real reason. Nothing was wrong with the 8e code as written· what was wrong was that no consumer existed to disagree with it.
+
+### Decisions taken in this session, all the user's call
+1. **Revocation via `tokenVersion`**, after the user reversed an earlier "shorter expiry only" decision. Picked over a `passwordChangedAt` timestamp because `iat` is second-granular, and a login and a password change inside one second is impossible for a human but routine inside an e2e test — that design would have introduced a flake class into a suite that has already been burned once.
+2. **12-hour expiry**, kept alongside revocation rather than instead of it. The two are orthogonal.
+3. **`{ accessToken }` in the response**, so the session that changed the password stays alive while every other device drops.
+4. Considered and **declined**: refresh tokens (the easy `localStorage` version is a security *downgrade* — it swaps a 12-hour token for a long-lived credential in the same XSS-reachable place· the correct httpOnly-cookie version is a rewrite of both sides), and an IP restriction on clock-in (explored at length, then dropped by the user — see the note below, worth keeping).
+
+### ⭐ The `JwtPayload` decision that avoided a 13-file change
+Adding `tokenVersion` to the signed payload while having `validate()` return only `{ userId, role }` would have split one type into two and touched every `@CurrentUser()` site — ~10 controller files. Instead `validate()` returns all three **from the database row**, which *preserves* the property architecture.md already documents ("what is signed, and what req.user holds") rather than breaking it. No controller changed.
+
+### Verification actually performed
+- `npx tsc -b` and `npm run lint` clean. ⚠️ The type-check caught exactly the right two things on the first run — the `makeUser()` fixtures in `auth.service.spec.ts` and `users.service.spec.ts` — and **no production file**, which is the signal that the wiring was consistent.
+- One unit test failed on the first run and deserved to: `users.service.spec.ts` asserts `findActiveById`'s `select` **shape**, because that read runs on every request and must never pull `password`/`setupCode`. Widening the select is exactly the kind of change that test exists to make visible.
+- Unit **215/215**, e2e **108/108 across all 8 suites**.
+- ⚠️ **The `time-entries.e2e-spec.ts` concurrency flake did not reproduce here.** 8e recorded it as deterministic· on this machine all 8 suites pass. That strengthens 8e's own conclusion that it was tied to the sandboxed container's resource limits, not to the code.
+
+### ⚠️ Open, inherited by the next step
+1. **Deploy consequence**: tokens signed before this step carry no `tokenVersion`, so everyone is signed out **once** on the first deploy. Expected, not a defect.
+2. `messages.ts` comment says "17 codes", now stale by **two** (19) — closes with the frontend.
+3. Still no frontend consumer. **13-4** is designed and waiting (see the session plan): `api/auth.ts`, a `replaceToken` on `AuthContext`, `ProtectedRoute.allow` made optional for the first both-roles route, `ChangePasswordPage`, a Header dropdown entry.
+4. ⭐ **The biggest remaining operational risk is untouched and is not this**: if the single admin forgets their password there is no recovery at all — no email reset, no second admin (ruled out of scope), only a database edit. 8e/8f closed "the admin *can* rotate it"· nobody has closed "the admin *forgot* it".
+5. Explored and dropped this session, recorded so it is not re-derived from scratch: **IP-restricting clock-in**. The finding worth keeping is that `POST /time-entries` is Owner-or-ADMIN, so an employee can add a shift manually from anywhere — restricting only `clock-in` makes the control a speed bump, not a wall. The user accepted that trade-off, then dropped the feature entirely.
+
+**Next step**: **13-4 (frontend Change Password)** or **13b (Playwright)** — the user's call, not yet made.
+
+---
+
+## Step 13-4 — Change Password (frontend)
+Status: ✅ Done
+Date: 2026-09-04
+Files added/changed:
+- `frontend/src/api/auth.ts` — `changePassword()` + two interfaces
+- `frontend/src/context/AuthContext.tsx` — `replaceToken()`
+- `frontend/src/components/layout/ProtectedRoute.tsx` — `allow` made optional
+- `frontend/src/components/layout/Header.tsx` — dropdown entry, both roles
+- `frontend/src/lib/messages.ts` — 2 error codes, `PAGE_TITLES.changePassword`, 2 labels, `VALIDATION.currentPasswordRequired`, `NOTICES.passwordChanged`, the "17 codes" comment → 19
+- `frontend/src/pages/ChangePasswordPage.tsx` — new
+- `frontend/src/pages/ChangePasswordPage.spec.tsx` — new, 10 tests
+- `frontend/src/App.tsx` — `/change-password` inside `AppLayout`
+- `context/build-plan.md` — new **13-4** entry
+
+Endpoints/Components:
+- Route `/change-password`, **the first in the app both roles reach**.
+- Frontend tests **209 → 219**.
+
+### The one genuinely new mechanism
+`replaceToken()`. Everything else is an existing pattern copied. The change revokes every token the user holds — *including the one that made the request* — so the replacement has to be stored before anything else fires a request, or the user is thrown out one request after succeeding. It writes through the same module-level `storeToken()` `login` uses, so `localStorage` and the `currentToken` that `api/client.ts` reads can never disagree, and it touches no React state: a password change alters neither name nor role.
+
+### Two decisions worth keeping
+1. **`ProtectedRoute.allow` optional, not a second component.** Omitting it means "signed in, either role" — the sign-in check still runs. It mirrors `GET /users/me` and `GET /settings`, role-free for the same reason. Written into the route table in its own JSDoc so the next reader does not think the check was forgotten.
+2. **The success notice names the revocation.** "Any other devices signed in as you have been signed out." Without it the feature is invisible to the person who asked for it, and their other device dropping reads as a bug.
+
+### Verification actually performed
+- `tsc` clean· `eslint` clean· `npm run build` succeeds (the >500 kB chunk warning is pre-existing).
+- **Vitest 219/219 across 16 files.**
+- ⚠️ **A harness failure, recorded because it is the eleventh of its kind in this project and again *not* the code.** The first `vitest run` reported "15 files, 201 tests" plus an unhandled `[vitest-pool]: Failed to start forks worker` for `SettingsPage.spec.tsx` — a worker that never *started*, so its 18 tests were silently missing from the total rather than failing. Re-running with `--maxWorkers=2` gives 16/219. ⚠️ **A green vitest summary is not proof on this machine unless the file count is also checked** — the failure mode is a smaller total, not a red line.
+- ⚠️ **Not done: a live click-through in a browser.** Not blocked by anything in the app — see the `.env` note below· the credential this session was using was simply the wrong one. The 10 page tests cover the logic with a mocked API, and 8f's manual sweep proved the endpoint's real request/response shapes with curl — but nobody has yet watched the actual form submit against the actual backend, and 13b is the step that would.
+
+### ⚠️ Open
+1. ⚠️ **`backend/.env`'s `ADMIN_PASSWORD` does not match the dev database — two sources of truth for one credential.** The app logs in fine· what is stale is the file. The dev row's real password is the one `docker-compose.yml:57` defaults to (`ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin1234}`), because **step 14 seeded the dev database from inside the container**, where compose's environment applies and `backend/.env` is never read. The row's `createdAt` matches that step. `backend/.env` still carries the value from before, which is what anyone reading it — or running the backend outside Docker — will try, and `prisma/seed.ts:23` skips an existing admin so re-seeding cannot reconcile them.
+   - **This bit an agent, not a person**: 8f's manual sweep was driven off `backend/.env`, got `INVALID_CREDENTIALS`, and initially concluded the database was broken. It is not — the sweep simply ran against `swifttrack_test` instead, which was harmless. Recorded so the next session reads the file with suspicion rather than repeating the diagnosis.
+   - Fix is one line in the gitignored `backend/.env` (align it to compose's default), or give the root a `.env` so both read the same variable. Not applied — it is the user's local environment.
+2. **The admin still has no password recovery** if they forget it — no email reset, no second admin. Unchanged by these two steps and still the largest operational gap.
+3. `13b` (Playwright) remains the last open step. It would cover exactly the click-through item 1 blocks.
+
+**Next step**: **13b**, or the dev-database fix first so the app can be exercised by hand.
+
+---
+
 ## Step 14 — Docker + README (delivery packaging)
 Status: ✅ Done
 Date: 2026-09-03

@@ -60,6 +60,12 @@ export function Header() {
               {link.label}
             </DropdownMenuItem>
           ))}
+          {/* Outside `links` on purpose: those two arrays are role-specific and
+              this is the one destination both roles share. */}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem render={<Link to="/change-password" />}>
+            {PAGE_TITLES.changePassword}
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={handleLogout}>
             {LABELS.logOut}
