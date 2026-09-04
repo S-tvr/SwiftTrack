@@ -276,6 +276,38 @@ export class UsersService {
     return this.toResponseDto(user);
   }
 
+  /**
+   * The mirror image of `resetSetupCode()`: that one refuses once a password
+   * exists· this one exists *because* one does, for an employee who forgot it
+   * entirely. No guard on activation or active state — it succeeds on a
+   * pending row too (the same outcome `resetSetupCode()` gives, on purpose:
+   * refusing here would just point the admin at the other endpoint) and on a
+   * deactivated one (also on purpose: `login`'s existing check order already
+   * makes the reset inert until a separate `reactivate()` call, so this does
+   * not implicitly reactivate anyone).
+   *
+   * Bumps `tokenVersion` in the same write, reusing step 8f's revocation
+   * mechanism rather than a new one — a password reset the account holder did
+   * not initiate is at least as strong a reason to kill their existing
+   * sessions as a voluntary change is. Unlike `updatePasswordAndRevokeTokens`,
+   * there is no replacement token to hand back: the caller is the admin, not
+   * the employee, who has no session for this call to preserve.
+   */
+  async resetPassword(id: number): Promise<UserResponseDto> {
+    await this.findEmployeeByIdOrThrow(id);
+
+    const user = await this.prisma.user.update({
+      where: { id },
+      data: {
+        password: null,
+        setupCode: this.generateSetupCode(),
+        setupCodeExpiresAt: this.addDays(new Date(), SETUP_CODE_VALIDITY_DAYS),
+        tokenVersion: { increment: 1 },
+      },
+    });
+    return this.toResponseDto(user);
+  }
+
   async activateAccount(email: string, hashedPassword: string): Promise<User> {
     return this.prisma.user.update({
       where: { email },

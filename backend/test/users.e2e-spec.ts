@@ -56,6 +56,7 @@ describe('/users', () => {
         'post',
         `/users/${id}/reset-setup-code`,
       ],
+      ['POST /users/:id/reset-password', 'post', `/users/${id}/reset-password`],
     ];
 
     // No token means no row is ever reached, so the id here is irrelevant.

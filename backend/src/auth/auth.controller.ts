@@ -79,7 +79,7 @@ export class AuthController {
   @ApiResponse({
     status: 401,
     description:
-      'Codes: `INVALID_SETUP_CODE`, `SETUP_CODE_EXPIRED` (kept apart: one means retype it, the other means ask the admin for a new one via POST /users/:id/reset-setup-code), `ACCOUNT_DEACTIVATED`. A rejected attempt never consumes the code.',
+      'Codes: `INVALID_SETUP_CODE`, `SETUP_CODE_EXPIRED` (kept apart: one means retype it, the other means ask the admin for a new one — via POST /users/:id/reset-setup-code, or POST /users/:id/reset-password, which both issue a fresh code for an account with no password on it), `ACCOUNT_DEACTIVATED`. A rejected attempt never consumes the code.',
   })
   @ApiResponse({
     status: 404,

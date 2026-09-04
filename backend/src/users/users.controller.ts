@@ -209,4 +209,32 @@ export class UsersController {
   ): Promise<UserResponseDto> {
     return this.usersService.resetSetupCode(id);
   }
+
+  @Post(':id/reset-password')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Reset a forgotten password back to the setup-code flow (ADMIN)',
+    description:
+      'Blanks the password and issues a fresh 4-digit `setupCode` with a new 3-day expiry, so the employee activates again exactly as at account creation. Unlike reset-setup-code, this succeeds regardless of activation state — including an already-activated account, which is its whole reason to exist, but also a still-pending or a deactivated one (a deactivated row is not implicitly reactivated: the reset is inert until a separate reactivate call). Revokes every token already issued for this account.',
+  })
+  @ApiResponse({
+    status: 200,
+    type: UserResponseDto,
+    description:
+      'The employee, password cleared, carrying the new code and its new expiry.',
+  })
+  @ApiResponse({ status: 400, description: 'Non-integer id.' })
+  @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'No EMPLOYEE with this id — an admin id included. Code: `EMPLOYEE_NOT_FOUND`.',
+  })
+  resetPassword(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<UserResponseDto> {
+    return this.usersService.resetPassword(id);
+  }
 }

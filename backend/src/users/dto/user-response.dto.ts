@@ -30,7 +30,7 @@ export class UserResponseDto {
     example: '7391',
     nullable: true,
     description:
-      'The 4-digit activation code the admin hands to the employee out of band (spec §5). Non-null only while the employee is still pending — always null once activated, and always null for an ADMIN.',
+      'The 4-digit activation code the admin hands to the employee out of band (spec §5). Non-null whenever the account has no password waiting to be set on it — an employee who has never activated, or one whose password an admin cleared with POST /users/:id/reset-password (step 8g). Always null once a password is set, and always null for an ADMIN.',
   })
   setupCode!: string | null;
 

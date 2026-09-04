@@ -62,6 +62,7 @@ describe('UsersService', () => {
         (s: UsersService) => s.deactivate(1),
         (s: UsersService) => s.reactivate(1),
         (s: UsersService) => s.resetSetupCode(1),
+        (s: UsersService) => s.resetPassword(1),
       ]) {
         const { service, user } = makeService();
         // The lookup filters on role, so an ADMIN id resolves to null.
@@ -152,6 +153,70 @@ describe('UsersService', () => {
         'This account has already been activated.',
       );
       expect(user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The mirror image of resetSetupCode: that one refuses once a password
+   * exists· this one exists because one does, for an employee who forgot it.
+   * No guard on activation or active state — added in step 8g.
+   */
+  describe('resetPassword', () => {
+    it('nulls the password, issues a fresh code, and revokes existing sessions', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(
+        makeUser({ password: 'hashed', setupCode: null, tokenVersion: 2 }),
+      );
+      const before = Date.now();
+
+      await service.resetPassword(7);
+
+      const [firstCall] = user.update.mock.calls as Array<
+        [
+          {
+            where: { id: number };
+            data: {
+              password: null;
+              setupCode: string;
+              setupCodeExpiresAt: Date;
+              tokenVersion: { increment: number };
+            };
+          },
+        ]
+      >;
+      const { where, data } = firstCall[0];
+      expect(where).toEqual({ id: 7 });
+      expect(data.password).toBeNull();
+      expect(data.setupCode).toMatch(/^\d{4}$/);
+      expect(data.tokenVersion).toEqual({ increment: 1 });
+      const threeDays = 3 * 24 * 60 * 60 * 1000;
+      expect(data.setupCodeExpiresAt.getTime()).toBeGreaterThanOrEqual(
+        before + threeDays - 1000,
+      );
+    });
+
+    it('succeeds on a still-pending employee, overlapping resetSetupCode on purpose', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ password: null }));
+
+      await expect(service.resetPassword(7)).resolves.toMatchObject({
+        id: 7,
+      });
+      expect(user.update).toHaveBeenCalled();
+    });
+
+    it('succeeds on a deactivated employee without touching isActive', async () => {
+      const { service, user } = makeService();
+      user.findFirst.mockResolvedValue(
+        makeUser({ password: 'hashed', isActive: false }),
+      );
+
+      await service.resetPassword(7);
+
+      const [firstCall] = user.update.mock.calls as Array<
+        [{ data: Record<string, unknown> }]
+      >;
+      expect(firstCall[0].data).not.toHaveProperty('isActive');
     });
   });
 
