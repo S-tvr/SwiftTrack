@@ -7,6 +7,7 @@ import {
   deactivateEmployee,
   getEmployees,
   reactivateEmployee,
+  resetPassword,
   resetSetupCode,
   updateEmployee,
   type CreateEmployeeInput,
@@ -16,33 +17,38 @@ import {
 import { DeactivateEmployeeDialog } from "@/components/team/DeactivateEmployeeDialog"
 import { EmployeeForm } from "@/components/team/EmployeeForm"
 import { EmployeeList } from "@/components/team/EmployeeList"
+import { ResetPasswordDialog } from "@/components/team/ResetPasswordDialog"
 import { SetupCodeDialog } from "@/components/team/SetupCodeDialog"
 import { Button } from "@/components/ui/button"
 import { useApiQuery } from "@/hooks/useApiQuery"
 import { errorText, LABELS, NOTICES, PAGE_TITLES } from "@/lib/messages"
 
-/** Which of the two moments opened the setup-code dialog. */
+/** Which of the three moments opened the setup-code dialog. */
 interface CodeDialogState {
   employee: UserResponse
-  reason: "created" | "reissued"
+  reason: "created" | "reissued" | "passwordReset"
 }
 
 /**
  * ADMIN only — where an admin lands after login, and the one page that carries
- * all six user endpoints.
+ * all seven user endpoints.
  *
  * The page's shape is the one every read page has used since step 11: the read
  * goes through `useApiQuery`, the states are ordered error → loading → empty →
  * content, and every write is explicit, followed by `refetch()`.
  *
- * ⚠️ **Two of the six writes have no dialog and no form to report a failure**,
- * which is new here — `Reactivate` and `New code` fire straight from a row
- * button. `toast.error` is where their failures go, for the same reason
- * `toast.success` exists: the screen the user is left on cannot show it. It is
- * also the only path by which `SCREEN_ERRORS.team` can reach anyone —
- * `ACCOUNT_ALREADY_ACTIVATED` comes back from `reset-setup-code` when the list
- * is stale, and the whole point of the per-screen override written in step 9 is
- * that an admin needs "refresh the list", not the employee's "go and sign in".
+ * ⚠️ **Two of the seven writes have no dialog and no form to report a failure**
+ * — `Reactivate` and `New code` fire straight from a row button. `toast.error`
+ * is where their failures go, for the same reason `toast.success` exists: the
+ * screen the user is left on cannot show it. It is also the only path by which
+ * `SCREEN_ERRORS.team` can reach anyone — `ACCOUNT_ALREADY_ACTIVATED` comes
+ * back from `reset-setup-code` when the list is stale, and the whole point of
+ * the per-screen override written in step 9 is that an admin needs "refresh the
+ * list", not the employee's "go and sign in".
+ *
+ * `Reset password` (step 13-5) is deliberately **not** among those two: it is
+ * the most disruptive write here — it signs the employee out everywhere — so it
+ * confirms first, and its dialog holds its own failures like the other three.
  */
 export function TeamPage() {
   const { data, error, refetch } = useApiQuery(getEmployees, [])
@@ -52,6 +58,8 @@ export function TeamPage() {
   const [editing, setEditing] = useState<UserResponse | undefined>(undefined)
   const [codeDialog, setCodeDialog] = useState<CodeDialogState | null>(null)
   const [deactivating, setDeactivating] = useState<UserResponse | null>(null)
+  const [resettingPassword, setResettingPassword] =
+    useState<UserResponse | null>(null)
 
   function openCreate() {
     setEditing(undefined)
@@ -102,6 +110,24 @@ export function TeamPage() {
     // row simply vanishes, and that reads as a hard delete of someone whose
     // payroll history is in fact kept.
     toast.success(NOTICES.employeeDeactivated(employee.name))
+  }
+
+  /**
+   * Catches nothing, like `confirmDeactivate` — `ResetPasswordDialog` needs the
+   * rejection to stay open with the reason inside it.
+   *
+   * ⚠️ **No toast, and the ending is what makes this write different from every
+   * other one here.** Success closes the confirmation and immediately opens the
+   * code dialog: the reset is not finished when the request returns, only when
+   * the code has reached the employee, and this app has no channel to deliver it
+   * — the admin reads it out. A toast would announce completion at the moment
+   * the job is half done.
+   */
+  async function confirmResetPassword(employee: UserResponse) {
+    const updated = await resetPassword(employee.id)
+    refetch()
+    setResettingPassword(null)
+    setCodeDialog({ employee: updated, reason: "passwordReset" })
   }
 
   async function handleReactivate(employee: UserResponse) {
@@ -190,6 +216,7 @@ export function TeamPage() {
           onDeactivate={setDeactivating}
           onReactivate={(employee) => void handleReactivate(employee)}
           onNewCode={(employee) => void handleNewCode(employee)}
+          onResetPassword={setResettingPassword}
         />
       )}
 
@@ -211,6 +238,12 @@ export function TeamPage() {
         employee={deactivating}
         onCancel={() => setDeactivating(null)}
         onConfirm={confirmDeactivate}
+      />
+
+      <ResetPasswordDialog
+        employee={resettingPassword}
+        onCancel={() => setResettingPassword(null)}
+        onConfirm={confirmResetPassword}
       />
     </div>
   )

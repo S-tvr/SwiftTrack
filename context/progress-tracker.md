@@ -2055,6 +2055,79 @@ Endpoints/Components:
 
 ---
 
+## Step 8g — `POST /users/:id/reset-password`
+Status: ✅ Done
+Date: 2026-09-04
+Files added/changed:
+- `backend/src/users/users.service.ts` — `resetPassword(id)`
+- `backend/src/users/users.controller.ts` — `POST /users/:id/reset-password` (ADMIN)
+- `backend/src/users/dto/user-response.dto.ts` — `setupCode` description widened
+- `backend/src/auth/auth.controller.ts` — `set-initial-password`'s 401 description names both code-issuing routes
+- `backend/src/users/users.service.spec.ts` — +3 tests
+- `backend/test/reset-password.e2e-spec.ts` — new, 9 tests
+- `backend/test/users.e2e-spec.ts` — the new route added to the shared guard matrix
+- `context/build-plan.md` (**8g**), `context/architecture.md` (invariant), `context/swifttrack-phase1-final.md` (API table row)
+
+Endpoints/Components:
+- `POST /users/:id/reset-password` — clears `password`, issues a fresh `setupCode`/`setupCodeExpiresAt`, bumps `tokenVersion`. Returns the full `UserResponseDto`.
+- Backend tests **215 → 218 unit**, **108 → 117 e2e**.
+
+### The gap it closes
+`change-password` (8e) needs the *current* password· `reset-setup-code` (8c) refuses once an account is activated. An employee who simply forgot their password had no remedy short of editing the database — a gap 8e's own writeup named and left open.
+
+### Three decisions
+1. **A new endpoint, not a relaxed `resetSetupCode` guard.** That 409 is a safety rail, not an accident: re-issuing a code to a *pending* account changes nothing today, while clearing an *activated* one's password ends a working session immediately. One endpoint would also make a single Team button ambiguous about which it was doing.
+2. **No guard on activation or active state.** Succeeds on activated (its purpose), pending (same outcome `resetSetupCode` gives — refusing would only redirect the admin to the other route), and deactivated (without reactivating: `login`'s existing check order leaves the reset inert until `reactivate`).
+3. **Reuses 8f's `tokenVersion` rather than a new mechanism.** A reset the account holder did not initiate is at least as strong a reason to kill their sessions as a voluntary change. ⚠️ No replacement token — the caller is the admin, and the employee has no session to preserve.
+
+### Recorded gaps, not fixed
+- **No audit trail.** Nothing records which admin reset whose password, or when. No logging/audit infrastructure exists anywhere in this codebase· a real audit log is cross-cutting and does not belong hung off one endpoint.
+- **An open shift stays open** until the employee gets back in with the new code — no data is lost, and the admin's `PUT /time-entries/:id` can close it meanwhile. Same property `deactivate` already has.
+- **No throttling, and deliberately no `@SkipThrottle()` either** (unlike 8e's explicit opt-out): `:id` is a sequential integer, not a credential, so there is no brute-force surface here.
+
+### ⚠️ A review finding worth keeping
+The first `/review` pass declared this ready after reading **only backend files**, and missed that `isPending()` on the frontend now covers a second, materially different person: someone whose password was *taken away*, not someone who never had one. The behaviour was already correct — a reset employee is still `isActive`, so the Pending badge, the code and the New code button all render right — but three doc comments described a narrower world than the one that existed. This codebase had already been bitten once by exactly that (13-3's `!hasActivated` bug), so the comments in `api/users.ts`, `EmployeeList.tsx` and `user-response.dto.ts` were widened rather than left to drift.
+
+**Next step**: **13-5** (the frontend for this), taken immediately after.
+
+---
+
+## Step 13-5 — Password reset (frontend)
+Status: ✅ Done
+Date: 2026-09-04
+Files added/changed:
+- `frontend/src/api/users.ts` — `resetPassword()`, the seventh write
+- `frontend/src/components/team/ResetPasswordDialog.tsx` — new
+- `frontend/src/components/team/SetupCodeDialog.tsx` — third `reason`, ternary → `TITLES` map
+- `frontend/src/components/team/EmployeeList.tsx` — `RotateCcwKey` button, `onResetPassword`
+- `frontend/src/pages/TeamPage.tsx` — `resettingPassword` state, `confirmResetPassword`, dialog mounted
+- `frontend/src/pages/LoginPage.tsx` — the forgot-password hint
+- `frontend/src/lib/messages.ts` — `LABELS.resetPassword`, `NOTICES.forgotPassword`/`resetPasswordTitle`/`resetPasswordBody`/`passwordResetCodeTitle`, toast-rule comment updated
+- `frontend/src/pages/TeamPage.spec.tsx` — +6 tests· `frontend/src/pages/LoginPage.spec.tsx` — new, 3 tests
+- `context/build-plan.md` (**13-5** + 13b's list), `context/architecture.md` (toast rule), `context/swifttrack-phase1-final.md` (§8a copy tables)
+
+Endpoints/Components:
+- Team gains **Reset password**· `/login` gains a standing hint. All seven `/users` endpoints now have a UI.
+- Frontend tests **219 → 228** across **16 → 17** files.
+
+### Why the login hint is half the feature
+An admin button nobody knows to ask for is not a recovery path. The employee is stuck on `/login`, which said only "Invalid email or password." ⚠️ The hint **cannot** be conditional on a failed sign-in: `login` answers `INVALID_CREDENTIALS` for an unknown email and a wrong password alike, so a hint shown only after a failure could not know which case it was answering — and someone who has forgotten their password needs it *before* guessing. It is not an error either, so it stays out of `SCREEN_ERRORS`. It names the **activation code**, which is what ties it to the "Activate your account" link beneath it and to the four digits the admin later reads out. Nothing in that journey is automated — no email, no redirect, no deep link.
+
+### The one piece of new logic: the button's gate
+`!isPending(employee) && employee.isActive`. ⚠️ Its reason is **not** the usual "an action guaranteed to fail should not be on screen" — the API accepts a reset on *any* employee row. It is hidden on a pending row because it would duplicate `New code` beside it, and on a deactivated row because the fresh code is inert until `Reactivate`, which is the action that row actually needs. Two tests pin this, since it is the only thing here a reader cannot check by looking.
+
+### A sharpening of the toast rule, recorded in architecture.md
+`Reset password` takes no toast — but not for create's reason ("the dialog is louder"). It takes none because **the write is not the end of the job**: the reset leaves a code that must reach the employee by voice or on paper, and the app has no channel for it. A toast would announce completion at the halfway point. The test becomes "is there anything left for the user to do?", not only "can the screen show it?".
+
+### Verification actually performed
+- `tsc -b` clean· `eslint` clean.
+- **Vitest 228/228 across 17 files** (`--maxWorkers=2`). ⚠️ The default run again produced the `[vitest-pool]: Failed to start forks worker` flake — the twelfth of its kind, again not the code. **The file count was checked, not just the green summary**, exactly as 13-4's entry warns: 17 files and 228 tests is +1 file and +9 tests, which is what this step added.
+- ⚠️ **Not done: a live click-through.** Same blocker as 13-4 — the `backend/.env` `ADMIN_PASSWORD` mismatch (item 1 there) is unchanged. The dialogs and the gate are covered against a mocked API· the endpoint itself is covered by 8g's 9 e2e tests against a real database. Nobody has yet watched the two halves meet in a browser, and **13b is the step that would** — its Team group now names this flow.
+
+**Next step**: **13b** (Playwright), the last open step.
+
+---
+
 ## Step 14 — Docker + README (delivery packaging)
 Status: ✅ Done
 Date: 2026-09-03

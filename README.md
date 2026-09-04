@@ -24,6 +24,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 
 - Team management — create an employee, set their hourly rate, deactivate and reactivate
 - Onboarding by 4-digit setup code: the employee activates the account and chooses their own password
+- Reset a forgotten password: the account goes back through activation with a fresh code, and every device it was signed in on is signed out
 - Payroll overview for a cycle — hours, pay and total cost across the team, with a warning for anyone still clocked in
 - Drill down into any employee's shift history or payroll breakdown
 - Settings — the day the pay cycle starts and ends
@@ -31,6 +32,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 **Both roles**
 
 - Change your own password. Every other signed-in device is signed out; the one making the change stays in
+- Forgotten it instead? The sign-in page says to ask an admin, who resets it and hands over a new activation code — there is no email, so the code travels out of band
 
 **Pay calculation** happens on the server and is never frozen: it is recomputed from the raw shifts on every request. Hours are split across four rate zones, and a shift crossing a boundary is divided between them.
 
@@ -88,6 +90,8 @@ The first run builds both images, applies the migrations, creates the admin acco
 | Employee | `sigridur@demo.local` | — | Pending — activate it with the setup code printed in the backend logs |
 
 The demo roster covers every state the UI has to render, including the two accounts that cannot log in. To watch the activation flow, find the setup code in the startup logs (`docker compose logs backend | grep "setup code"`) and use **Activate your account** on the login page.
+
+The roster also shows why the row actions differ: **Reset password** appears only on the three accounts that have one, while Sigríður offers **New code** instead and Kristján offers **Reactivate** — a code issued to a deactivated account cannot work until they are active again. Resetting Anna's password turns her row into a pending one, code and all, which is the same state Sigríður is already in.
 
 To start with an empty roster instead — just the admin, no demo employees — put `SEED_DEMO=false` in a root `.env` (copy `.env.example`), or set it inline:
 
@@ -176,7 +180,7 @@ cd backend && npm run seed:demo
 
 ## Testing
 
-**Backend** — 215 unit tests and 108 full-stack tests against a real database:
+**Backend** — 218 unit tests and 117 full-stack tests against a real database:
 
 ```bash
 cd backend
@@ -192,7 +196,7 @@ npm run test:e2e
 
 `swifttrack_test` is created automatically the first time the `db` container initialises. The suite refuses to run against any database whose name does not end in `_test`, because it truncates tables between tests.
 
-**Frontend** — 219 component and unit tests:
+**Frontend** — 228 component and unit tests:
 
 ```bash
 cd frontend
@@ -254,6 +258,7 @@ Deliberate boundaries of this version, not oversights:
 - **No audit log and no approval flow.** Employees write the hours they are paid for, and an edit leaves no history behind.
 - **Overlapping shifts are checked, not constrained.** Two simultaneous submissions can both pass the check; the result is one duplicate row an admin can delete. A database-level exclusion constraint would close it.
 - **Single tenant, single admin.** There is no public registration — the first admin comes from the seed script, and every employee is created by that admin.
+- **Password recovery runs through the admin, and stops there.** An employee who forgets their password asks the admin, who resets it and reads out a new activation code; there is no email, so the code travels out of band by design. The admin has no such route of their own — no email reset and no second admin — so recovering *that* password means editing the database or re-running the seed.
 - **An open shift is only visible in the cycle it started in**, which is intentional: a shift running right now must not raise an alarm on a cycle from three months ago.
 
 ---

@@ -161,6 +161,15 @@ export const LABELS = {
   reactivate: "Reactivate",
   /** On pending rows only. Re-issues the code and its 3-day expiry. */
   newCode: "New code",
+  /**
+   * On **activated, active** rows only — the mirror of `newCode`, which covers
+   * the pending ones. Both issue a code· this one also clears the password that
+   * was in the way, which is why it confirms first and `New code` does not.
+   *
+   * Serves the row's aria-label and the confirmation's action button alike, as
+   * `deactivate` already does — one control, one word, wherever it appears.
+   */
+  resetPassword: "Reset password",
 
   addEmployee: "Add Employee",
   /** Screen-reader names for the icon-only row buttons. */
@@ -295,6 +304,26 @@ export const NOTICES = {
   /** Shown on /login after an auto-logout, so being thrown out reads as an
    *  explanation rather than a glitch. */
   sessionExpired: "Your session has expired. Please sign in again.",
+
+  /**
+   * The employee's half of the password reset (step 13-5), on /login only.
+   *
+   * ⚠️ **Always visible, never attached to a failed sign-in.** `login` answers
+   * `INVALID_CREDENTIALS` for an unknown email and a wrong password alike — one
+   * code on purpose, so neither can be enumerated — so a hint that appeared only
+   * after a failure could not know which case it was answering. It is also not an
+   * error, so it has no place in `SCREEN_ERRORS`, which is keyed by code: this
+   * is text the page shows because of *where* the user is, like every other
+   * entry in this object.
+   *
+   * ⚠️ It names the **activation code**, not just "ask your admin". Without that
+   * word, the four digits the admin later reads out and the "Activate your
+   * account" link directly below this sentence are three unrelated things· with
+   * it they are one path. Nothing about that path is automated — no email, no
+   * redirect — so the sentence is all the employee gets to go on.
+   */
+  forgotPassword:
+    "Forgot your password? Ask your admin to reset it — they'll give you a new activation code.",
 
   /** Replaces the activation form on success. Without it the form simply
    *  empties and it looks like nothing happened. */
@@ -486,18 +515,30 @@ export const NOTICES = {
     "Every employee is deactivated. Turn on “Show deactivated” to see them.",
 
   /**
-   * The setup-code dialog, opened after a create **and** after a re-issue —
-   * one component, two call sites, because the two moments have the same
-   * problem: the code must leave the app in the admin's head or on paper, and
-   * a screen that merely refreshes hides that there is a second step at all.
+   * The setup-code dialog, opened after a create, after a re-issue, **and**
+   * after a password reset (step 13-5) — one component, three call sites,
+   * because all three moments have the same problem: the code must leave the
+   * app in the admin's head or on paper, and a screen that merely refreshes
+   * hides that there is a second step at all.
    *
-   * The title differs between the two so the admin can tell which one they are
-   * looking at, and — after a re-issue — that the previous code is now dead.
+   * The title differs between them so the admin can tell which one they are
+   * looking at, and — after a re-issue or a reset — that the previous code is
+   * now dead.
    */
   setupCodeTitle: "Activation code",
   newCodeTitle: "New activation code",
+  /** ⚠️ Says "password was reset" rather than repeating "activation code": the
+   *  admin arrived here from a *different* action than the other two, and the
+   *  title is the only confirmation that the reset itself succeeded. */
+  passwordResetCodeTitle: "Password reset — new activation code",
+  /**
+   * ⚠️ One body for all three call sites, so the wording has to fit a person
+   * signing in for the **first** time and one signing in **again** after a
+   * reset. It originally said only "for the first time", which step 13-5 made
+   * false for the third caller: that employee has been signing in for months.
+   */
   setupCodeBody: (name: string) =>
-    `Give this code to ${name}. It is the only way they can sign in for the first time.`,
+    `Give this code to ${name}. It is the only way they can sign in for the first time, or again after a password reset.`,
 
   /**
    * ⚠️ A **date**, not a duration. "Expires in 3 days" is arithmetic the reader
@@ -527,14 +568,34 @@ export const NOTICES = {
     `${name} will no longer be able to sign in, and their row moves behind “Show deactivated”. Their shifts and payroll history are kept, and you can reactivate them here at any time.`,
 
   /**
+   * The password-reset confirmation (step 13-5).
+   *
+   * ⚠️ Both sentences carry a fact the admin cannot see anywhere else, which is
+   * the same test `deactivateEmployeeBody` is written against. **The password
+   * stops working immediately** — this is not a "send them a reset link" flow,
+   * and an admin who assumes it is would leave someone locked out believing they
+   * had helped. **Every device is signed out** — the backend revokes their
+   * tokens, so a colleague mid-shift on a phone is dropped on their next tap.
+   * `passwordChanged` (13-4) says that second thing to the person doing it to
+   * themselves· this says it to someone doing it to another person.
+   *
+   * It also names what happens *next*, because unlike deactivation this action
+   * leaves a job unfinished: the code has to reach the employee out of band.
+   */
+  resetPasswordTitle: "Reset this employee's password?",
+  resetPasswordBody: (name: string) =>
+    `${name} will not be able to sign in until they set a new password, and any device they are signed in on will be signed out. You'll get a new activation code to give them.`,
+
+  /**
    * The one toast on this page, and the reason the rule from step 13-2 was
    * worth fixing there: with the filter closed — the default — a successful
    * deactivation makes the row **vanish**, which is exactly what a hard delete
    * would look like. The toast names who it was and says the row still exists.
    *
-   * The other five writes take none. Create opens the code dialog, which is
-   * louder than any toast· edit, reactivate and re-issue each leave their change
-   * visible in the refetched list, which is the rule's own condition.
+   * The other six writes take none. Create and **reset password** each open the
+   * code dialog, which is louder than any toast· edit, reactivate and re-issue
+   * each leave their change visible in the refetched list, which is the rule's
+   * own condition.
    */
   employeeDeactivated: (name: string) =>
     `${name} has been deactivated. Their row is under “Show deactivated”.`,

@@ -14,20 +14,30 @@ import { LABELS, NOTICES } from "@/lib/messages"
 interface SetupCodeDialogProps {
   /** The employee whose code is being handed over, or null when closed. */
   employee: UserResponse | null
-  /** Which of the two moments this is — a fresh account, or a re-issue. */
-  reason: "created" | "reissued"
+  /** Which of the three moments this is — a fresh account, a re-issue, or a
+   *  password reset (step 13-5). Only the title differs: the code, the expiry
+   *  and the instruction underneath are the same question either way. */
+  reason: "created" | "reissued" | "passwordReset"
   onClose: () => void
+}
+
+const TITLES: Record<SetupCodeDialogProps["reason"], string> = {
+  created: NOTICES.setupCodeTitle,
+  reissued: NOTICES.newCodeTitle,
+  passwordReset: NOTICES.passwordResetCodeTitle,
 }
 
 /**
  * The setup code, shown once the server has issued it.
  *
- * **Why this is a dialog and not a toast, and why it has two call sites.**
+ * **Why this is a dialog and not a toast, and why it has three call sites.**
  * Creating an account is really two actions — make the row, then hand the code
  * over out of band — and the second one is invisible if the form simply closes:
  * the admin believes they are finished. Re-issuing has the identical problem, so
  * `New code` opens this same component rather than quietly refreshing the row,
- * where the only evidence would be four digits changing inside a table.
+ * where the only evidence would be four digits changing inside a table. A
+ * password reset (step 13-5) is the third: it ends with a code that has to reach
+ * the employee by voice or on paper, exactly like the other two.
  *
  * ⚠️ **Read-only, and deliberately not a confirmation.** Nothing here can fail
  * and nothing can be cancelled — the write already succeeded before this opened,
@@ -51,9 +61,7 @@ export function SetupCodeDialog({
     >
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>
-            {reason === "created" ? NOTICES.setupCodeTitle : NOTICES.newCodeTitle}
-          </DialogTitle>
+          <DialogTitle>{TITLES[reason]}</DialogTitle>
           <DialogDescription>
             {employee === null ? null : NOTICES.setupCodeBody(employee.name)}
           </DialogDescription>

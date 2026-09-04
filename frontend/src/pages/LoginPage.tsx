@@ -132,6 +132,23 @@ export function LoginPage() {
             >
               {LABELS.activateAccountLink}
             </Link>
+
+            {/* ⚠️ Always visible, and deliberately not tied to a failed sign-in.
+                `login` answers INVALID_CREDENTIALS for an unknown email and a
+                wrong password alike — one code so neither can be enumerated —
+                so a hint shown only after a failure could not know which case
+                it was answering. It is not an error either, so it has no place
+                in SCREEN_ERRORS: this is text the page shows because of where
+                the user is.
+
+                Plain text rather than a link, because there is nothing to link
+                to — the reset is done by an admin, out of band. What it does do
+                is name the activation code, which is what connects it to the
+                link directly above: that is where they come back to once the
+                admin has read them the four digits. */}
+            <p className="text-center text-sm text-muted-foreground">
+              {NOTICES.forgotPassword}
+            </p>
           </form>
         </CardContent>
       </Card>

@@ -10,6 +10,7 @@ import {
   deactivateEmployee,
   getEmployees,
   reactivateEmployee,
+  resetPassword,
   resetSetupCode,
   updateEmployee,
   type UserResponse,
@@ -33,6 +34,7 @@ vi.mock("@/api/users", async (importOriginal) => ({
   deactivateEmployee: vi.fn(),
   reactivateEmployee: vi.fn(),
   resetSetupCode: vi.fn(),
+  resetPassword: vi.fn(),
 }))
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({
@@ -123,6 +125,7 @@ beforeEach(() => {
   vi.mocked(deactivateEmployee).mockReset().mockResolvedValue(DEACTIVATED)
   vi.mocked(reactivateEmployee).mockReset().mockResolvedValue(employee())
   vi.mocked(resetSetupCode).mockReset()
+  vi.mocked(resetPassword).mockReset()
   toastSuccess.mockReset()
   toastError.mockReset()
 })
@@ -502,6 +505,100 @@ describe("TeamPage — deactivating", () => {
     )
     const dialog = await confirmDialog()
     await click(dialog.getByRole("button", { name: "Deactivate" }))
+
+    expect(screen.getByRole("alertdialog")).toBeTruthy()
+    expect(screen.getByRole("alert")).toBeTruthy()
+  })
+})
+
+describe("TeamPage — resetting a forgotten password", () => {
+  /** The row as the API returns it once the password has been cleared. */
+  const RESET = employee({
+    hasActivated: false,
+    setupCode: "6204",
+    setupCodeExpiresAt: "2026-09-07T09:12:44.000Z",
+  })
+
+  async function confirmDialog() {
+    await renderPage()
+    await click(
+      within(row("Anna")).getByRole("button", { name: "Reset password" }),
+    )
+    return within(screen.getByRole("alertdialog"))
+  }
+
+  /**
+   * ⭐ The gate, which is the one piece of logic this feature adds. The backend
+   * accepts a reset on any employee row, so this is not "an action that would
+   * fail" — it is one that would duplicate `New code` on a pending row and do
+   * nothing usable on a deactivated one.
+   */
+  it("offers Reset password on an activated row and New code on a pending one, never both", async () => {
+    vi.mocked(getEmployees).mockResolvedValue([employee(), PENDING])
+    await renderPage()
+
+    const activated = within(row("Anna"))
+    expect(activated.getByRole("button", { name: "Reset password" })).toBeTruthy()
+    expect(activated.queryByRole("button", { name: "New code" })).toBeNull()
+
+    const pending = within(row("Björn"))
+    expect(pending.getByRole("button", { name: "New code" })).toBeTruthy()
+    expect(pending.queryByRole("button", { name: "Reset password" })).toBeNull()
+  })
+
+  it("does not offer it on a deactivated row, where the code would be inert", async () => {
+    vi.mocked(getEmployees).mockResolvedValue([DEACTIVATED])
+    await renderPage()
+    await showDeactivated()
+
+    expect(
+      within(row("Katrín")).queryByRole("button", { name: "Reset password" }),
+    ).toBeNull()
+  })
+
+  it("asks first, and Cancel writes nothing", async () => {
+    const dialog = await confirmDialog()
+    await click(dialog.getByRole("button", { name: "Cancel" }))
+
+    expect(resetPassword).not.toHaveBeenCalled()
+  })
+
+  it("warns that they are locked out and every device is signed out", async () => {
+    // Both facts are invisible anywhere else, and an admin who assumes this
+    // sends a reset link would leave someone stranded believing they helped.
+    const dialog = await confirmDialog()
+
+    expect(dialog.getByText(/until they set a new password/)).toBeTruthy()
+    expect(dialog.getByText(/will be signed out/)).toBeTruthy()
+  })
+
+  /**
+   * ⭐ The reset is not finished when the request returns — only when the code
+   * reaches the employee, and the app has no channel to deliver it. So success
+   * hands the admin the code rather than announcing completion.
+   */
+  it("hands over the new code and raises no toast", async () => {
+    vi.mocked(resetPassword).mockResolvedValue(RESET)
+    const dialog = await confirmDialog()
+    await click(dialog.getByRole("button", { name: "Reset password" }))
+
+    expect(resetPassword).toHaveBeenCalledWith(1)
+
+    const codeDialog = within(screen.getByRole("dialog"))
+    expect(codeDialog.getByText("6204")).toBeTruthy()
+    expect(
+      codeDialog.getByText("Password reset — new activation code"),
+    ).toBeTruthy()
+
+    expect(toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it("stays open with the reason when the write fails", async () => {
+    vi.mocked(resetPassword).mockRejectedValue(
+      new ApiError(404, "EMPLOYEE_NOT_FOUND"),
+    )
+    const dialog = await confirmDialog()
+    await click(dialog.getByRole("button", { name: "Reset password" }))
 
     expect(screen.getByRole("alertdialog")).toBeTruthy()
     expect(screen.getByRole("alert")).toBeTruthy()

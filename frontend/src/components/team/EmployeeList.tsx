@@ -1,5 +1,11 @@
 import { useNavigate } from "react-router-dom"
-import { KeyRound, Pencil, UserCheck, UserMinus } from "lucide-react"
+import {
+  KeyRound,
+  Pencil,
+  RotateCcwKey,
+  UserCheck,
+  UserMinus,
+} from "lucide-react"
 
 import { isPending, type UserResponse } from "@/api/users"
 import { Badge } from "@/components/ui/badge"
@@ -27,6 +33,7 @@ interface EmployeeListProps {
   onDeactivate: (employee: UserResponse) => void
   onReactivate: (employee: UserResponse) => void
   onNewCode: (employee: UserResponse) => void
+  onResetPassword: (employee: UserResponse) => void
 }
 
 /**
@@ -61,6 +68,7 @@ export function EmployeeList({
   onDeactivate,
   onReactivate,
   onNewCode,
+  onResetPassword,
 }: EmployeeListProps) {
   const navigate = useNavigate()
 
@@ -155,11 +163,12 @@ export function EmployeeList({
                         <Pencil className="size-4" />
                       </Button>
 
-                      {/* ⚠️ Pending only. A deactivated employee who never
-                          activated still carries a live code, but
-                          set-initial-password checks `isActive` before it ever
-                          looks at one — so re-issuing here would hand over a
-                          code guaranteed to fail. */}
+                      {/* ⚠️ Pending only — which since step 8g also covers an
+                          employee whose password an admin reset, not just one
+                          who never activated. A deactivated employee still
+                          carries a live code, but set-initial-password checks
+                          `isActive` before it ever looks at one — so re-issuing
+                          here would hand over a code guaranteed to fail. */}
                       {isPending(employee) && (
                         <Button
                           variant="ghost"
@@ -168,6 +177,29 @@ export function EmployeeList({
                           onClick={() => onNewCode(employee)}
                         >
                           <KeyRound className="size-4" />
+                        </Button>
+                      )}
+
+                      {/* ⚠️ The complement of `New code`, not a duplicate of it,
+                          and the gate is what keeps them from overlapping. The
+                          backend accepts this on any employee row — so unlike
+                          `Reactivate` above, the reason to hide it is not that
+                          it would fail. On a **pending** row it would succeed
+                          and do exactly what `New code` beside it already does,
+                          and two adjacent buttons with one effect is how a row
+                          stops being readable. On a **deactivated** row it
+                          succeeds and changes nothing anyone can use:
+                          set-initial-password checks `isActive` first, so the
+                          fresh code stays inert until someone reactivates them
+                          — reactivating is the action that row actually needs. */}
+                      {!isPending(employee) && employee.isActive && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={LABELS.resetPassword}
+                          onClick={() => onResetPassword(employee)}
+                        >
+                          <RotateCcwKey className="size-4" />
                         </Button>
                       )}
 

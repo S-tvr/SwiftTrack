@@ -52,13 +52,20 @@ export interface UserResponse {
   /** Derived by the backend: `true` once they have set their own password. */
   hasActivated: boolean
   /**
-   * The 4-digit code the admin hands over out of band, non-null only while an
-   * employee is still pending.
+   * The 4-digit code the admin hands over out of band, non-null whenever the
+   * account is waiting for someone to set a password on it.
+   *
+   * ⚠️ That covers **two** situations, not one (the second added in step 8g):
+   * an employee who has never activated, and one whose password an admin
+   * cleared with `POST /users/:id/reset-password` because they forgot it. The
+   * row looks identical either way — `hasActivated` is `false` and a fresh
+   * code is present — which is deliberate: the way back in is the same, so
+   * the Team page needs no fourth badge and no second code display.
    *
    * ⚠️ Non-null does **not** mean usable: `deactivate` writes only
    * `isActive: false` and leaves this untouched, while `POST /auth/set-initial-password`
    * checks `isActive` before it ever looks at the code. A deactivated employee
-   * who never activated therefore holds a live code that cannot possibly work —
+   * therefore holds a live code that cannot possibly work —
    * see `isPending()` below, which is what the UI keys off instead.
    */
   setupCode: string | null
@@ -87,12 +94,20 @@ export interface UpdateEmployeeInput {
 }
 
 /**
- * Whether this employee is waiting to activate — the state that shows a setup
- * code, its expiry, and the **New code** button.
+ * Whether this employee is waiting for a password to be set on their account —
+ * the state that shows a setup code, its expiry, and the **New code** button.
+ *
+ * ⚠️ **"Pending" means the account has no password right now, not that it has
+ * never had one** (widened in step 8g, and the distinction is the whole point).
+ * Two different people land here: someone who has never activated, and someone
+ * whose password an admin cleared with `POST /users/:id/reset-password` after
+ * they forgot it. The predicate deliberately does not tell them apart, because
+ * nothing downstream needs to: both hold a fresh code, both get in by setting a
+ * password with it, and both leave this state the moment they do.
  *
  * ⚠️ **`isActive` is half of the answer, and leaving it out is the bug.**
- * `!hasActivated` alone also matches a *deactivated* employee who never
- * activated, whose code cannot work (see `setupCode` above) and for whom
+ * `!hasActivated` alone also matches a *deactivated* employee with no password,
+ * whose code cannot work (see `setupCode` above) and for whom
  * `POST /users/:id/reset-setup-code` would happily issue a second one just as
  * dead — the backend refuses only when the account is already activated. That
  * is precisely the "action guaranteed to fail" that makes `Reactivate` replace
@@ -153,4 +168,24 @@ export function reactivateEmployee(id: number): Promise<UserResponse> {
  */
 export function resetSetupCode(id: number): Promise<UserResponse> {
   return request<UserResponse>(`/users/${id}/reset-setup-code`, { method: "POST" })
+}
+
+/**
+ * Clears a forgotten password and issues a fresh code, putting the account back
+ * through activation — the case neither other password route reaches:
+ * `changePassword` needs the *current* password, and `resetSetupCode` refuses
+ * once an account is activated.
+ *
+ * ⚠️ **Immediately disruptive, which is why its caller confirms first.** The
+ * employee's password stops working the instant this lands, and every token they
+ * hold is revoked (the backend bumps `tokenVersion`), so any device they are
+ * signed in on is signed out on its next request.
+ *
+ * The response is the row as it now stands: `hasActivated: false` and a fresh
+ * `setupCode`/`setupCodeExpiresAt` — indistinguishable from a never-activated
+ * employee, deliberately (see `setupCode` above). Their way back in is the same
+ * one a new hire takes: the admin reads them the code, they use it on /activate.
+ */
+export function resetPassword(id: number): Promise<UserResponse> {
+  return request<UserResponse>(`/users/${id}/reset-password`, { method: "POST" })
 }
