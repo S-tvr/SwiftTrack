@@ -40,6 +40,42 @@ model User {
   updatedAt           DateTime  @updatedAt
 
   timeEntries         TimeEntry[]
+  rates               UserRate[]
+}
+
+// One employee's pay history: what they were paid, and from when.
+//
+// `User.hourlyRate` above is what they are paid *now* — the denormalised head of
+// this history, read by /users, /users/me and the login response, none of which
+// is a cycle-aware question. This table is what they were paid *then*, and it is
+// the only thing payroll reads. Without it a raise would reprice every cycle the
+// employee had ever worked, because pay is derived from the rate on every
+// request and nothing would record what the rate used to be.
+//
+// The two are written together in one transaction (UsersService), so the head
+// can never disagree with the newest row here.
+model UserRate {
+  id            Int      @id @default(autoincrement())
+  hourlyRate    Int
+  // The instant this rate starts applying — always a cycle-start instant (UTC
+  // midnight), i.e. a value computeCycleRange().start can produce.
+  //
+  // Deliberately an instant and not a "2026-07" cycle key: a key needs
+  // cycleStartDay to interpret, so an admin moving the cycle boundary would
+  // silently re-interpret every stored row and move history again — the exact
+  // bug this table exists to prevent. Same discipline as endExclusive.
+  effectiveFrom DateTime
+  userId        Int
+  createdAt     DateTime @default(now())
+
+  user          User     @relation(fields: [userId], references: [id])
+
+  // Two rates in force from the same instant is not a state with an answer.
+  // Also the key the rate write upserts on, so two raises inside one cycle
+  // collapse to a single row for the next one instead of colliding.
+  @@unique([userId, effectiveFrom])
+  // Every lookup is "the greatest effectiveFrom at or before this instant".
+  @@index([userId, effectiveFrom])
 }
 
 model TimeEntry {

@@ -110,7 +110,8 @@ export class PayrollResponseDto extends CycleRangeDto {
 
   @ApiProperty({
     example: 2450,
-    description: 'Base ISK per hour, always a whole number.',
+    description:
+      'Base ISK per hour used to price **this cycle** — the rate in force at the cycle start, always a whole number. Not necessarily what the employee is paid today: a later raise applies from the cycle after it was entered and does not change this figure. Every `zones[].rate` is this number times the zone factor.',
   })
   hourlyRate!: number;
 

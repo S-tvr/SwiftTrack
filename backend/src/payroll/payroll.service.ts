@@ -56,7 +56,17 @@ export class PayrollService {
     userId: number,
     cycle?: string,
   ): Promise<PayrollResponseDto> {
-    const employee = await this.usersService.findEmployeeRate(userId);
+    // The cycle is resolved first because the rate depends on it: an employee's
+    // pay is priced with the rate in force at `range.start`, so there is nothing
+    // to look up until the boundary is known. ⚠️ Do not move the employee lookup
+    // back above this call.
+    const { range, cycleDto } =
+      await this.settingsService.resolveCycleRange(cycle);
+
+    const employee = await this.usersService.findEmployeeRateAt(
+      userId,
+      range.start,
+    );
     if (!employee) {
       throw notFound(
         ErrorCode.EMPLOYEE_NOT_FOUND,
@@ -64,9 +74,6 @@ export class PayrollService {
       );
     }
     const hourlyRate = this.requireHourlyRate(employee);
-
-    const { range, cycleDto } =
-      await this.settingsService.resolveCycleRange(cycle);
 
     const [shifts, openShiftCount] = await Promise.all([
       this.prisma.timeEntry.findMany({
@@ -104,7 +111,12 @@ export class PayrollService {
     const { range, cycleDto } =
       await this.settingsService.resolveCycleRange(cycle);
 
-    const employees = await this.usersService.findAllEmployeeRates();
+    // Rates as of the cycle's start, so this page and the employee's own page
+    // price the same cycle identically — including after a raise, which must
+    // move neither of them.
+    const employees = await this.usersService.findAllEmployeeRatesAt(
+      range.start,
+    );
     if (employees.length === 0) {
       return { ...cycleDto, totalCost: 0, rows: [] };
     }
@@ -247,9 +259,10 @@ export class PayrollService {
   }
 
   /**
-   * `hourlyRate` is nullable on the model because an ADMIN never has one, and
-   * `POST /users` requires a positive integer for every employee — so a null
-   * here means the row was edited directly in the database.
+   * A null here means no `UserRate` row is in force at this cycle's start.
+   * `POST /users` writes one at the epoch for every employee it creates, so
+   * every cycle — however old — has a rate to price with, and reaching this
+   * means the rows were edited directly in the database.
    *
    * That fails loudly rather than defaulting to 0, for the same reason a missing
    * AppSettings row does: a silent 0 would quietly drop this person's wages out
@@ -262,7 +275,7 @@ export class PayrollService {
   }): number {
     if (employee.hourlyRate === null) {
       throw new InternalServerErrorException(
-        `Employee ${employee.id} has no hourlyRate. Set one via PUT /users/${employee.id}.`,
+        `Employee ${employee.id} has no hourly rate in force for this cycle. Set one via PUT /users/${employee.id}.`,
       );
     }
     return employee.hourlyRate;

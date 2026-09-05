@@ -17,9 +17,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Field, FieldError, FieldLabel } from "@/components/ui/field"
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { errorText, LABELS, VALIDATION, type ErrorCode } from "@/lib/messages"
+import {
+  errorText,
+  LABELS,
+  NOTICES,
+  VALIDATION,
+  type ErrorCode,
+} from "@/lib/messages"
 
 // The form pattern established by LoginPage in step 9 and copied by ShiftForm in
 // step 11: react-hook-form + zod + the presentational `Field` components. There
@@ -217,6 +228,15 @@ export function EmployeeForm({
               aria-invalid={errors.hourlyRate !== undefined}
               {...register("hourlyRate", { valueAsNumber: true })}
             />
+            {/* Edit only: on create there is no earlier rate for a new one to
+                take effect *after*. A permanent line rather than a toast, the
+                same call SettingsPage makes for the cycle boundary — the person
+                choosing the number needs to read it while choosing. */}
+            {isEdit && (
+              <FieldDescription>
+                {NOTICES.rateEffectiveNextCycle}
+              </FieldDescription>
+            )}
             <FieldError errors={[errors.hourlyRate]} />
           </Field>
 

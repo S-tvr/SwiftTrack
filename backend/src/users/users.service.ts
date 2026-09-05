@@ -3,6 +3,7 @@ import { randomInt } from 'node:crypto';
 import { ErrorCode } from '../common/error-codes';
 import { conflict, notFound } from '../common/domain-errors';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
@@ -11,9 +12,26 @@ import { Prisma, Role, type User } from '../generated/prisma/client';
 
 const SETUP_CODE_VALIDITY_DAYS = 3;
 
+/**
+ * Where an employee's first rate starts applying: the beginning of time, not
+ * the cycle they were hired in.
+ *
+ * An admin may write a shift at any past date (spec §7a rule 5), so a cycle
+ * earlier than the employee's own row is reachable — and a cycle with no rate in
+ * force makes `PayrollService.requireHourlyRate()` throw, which on the team
+ * overview takes down the page for *everyone*. Anchoring at the epoch makes
+ * "no rate in force" unreachable for anybody who has ever had one, so that 500
+ * keeps meaning what it was written to mean: somebody edited the database by
+ * hand. Costs nothing — a new hire has no shifts in cycles before they existed.
+ */
+const RATE_EPOCH = new Date(0);
+
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settingsService: SettingsService,
+  ) {}
 
   async findAllEmployees(): Promise<UserResponseDto[]> {
     const users = await this.prisma.user.findMany({
@@ -121,38 +139,87 @@ export class UsersService {
    * but what comes back is scoped to the question and can never carry
    * password/setupCode into a wage calculation.
    *
+   * ⚠️ **The rate is the one in force at `at`, not the current one.** `at` is
+   * always the cycle's `start`, so a raise entered later leaves an already-priced
+   * cycle exactly as it was — that is the whole point of `UserRate`, and reading
+   * `User.hourlyRate` here instead would silently reprice every past cycle.
+   * The caller passes the instant: this service owns `User`, not cycle
+   * boundaries, and never resolves a cycle for itself.
+   *
    * Deactivated employees resolve normally: someone who left mid-cycle still
    * worked those hours and still has to appear on the payroll for it.
    *
-   * ADMIN ids resolve to null — an admin has no hourlyRate and never clocks in,
-   * so `GET /payroll/:userId` on one is a 404, not an empty payslip.
+   * ADMIN ids resolve to null — an admin has no rate and never clocks in, so
+   * `GET /payroll/:userId` on one is a 404, not an empty payslip.
+   *
+   * A `null` `hourlyRate` (an employee with no rate row in force) is left for
+   * the caller to reject loudly, exactly as before.
    */
-  async findEmployeeRate(
+  async findEmployeeRateAt(
     id: number,
+    at: Date,
   ): Promise<{ id: number; name: string; hourlyRate: number | null } | null> {
-    return this.prisma.user.findFirst({
+    const employee = await this.prisma.user.findFirst({
       where: { id, role: Role.EMPLOYEE },
-      select: { id: true, name: true, hourlyRate: true },
+      select: { id: true, name: true },
     });
+    if (!employee) return null;
+
+    const rate = await this.prisma.userRate.findFirst({
+      where: { userId: id, effectiveFrom: { lte: at } },
+      orderBy: { effectiveFrom: 'desc' },
+      select: { hourlyRate: true },
+    });
+
+    return { ...employee, hourlyRate: rate?.hourlyRate ?? null };
   }
 
   /**
-   * The same question for the whole team, in one query — used by the admin
-   * payroll overview. Deliberately a batch reader rather than findEmployeeRate()
-   * in a loop: fifteen employees would otherwise be fifteen round trips to the
-   * database on a page that should cost one.
+   * The same question for the whole team — used by the admin payroll overview.
+   * Deliberately a batch reader rather than `findEmployeeRateAt()` in a loop:
+   * fifteen employees would otherwise be thirty round trips to the database on a
+   * page that should cost one.
+   *
+   * **Two queries regardless of headcount.** Every rate row at or before `at` is
+   * fetched in one go and folded in memory, ascending, so the last write per
+   * user is by construction the greatest `effectiveFrom <= at` — the one in
+   * force. Deliberately not `DISTINCT ON`, which would mean `$queryRaw`: that
+   * would be the first raw SQL in this codebase and would lose the explicit
+   * `select` this file applies everywhere else, to save nothing on a table whose
+   * entire history is a few dozen rows. The same "one batched query, group in
+   * memory" shape `PayrollService` already uses for shifts.
    *
    * Returns every employee, active or not, with `isActive` so the caller can
    * apply its own rule about who belongs on the page for a given cycle.
    */
-  async findAllEmployeeRates(): Promise<
+  async findAllEmployeeRatesAt(
+    at: Date,
+  ): Promise<
     { id: number; name: string; hourlyRate: number | null; isActive: boolean }[]
   > {
-    return this.prisma.user.findMany({
+    const employees = await this.prisma.user.findMany({
       where: { role: Role.EMPLOYEE },
-      select: { id: true, name: true, hourlyRate: true, isActive: true },
+      select: { id: true, name: true, isActive: true },
       orderBy: { name: 'asc' },
     });
+    if (employees.length === 0) return [];
+
+    const rates = await this.prisma.userRate.findMany({
+      where: {
+        userId: { in: employees.map((employee) => employee.id) },
+        effectiveFrom: { lte: at },
+      },
+      select: { userId: true, hourlyRate: true },
+      orderBy: { effectiveFrom: 'asc' },
+    });
+
+    const rateByUser = new Map<number, number>();
+    for (const rate of rates) rateByUser.set(rate.userId, rate.hourlyRate);
+
+    return employees.map((employee) => ({
+      ...employee,
+      hourlyRate: rateByUser.get(employee.id) ?? null,
+    }));
   }
 
   async createEmployee(dto: CreateUserDto): Promise<UserResponseDto> {
@@ -165,6 +232,12 @@ export class UsersService {
     }
 
     try {
+      // The rate is written twice on purpose, in one statement: `hourlyRate` is
+      // what this employee is paid *now* (read by /users, /users/me and login),
+      // and the UserRate row is what payroll prices a cycle with. A nested
+      // create keeps them from ever existing apart — an employee with a rate on
+      // their row but no rate row would 500 on their own payroll page.
+      // See RATE_EPOCH above for why the first one starts at the epoch.
       const user = await this.prisma.user.create({
         data: {
           name: dto.name,
@@ -177,6 +250,12 @@ export class UsersService {
             new Date(),
             SETUP_CODE_VALIDITY_DAYS,
           ),
+          rates: {
+            create: {
+              hourlyRate: dto.hourlyRate,
+              effectiveFrom: RATE_EPOCH,
+            },
+          },
         },
       });
       return this.toResponseDto(user);
@@ -200,19 +279,59 @@ export class UsersService {
     }
   }
 
+  /**
+   * ⚠️ **A changed rate takes effect from the start of the next cycle, never
+   * immediately** (spec §4, decision 5g). Payroll prices a cycle with the rate
+   * in force at that cycle's start, so writing the new rate at "now" would
+   * reprice the cycle currently in progress — and before `UserRate` existed, it
+   * repriced every cycle the employee had ever worked, which is the bug this
+   * path was rewritten to fix.
+   *
+   * Three cases, and the third is not an optimisation: `EmployeeForm` always
+   * submits both fields, so a rename would otherwise write a rate row on every
+   * save.
+   *
+   * The write is an **upsert** on `(userId, effectiveFrom)`, so two raises
+   * inside the same cycle collapse into one row for the next one rather than
+   * colliding with the unique constraint. A useful consequence: a typo stays
+   * correctable right up until the cycle it applies to begins.
+   *
+   * Both writes go in one `$transaction` — `User.hourlyRate` is the
+   * denormalised head of this history, and a reader that saw one without the
+   * other would report a rate nobody is paid. Same reasoning as
+   * `updatePasswordAndRevokeTokens()` putting the hash and the token bump in a
+   * single UPDATE.
+   */
   async updateEmployee(
     id: number,
     dto: UpdateUserDto,
   ): Promise<UserResponseDto> {
-    await this.findEmployeeByIdOrThrow(id);
+    const employee = await this.findEmployeeByIdOrThrow(id);
 
-    const user = await this.prisma.user.update({
+    const rateChanged =
+      dto.hourlyRate !== undefined && dto.hourlyRate !== employee.hourlyRate;
+
+    const updateUser = this.prisma.user.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.hourlyRate !== undefined && { hourlyRate: dto.hourlyRate }),
       },
     });
+
+    if (!rateChanged) return this.toResponseDto(await updateUser);
+
+    const hourlyRate = dto.hourlyRate as number;
+    const effectiveFrom = await this.settingsService.resolveRateEffectiveFrom();
+
+    const [user] = await this.prisma.$transaction([
+      updateUser,
+      this.prisma.userRate.upsert({
+        where: { userId_effectiveFrom: { userId: id, effectiveFrom } },
+        update: { hourlyRate },
+        create: { userId: id, hourlyRate, effectiveFrom },
+      }),
+    ]);
     return this.toResponseDto(user);
   }
 

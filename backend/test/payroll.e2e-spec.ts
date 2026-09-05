@@ -339,4 +339,126 @@ describe('/payroll', () => {
       .set('Authorization', `Bearer ${employee.token}`)
       .expect(400);
   });
+
+  /**
+   * ⭐ The reported bug, executed end to end against a real database.
+   *
+   * Before rate history, changing `hourlyRate` repriced **every cycle the
+   * employee had ever worked** — pay is derived from the rate on every request,
+   * and nothing recorded what the rate used to be. A cycle that had already
+   * been paid would quietly report a different number the next morning.
+   *
+   * Everything here works off the keys the API itself returns rather than
+   * literal months: a hardcoded cycle is only true until the next boundary, and
+   * would then fail on a day nobody changed anything.
+   */
+  describe('a raise does not reprice the past', () => {
+    const raiseTo = async (hourlyRate: number): Promise<void> => {
+      await request(server)
+        .put(`/users/${employee.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ hourlyRate })
+        .expect(200);
+    };
+
+    it('leaves an already-priced cycle byte-identical, and prices the next one at the new rate', async () => {
+      const current = await payrollForCurrentCycle();
+      const previous = current.prevCycle;
+
+      // Eight hours in the cycle *before* the current one — a stretch of the
+      // past that has, in payroll terms, already been settled.
+      const dayShiftStart = new Date(
+        new Date(current.cycleStart).getTime() - 3 * 24 * 60 * 60 * 1000,
+      );
+      dayShiftStart.setUTCHours(8, 0, 0, 0);
+      const dayShiftEnd = new Date(
+        dayShiftStart.getTime() + 8 * 60 * 60 * 1000,
+      );
+      await seedShift(server, adminToken, employee.id, {
+        startTime: dayShiftStart.toISOString(),
+        endTime: dayShiftEnd.toISOString(),
+      });
+
+      const before = await payrollFor(previous);
+      expect(before.hourlyRate).toBe(RATE);
+      expect(before.totalPay).toBeGreaterThan(0);
+
+      await raiseTo(RATE + 550);
+
+      // The whole point: the same request, the same answer. Compared as whole
+      // bodies rather than field by field — a raise must move *nothing* here,
+      // and asserting on totalPay alone would miss a zone rate that shifted.
+      const after = await payrollFor(previous);
+      expect(after).toEqual(before);
+    });
+
+    it('applies the new rate from the next cycle onward', async () => {
+      const current = await payrollForCurrentCycle();
+
+      await raiseTo(RATE + 550);
+
+      // The raise lands on the cycle *after* the one running now, so the
+      // current cycle is still priced at the old rate...
+      const stillCurrent = await payrollForCurrentCycle();
+      expect(stillCurrent.hourlyRate).toBe(RATE);
+
+      // ...and the next one carries the new one.
+      const next = await payrollFor(current.nextCycle);
+      expect(next.hourlyRate).toBe(RATE + 550);
+    });
+
+    /**
+     * The overview reaches the rate through a different reader than the
+     * employee's own page (`findAllEmployeeRatesAt` vs `findEmployeeRateAt`),
+     * which is a way for the two to disagree that did not exist before. Sharing
+     * `summarise()` guarantees the same arithmetic, not the same rate.
+     */
+    it('keeps the admin overview agreeing with the employee page across a raise', async () => {
+      const current = await payrollForCurrentCycle();
+      const previous = current.prevCycle;
+
+      const shiftStart = new Date(
+        new Date(current.cycleStart).getTime() - 3 * 24 * 60 * 60 * 1000,
+      );
+      shiftStart.setUTCHours(8, 0, 0, 0);
+      await seedShift(server, adminToken, employee.id, {
+        startTime: shiftStart.toISOString(),
+        endTime: new Date(
+          shiftStart.getTime() + 8 * 60 * 60 * 1000,
+        ).toISOString(),
+      });
+
+      await raiseTo(RATE + 550);
+
+      const own = await payrollFor(previous);
+      const response = await request(server)
+        .get(`/payroll/overview?cycle=${previous}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const row = (response.body as PayrollOverviewBody).rows.find(
+        (r) => r.userId === employee.id,
+      );
+
+      expect(row).toMatchObject({
+        totalHours: own.totalHours,
+        totalPay: own.totalPay,
+      });
+    });
+
+    /**
+     * Two raises inside one cycle target the same `(userId, effectiveFrom)`,
+     * which the unique constraint would refuse outright. The write upserts, so
+     * the second replaces the first — which is also what makes a typo
+     * correctable right up until the cycle it applies to begins.
+     */
+    it('lets a second raise in the same cycle correct the first', async () => {
+      const current = await payrollForCurrentCycle();
+
+      await raiseTo(RATE + 550);
+      await raiseTo(RATE + 100);
+
+      const next = await payrollFor(current.nextCycle);
+      expect(next.hourlyRate).toBe(RATE + 100);
+    });
+  });
 });

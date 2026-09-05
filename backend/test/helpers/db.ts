@@ -22,8 +22,12 @@ const DEFAULT_CYCLE_END_DAY = 24;
  *   every later payroll test resolves to.
  */
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
-  // Time entries first — they hold the FK to User.
+  // Time entries and rate rows first — both hold an FK to User, and the delete
+  // below is RESTRICT, so leaving either behind fails the whole reset rather
+  // than cascading. Every employee has at least one rate row (POST /users
+  // writes it), so this is never a no-op.
   await prisma.timeEntry.deleteMany();
+  await prisma.userRate.deleteMany();
   await prisma.user.deleteMany({ where: { role: Role.EMPLOYEE } });
   await prisma.appSettings.update({
     where: { id: 1 },

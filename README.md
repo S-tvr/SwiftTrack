@@ -22,7 +22,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 
 **Admin**
 
-- Team management — create an employee, set their hourly rate, deactivate and reactivate
+- Team management — create an employee, set their hourly rate, deactivate and reactivate. A changed rate applies from the next pay cycle
 - Onboarding by 4-digit setup code: the employee activates the account and chooses their own password
 - Reset a forgotten password: the account goes back through activation with a fresh code, and every device it was signed in on is signed out
 - Payroll overview for a cycle — hours, pay and total cost across the team, with a warning for anyone still clocked in
@@ -34,7 +34,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 - Change your own password. Every other signed-in device is signed out; the one making the change stays in
 - Forgotten it instead? The sign-in page says to ask an admin, who resets it and hands over a new activation code — there is no email, so the code travels out of band
 
-**Pay calculation** happens on the server and is never frozen: it is recomputed from the raw shifts on every request. Hours are split across four rate zones, and a shift crossing a boundary is divided between them.
+**Pay calculation** happens on the server and is recomputed from the raw shifts on every request. Hours are split across four rate zones, and a shift crossing a boundary is divided between them. Each cycle is priced at the hourly rate in force when it started, so a raise applies from the next cycle and leaves past ones untouched.
 
 | Zone | When | Rate |
 | --- | --- | --- |
@@ -254,7 +254,8 @@ Swagger UI is at **http://localhost:3000/api** with every endpoint, DTO and erro
 
 Deliberate boundaries of this version, not oversights:
 
-- **Payroll is never frozen.** Pay is recomputed from raw shifts on every request, so changing an employee's hourly rate retroactively changes every past cycle of theirs. A snapshot per closed cycle would fix it.
+- **Payroll is never frozen.** Pay is recomputed from raw shifts on every request. Hourly rates are historised, so a raise does not reach past cycles — but editing a shift in a past cycle still changes that cycle's total. A snapshot per closed cycle would fix the rest.
+- **A new rate takes effect at the next cycle, and cannot be corrected afterwards.** Until that cycle starts the rate stays editable; once it is in force, changing it means editing the database.
 - **No audit log and no approval flow.** Employees write the hours they are paid for, and an edit leaves no history behind.
 - **Overlapping shifts are checked, not constrained.** Two simultaneous submissions can both pass the check; the result is one duplicate row an admin can delete. A database-level exclusion constraint would close it.
 - **Single tenant, single admin.** There is no public registration — the first admin comes from the seed script, and every employee is created by that admin.

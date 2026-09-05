@@ -84,16 +84,23 @@ function makeService({
   const resolveCycleRange = jest
     .fn()
     .mockResolvedValue({ range: RANGE, cycleDto: CYCLE_DTO });
-  const findEmployeeRate = jest.fn().mockResolvedValue(employeeRow);
-  const findAllEmployeeRates = jest.fn().mockResolvedValue(allEmployees);
+  const findEmployeeRateAt = jest.fn().mockResolvedValue(employeeRow);
+  const findAllEmployeeRatesAt = jest.fn().mockResolvedValue(allEmployees);
 
   const service = new PayrollService(
     { timeEntry: { findMany, count } } as unknown as PrismaService,
     { resolveCycleRange } as unknown as SettingsService,
-    { findEmployeeRate, findAllEmployeeRates } as unknown as UsersService,
+    { findEmployeeRateAt, findAllEmployeeRatesAt } as unknown as UsersService,
   );
 
-  return { service, findMany, count, resolveCycleRange, findEmployeeRate };
+  return {
+    service,
+    findMany,
+    count,
+    resolveCycleRange,
+    findEmployeeRateAt,
+    findAllEmployeeRatesAt,
+  };
 }
 
 describe('PayrollService.getPayrollForCycle', () => {
@@ -120,6 +127,18 @@ describe('PayrollService.getPayrollForCycle', () => {
     expect(resolveCycleRange).toHaveBeenCalledWith('2026-07');
     expect(result.cycle).toBe('2026-07');
     expect(result.cycleStart).toBe('2026-07-25T00:00:00.000Z');
+  });
+
+  /**
+   * ⭐ The rate is resolved **at the cycle's start**, not "now". That single
+   * argument is what makes a raise forward-effective: ask for today's rate here
+   * and every past cycle silently reprices itself the moment somebody gets one.
+   */
+  it('resolves the rate as of the cycle start, never the current rate', async () => {
+    const { service, findEmployeeRateAt } = makeService();
+    await service.getPayrollForCycle(2, '2026-07');
+
+    expect(findEmployeeRateAt).toHaveBeenCalledWith(2, RANGE.start);
   });
 
   it('asks only for CLOSED shifts overlapping the cycle, with gt/lt', async () => {
@@ -348,6 +367,45 @@ describe('PayrollService.getOverview', () => {
 
     expect(overview.rows[0].totalHours).toBe(own.totalHours);
     expect(overview.rows[0].totalPay).toBe(own.totalPay);
+  });
+
+  /**
+   * ⭐ The overview asks `findAllEmployeeRatesAt`, the employee's own page asks
+   * `findEmployeeRateAt` — **two different readers** for the same fact, which is
+   * a way for the two pages to disagree that did not exist before rate history.
+   * Sharing `summarise()` is no longer enough on its own: it guarantees the same
+   * arithmetic, not the same rate going into it.
+   *
+   * Both are asked for `range.start`, so an employee who was on 2450 for this
+   * cycle is priced at 2450 on both pages even after being raised to 2800.
+   */
+  it('prices a raised employee identically on both pages, at the cycle’s own rate', async () => {
+    const shifts = WORKED_EXAMPLE(2);
+    // The rate in force for the cycle being viewed — not the employee's
+    // current one, which the raise has already moved on to.
+    const rateForThisCycle = employee({ hourlyRate: HOURLY_RATE });
+
+    const overviewService = makeService({
+      allEmployees: [rateForThisCycle],
+      payableShifts: shifts,
+    });
+    const ownService = makeService({
+      employeeRow: rateForThisCycle,
+      payableShifts: shifts,
+    });
+
+    const overview = await overviewService.service.getOverview('2026-07');
+    const own = await ownService.service.getPayrollForCycle(2, '2026-07');
+
+    // Both readers were asked as of the same instant — the cycle's start.
+    expect(overviewService.findAllEmployeeRatesAt).toHaveBeenCalledWith(
+      RANGE.start,
+    );
+    expect(ownService.findEmployeeRateAt).toHaveBeenCalledWith(2, RANGE.start);
+
+    expect(overview.rows[0].totalPay).toBe(own.totalPay);
+    expect(own.hourlyRate).toBe(HOURLY_RATE);
+    expect(own.totalPay).toBe(129_060);
   });
 
   it('fetches every employee’s shifts in one query, not one query each', async () => {

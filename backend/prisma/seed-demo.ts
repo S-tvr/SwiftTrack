@@ -30,6 +30,8 @@ const prisma = new PrismaClient({
 
 const DEMO_PASSWORD = 'demo1234';
 const HOUR = 60 * 60 * 1000;
+/** Mirrors `UsersService`'s RATE_EPOCH — see the comment there for why. */
+const RATE_EPOCH = new Date(0);
 
 /** Mirrors the e2e guard, pointing the other way: never touch the test database. */
 function assertNotTestDatabase(): void {
@@ -244,6 +246,10 @@ async function main(): Promise<void> {
     // but this script has no business deciding that for rows it did not write.
     where: { user: { role: 'EMPLOYEE' } },
   });
+  // Rate rows are restricted the same way time entries are, and every employee
+  // has at least one — so this is not optional cleanup, it is what lets the
+  // delete below succeed at all.
+  await prisma.userRate.deleteMany({ where: { user: { role: 'EMPLOYEE' } } });
   const removed = await prisma.user.deleteMany({ where: { role: 'EMPLOYEE' } });
   console.log(
     `Removed ${removed.count} existing employee(s) and ${removedEntries.count} time entries.`,
@@ -260,6 +266,13 @@ async function main(): Promise<void> {
         hourlyRate: person.hourlyRate,
         role: 'EMPLOYEE',
         password,
+        // Payroll prices a cycle from UserRate, not from the column above, so
+        // an employee seeded without one 500s on their own payroll page. At the
+        // epoch for the same reason POST /users uses it: these demo people have
+        // shifts in cycles going back months.
+        rates: {
+          create: { hourlyRate: person.hourlyRate, effectiveFrom: RATE_EPOCH },
+        },
       },
     });
     allShifts.push(...buildShifts(user.id, person, cycles, now, startOfToday));
@@ -303,6 +316,9 @@ async function main(): Promise<void> {
       role: 'EMPLOYEE',
       password,
       isActive: false,
+      rates: {
+        create: { hourlyRate: LEAVER.hourlyRate, effectiveFrom: RATE_EPOCH },
+      },
     },
   });
   allShifts.push(
@@ -318,6 +334,9 @@ async function main(): Promise<void> {
       password: null,
       setupCode: String(randomInt(1000, 10000)),
       setupCodeExpiresAt: new Date(now.getTime() + 3 * 24 * HOUR),
+      rates: {
+        create: { hourlyRate: PENDING.hourlyRate, effectiveFrom: RATE_EPOCH },
+      },
     },
   });
 

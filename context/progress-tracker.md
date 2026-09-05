@@ -2202,3 +2202,60 @@ Every item below was run, not reasoned about.
 5. The two items Step 8e left open (`messages.ts` says "17 codes", and no Change-password UI) are untouched.
 
 **Next step**: **13b (Frontend E2E, Playwright)** — now the last open item in the build plan.
+
+---
+
+## Step 15 — Ιστορικό αμοιβών (`UserRate`)
+Status: ✅ Done
+Date: 2026-09-05
+
+**Bug fix, όχι feature.** Αναφέρθηκε από τον χρήστη: όταν ο admin έδινε αύξηση, **ξαναϋπολογίζονταν όλοι οι προηγούμενοι κύκλοι** με τη νέα τιμή — και μισθοδοσίες που είχαν ήδη πληρωθεί άλλαζαν ποσό. Ήταν το gap #1 του spec §13, καταγεγραμμένο ως αποδεκτό.
+
+### Files added/changed
+- **Schema/migration**: `prisma/schema.prisma` (νέο model `UserRate`, `rates` relation στο `User`), `prisma/migrations/20260801010638_init/migration.sql`
+- **Backend**: `settings.service.ts` (+`resolveRateEffectiveFrom`), `users.service.ts` (2 νέοι readers, transactional write, epoch row στο create), `users.module.ts` (+`SettingsModule`), `payroll.service.ts` (αναδιάταξη + 2 κλήσεις), `users.controller.ts` + `payroll-response.dto.ts` (Swagger)
+- **Seeds/helpers**: `prisma/seed-demo.ts`, `test/helpers/db.ts`
+- **Frontend**: `lib/messages.ts` (+`NOTICES.rateEffectiveNextCycle`), `components/team/EmployeeForm.tsx`
+- **Tests**: `users.service.spec.ts`, `settings.service.spec.ts`, `payroll.service.spec.ts`, `test/payroll.e2e-spec.ts`, `TeamPage.spec.tsx`
+- **Context**: spec §3/§4/§6/§7/§13, `architecture.md`, `build-plan.md`, `README.md`
+
+### Η απόφαση: anchor στην αρχή του κύκλου
+Ο κύκλος τιμολογείται με την τιμή **σε ισχύ στην αρχή του**, επιλυμένη **μία φορά ανά κύκλο**. Αύξηση στις 5 Αυγ (κύκλος 25 Ιουλ–24 Αυγ) → ο `2026-07` μένει ολόκληρος στην παλιά τιμή, η νέα πιάνει 25 Αυγ.
+
+**Δύο επιλογές απορρίφθηκαν, και οι λόγοι είναι δομικοί:**
+
+1. **Αναλογικός υπολογισμός μέσα στον κύκλο** — διαμερίζει τον κύκλο ανά περίοδο τιμής, άρα **οκτώ** στρογγυλοποιήσεις χρήματος αντί για τέσσερις (παραβίαση της απόφασης 5d), και ο πίνακας δείχνει **ένα** rate ανά ζώνη: θα χρειαζόταν δύο γραμμές ανά ζώνη ή ένα «μεικτό» rate που δεν αναπαράγει το δικό του Pay. ⚠️ Να μη «διορθωθεί» το anchoring ως αβλεψία.
+2. **Payroll snapshot ανά κλειστό κύκλο** (η λύση που προτείνει το ίδιο το §13) — απαιτεί μηχανισμό κλεισίματος κύκλου που δεν υπάρχει, συγκρούεται με τον invariant «never frozen» πάνω στον οποίο στηρίζονται **δύο άλλες** αποφάσεις, και **δεν λύνει το bug μόνο του**: μέχρι να κλείσει ένας κύκλος η αύξηση συνεχίζει να τον ξαναγράφει — και ο τρέχων κύκλος είναι ακριβώς εκεί που προσγειώνεται η αύξηση. Το `UserRate` είναι forward-compatible μαζί του.
+
+### Ο πίνακας μπήκε στο `init`, όχι σε νέο migration
+Είμαστε σε dev και η βάση γεμίζει αποκλειστικά από τα seed scripts, άρα το `docker compose down -v` ήταν αποδεκτό και ο πίνακας μπήκε εκεί που ανήκει. Καμία μετανάστευση δεδομένων, κανένα backfill.
+
+⚠️ **Επαληθεύτηκε με μέτρηση, όχι με συλλογισμό**: `prisma migrate diff --from-schema … --to-config-datasource` → **"No difference detected"**. Το χειρόγραφο SQL παράγει ακριβώς το schema που περιγράφει το `schema.prisma` — αυτό ήταν το μοναδικό ρίσκο της προσέγγισης.
+
+### Ο κεντρικός κανόνας
+> `User.hourlyRate` = τι πληρώνεται **τώρα** (denormalised head· το διαβάζουν `/users`, `/users/me`, login). `UserRate` = τι πληρωνόταν **τότε** (το μόνο που διαβάζει η μισθοδοσία). Γράφονται μαζί σε ένα `$transaction`.
+
+### Λεπτομέρειες που αποδείχθηκαν κρίσιμες
+- **`effectiveFrom` είναι instant, όχι cycle key.** Αποθηκευμένο `"2026-07"` θα χρειαζόταν το `cycleStartDay` για να ερμηνευθεί — άρα αν ο admin μετακινούσε το όριο, **κάθε γραμμή θα ξανα-ερμηνευόταν σιωπηλά** και το ιστορικό θα κουνιόταν ξανά. Ακριβώς το bug που ο πίνακας υπάρχει για να αποτρέψει.
+- **Η πρώτη γραμμή κάθε employee ξεκινά στο epoch.** Ο admin επιτρέπεται να γράψει βάρδια σε οποιαδήποτε παρελθοντική ημερομηνία (§7a rule 5), άρα κύκλος πριν τη γραμμή του employee είναι προσβάσιμος — και κύκλος χωρίς τιμή σε ισχύ **ρίχνει όλη τη σελίδα overview για όλους**. Το epoch κρατά το 500 να σημαίνει «κάποιος πείραξε τη βάση».
+- ⚠️ **`test/helpers/db.ts`**: το `resetDatabase` έκανε `user.deleteMany` — με FK `RESTRICT` θα έσκαγε σε **κάθε** e2e suite μόλις υπήρχαν rate γραμμές. Μία γραμμή `userRate.deleteMany()`, βρέθηκε στον σχεδιασμό και όχι από αποτυχία.
+- ✅ Τα e2e fixtures φτιάχνουν employees μέσω `POST /users`, όχι απευθείας Prisma — άρα οι epoch γραμμές γράφτηκαν αυτόματα και **κανένα υπάρχον spec δεν χρειάστηκε αλλαγή**.
+- **Prisma 7.9.1 έχει και array και callback `$transaction`** — επαληθεύτηκε στον generated client (`internal/class.ts`). ⚠️ Η online τεκμηρίωση επιστρέφει πλέον **Prisma 8**, όπου η array form έχει αφαιρεθεί· δεν ισχύει εδώ.
+- **`summarise()` και `requireHourlyRate()` έμειναν αμετάβλητα** — ήταν ρητό κριτήριο αποδοχής, και επαληθεύτηκε με `git diff | grep`: δεν εμφανίζονται καθόλου.
+
+### Verification που όντως εκτελέστηκε
+- **Καθαρή βάση**: `docker compose down -v` → 5 migrations εφαρμόστηκαν από το μηδέν.
+- **`migrate diff`**: No difference detected (βλ. παραπάνω).
+- **Backend unit**: **234/234** (από 213).
+- **Backend e2e**: **121/121** (από 106), σε βάση χτισμένη από το μηδέν.
+- **Frontend**: **230/230** σε 17 αρχεία (από 219).
+- ⭐ **Spike**: αφαιρέθηκε επίτηδες το φίλτρο `effectiveFrom <= at` → **3 e2e tests κοκκίνισαν** με ακριβώς το συμπτωμα της αναφοράς (`Expected: 2450, Received: 3000`, και 7 πεδία αλλαγμένα στο byte-identical assertion). Τα tests δεν είναι κενά.
+
+⚠️ **Το δωδέκατο σφάλμα μέτρησης, ίδιο μοτίβο με το Step 14.** Το πρώτο frontend run ανέφερε `16 passed (16)` / `212 passed` με ένα `listOnTimeout` error, σε **215s**. Το καθαρό run: **17 αρχεία / 230 tests σε 152s**. Ένα αρχείο είχε εξαφανιστεί από το count λόγω resource starvation. **Το frontend suite δεν τρέχει ποτέ παράλληλα με άλλο βαρύ run.**
+
+### ⚠️ Open, inherited by the next step
+1. **13b (Playwright)** — παραμένει το τελευταίο ανοιχτό στοιχείο του build plan. Το «admin editing a rate» flow τώρα έχει και ημερομηνία ισχύος να επαληθευτεί στο UI.
+2. **Νέο gap §13 #7**: τιμή που **έχει ήδη** ενεργοποιηθεί δεν διορθώνεται μέσω API — μόνο από τη βάση. Μέχρι να ξεκινήσει ο κύκλος-στόχος, το upsert επιτρέπει ελεύθερη διόρθωση.
+3. Τα υπόλοιπα του Step 14 (`npm audit`, μέγεθος image) αμετάβλητα.
+
+**Next step**: **13b (Frontend E2E, Playwright)**.

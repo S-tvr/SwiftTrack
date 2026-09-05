@@ -423,6 +423,15 @@ describe("TeamPage — creating an employee", () => {
     expect(screen.getByText("Enter an hourly rate.")).toBeTruthy()
     expect(createEmployee).not.toHaveBeenCalled()
   })
+
+  // The effective-date line belongs to edit only: a new employee has no earlier
+  // rate for this one to take effect *after*, and their first rate covers every
+  // cycle including past ones.
+  it("does not claim a new employee's rate starts next cycle", async () => {
+    await openCreateForm()
+
+    expect(screen.queryByText(/applies from the next pay cycle/)).toBeNull()
+  })
 })
 
 describe("TeamPage — editing an employee", () => {
@@ -439,6 +448,24 @@ describe("TeamPage — editing an employee", () => {
 
     expect(screen.queryByLabelText("Email")).toBeNull()
     expect(screen.getByLabelText("Name")).toBeTruthy()
+  })
+
+  /**
+   * ⭐ A rate is forward-effective: it applies from the next cycle and leaves
+   * settled ones alone. Without this line an admin who raises somebody
+   * mid-cycle sees the Team list update, opens payroll, finds the old figure,
+   * and reasonably concludes the save failed. It is permanent rather than a
+   * toast because the person choosing the number has to read it *while*
+   * choosing — the same call SettingsPage makes for the cycle boundary.
+   */
+  it("states when a new rate takes effect, before anything is typed", async () => {
+    await openEditForm()
+
+    expect(
+      screen.getByText(
+        "A new rate applies from the next pay cycle. Past and current cycles keep the rate they were already paid at.",
+      ),
+    ).toBeTruthy()
   })
 
   it("sends only name and hourlyRate", async () => {

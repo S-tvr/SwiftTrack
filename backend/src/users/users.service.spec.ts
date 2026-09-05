@@ -1,6 +1,7 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { UsersService } from './users.service';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { SettingsService } from '../settings/settings.service';
 import { Prisma, Role, type User } from '../generated/prisma/client';
 
 /**
@@ -36,6 +37,13 @@ function makeUser(overrides: Partial<User> = {}): User {
   };
 }
 
+/** The start of the cycle after the current one — what a raise is dated to. */
+const NEXT_CYCLE_START = new Date('2026-08-25T00:00:00.000Z');
+/** The start of a cycle being priced — what a rate is resolved *at*. */
+const CYCLE_START = new Date('2026-07-25T00:00:00.000Z');
+/** Mirrors the constant in the service. */
+const RATE_EPOCH = new Date(0);
+
 function makeService() {
   const user = {
     findMany: jest.fn().mockResolvedValue([]),
@@ -44,8 +52,35 @@ function makeService() {
     create: jest.fn().mockResolvedValue(makeUser()),
     update: jest.fn().mockResolvedValue(makeUser()),
   };
-  const prisma = { user } as unknown as PrismaService;
-  return { service: new UsersService(prisma), user };
+  const userRate = {
+    findFirst: jest.fn().mockResolvedValue(null),
+    findMany: jest.fn().mockResolvedValue([]),
+    upsert: jest.fn().mockResolvedValue({}),
+  };
+  // The array form resolves each promise it is handed. The stubs above are
+  // already resolved values, so awaiting them here reproduces what Prisma does
+  // without pretending to be a real transaction — what these tests assert is
+  // that both writes are handed over *together*, which the call itself shows.
+  const $transaction = jest
+    .fn()
+    .mockImplementation((operations: Promise<unknown>[]) =>
+      Promise.all(operations),
+    );
+  const prisma = { user, userRate, $transaction } as unknown as PrismaService;
+  const resolveRateEffectiveFrom = jest
+    .fn()
+    .mockResolvedValue(NEXT_CYCLE_START);
+  const settings = {
+    resolveRateEffectiveFrom,
+  } as unknown as SettingsService;
+
+  return {
+    service: new UsersService(prisma, settings),
+    user,
+    userRate,
+    $transaction,
+    resolveRateEffectiveFrom,
+  };
 }
 
 describe('UsersService', () => {
@@ -253,6 +288,41 @@ describe('UsersService', () => {
       expect(daysAhead).toBeLessThan(3.1);
     });
 
+    /**
+     * ⭐ The rate row is created with the employee, at the epoch. Not tidiness:
+     * an admin may write a shift at any past date, so a cycle earlier than this
+     * row is reachable — and a cycle with no rate in force makes payroll throw,
+     * which on the team overview takes down the page for everyone. Writing it
+     * in the same statement is what stops the two from ever existing apart.
+     */
+    it('writes the first rate row alongside the user, effective from the epoch', async () => {
+      const { service, user } = makeService();
+
+      await service.createEmployee({
+        name: 'Jane',
+        email: 'jane@example.com',
+        hourlyRate: 2450,
+      });
+
+      const [firstCall] = user.create.mock.calls as Array<
+        [
+          {
+            data: {
+              hourlyRate: number;
+              rates: { create: { hourlyRate: number; effectiveFrom: Date } };
+            };
+          },
+        ]
+      >;
+      const { data } = firstCall[0];
+      // Both halves, in one write: the denormalised head and the history.
+      expect(data.hourlyRate).toBe(2450);
+      expect(data.rates.create).toEqual({
+        hourlyRate: 2450,
+        effectiveFrom: RATE_EPOCH,
+      });
+    });
+
     it('409s on the explicit pre-check, without attempting the insert', async () => {
       const { service, user } = makeService();
       user.findUnique.mockResolvedValue(makeUser());
@@ -330,6 +400,116 @@ describe('UsersService', () => {
         setupCode: null,
         setupCodeExpiresAt: null,
       },
+    });
+  });
+
+  /**
+   * A raise is forward-effective: it is dated to the start of the *next* cycle,
+   * so the cycle in progress and every past one keep the rate they were priced
+   * at. Before `UserRate` existed, changing this field silently repriced every
+   * cycle the employee had ever worked.
+   */
+  describe('updateEmployee and the rate history', () => {
+    it('dates a changed rate to the next cycle and writes both halves together', async () => {
+      const {
+        service,
+        user,
+        userRate,
+        $transaction,
+        resolveRateEffectiveFrom,
+      } = makeService();
+      // The row as it stands: 2450. The raise is to 2800.
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+
+      await service.updateEmployee(7, { hourlyRate: 2800 });
+
+      expect(resolveRateEffectiveFrom).toHaveBeenCalledTimes(1);
+      expect(userRate.upsert).toHaveBeenCalledWith({
+        where: {
+          userId_effectiveFrom: { userId: 7, effectiveFrom: NEXT_CYCLE_START },
+        },
+        update: { hourlyRate: 2800 },
+        create: {
+          userId: 7,
+          hourlyRate: 2800,
+          effectiveFrom: NEXT_CYCLE_START,
+        },
+      });
+      // ⭐ One transaction, both writes. A reader that saw the updated column
+      // without the history row would report a rate nobody is paid.
+      expect($transaction).toHaveBeenCalledTimes(1);
+      expect(user.update).toHaveBeenCalledWith({
+        where: { id: 7 },
+        data: { hourlyRate: 2800 },
+      });
+    });
+
+    /**
+     * ⭐ Not an optimisation. `EmployeeForm` submits both fields on every save,
+     * so without this a rename would write a rate row each time — and a row
+     * dated to the next cycle is not inert: it is what that cycle gets priced
+     * with.
+     */
+    it('writes no rate row when the submitted rate is unchanged', async () => {
+      const {
+        service,
+        user,
+        userRate,
+        $transaction,
+        resolveRateEffectiveFrom,
+      } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+
+      await service.updateEmployee(7, {
+        name: 'Jane Renamed',
+        hourlyRate: 2450,
+      });
+
+      expect(userRate.upsert).not.toHaveBeenCalled();
+      expect($transaction).not.toHaveBeenCalled();
+      // The cycle is not even resolved — there is nothing to date.
+      expect(resolveRateEffectiveFrom).not.toHaveBeenCalled();
+      expect(user.update).toHaveBeenCalledWith({
+        where: { id: 7 },
+        data: { name: 'Jane Renamed', hourlyRate: 2450 },
+      });
+    });
+
+    it('leaves the rate history alone for a name-only edit', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+
+      await service.updateEmployee(7, { name: 'Jane Renamed' });
+
+      expect(userRate.upsert).not.toHaveBeenCalled();
+      expect(user.update).toHaveBeenCalledWith({
+        where: { id: 7 },
+        data: { name: 'Jane Renamed' },
+      });
+    });
+
+    /**
+     * ⭐ Two raises inside one cycle target the same `(userId, effectiveFrom)`,
+     * which the unique constraint would refuse. Upserting means the second one
+     * replaces the first instead of failing — so a typo stays correctable right
+     * up until the cycle it applies to begins.
+     */
+    it('upserts rather than inserts, so a second raise in the same cycle replaces the first', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+
+      await service.updateEmployee(7, { hourlyRate: 2800 });
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2800 }));
+      await service.updateEmployee(7, { hourlyRate: 3000 });
+
+      expect(userRate.upsert).toHaveBeenCalledTimes(2);
+      const [, secondCall] = userRate.upsert.mock.calls as Array<
+        [{ where: unknown; update: { hourlyRate: number } }]
+      >;
+      expect(secondCall[0].where).toEqual({
+        userId_effectiveFrom: { userId: 7, effectiveFrom: NEXT_CYCLE_START },
+      });
+      expect(secondCall[0].update).toEqual({ hourlyRate: 3000 });
     });
   });
 
@@ -451,7 +631,7 @@ describe('UsersService', () => {
     });
 
     /**
-     * The shift list's counterpart to `findEmployeeRate`. It answers "whose
+     * The shift list's counterpart to `findEmployeeRateAt`. It answers "whose
      * list is this?" in the same query that proves the id is an employee at
      * all, which is why the admin list route dropped `assertEmployeeExists`
      * rather than calling both.
@@ -507,34 +687,136 @@ describe('UsersService', () => {
       });
     });
 
-    it('findEmployeeRate returns null for a non-EMPLOYEE and never loads secrets', async () => {
-      const { service, user } = makeService();
+    it('findEmployeeRateAt returns null for a non-EMPLOYEE and never loads secrets', async () => {
+      const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue(null);
 
-      await expect(service.findEmployeeRate(1)).resolves.toBeNull();
+      await expect(
+        service.findEmployeeRateAt(1, CYCLE_START),
+      ).resolves.toBeNull();
       expect(user.findFirst).toHaveBeenCalledWith({
         where: { id: 1, role: Role.EMPLOYEE },
-        select: { id: true, name: true, hourlyRate: true },
+        select: { id: true, name: true },
+      });
+      // No employee, no rate lookup — the second query is not merely unused,
+      // it is never issued.
+      expect(userRate.findFirst).not.toHaveBeenCalled();
+    });
+
+    /**
+     * ⭐ The bug this table exists to fix, in one test. An employee with two
+     * rates — one from the epoch, one starting *after* the cycle being priced —
+     * must be paid the older one. Reading "the newest rate" instead is exactly
+     * what repriced every past cycle whenever somebody got a raise.
+     */
+    it('findEmployeeRateAt asks for the newest rate at or before the instant, not the newest overall', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
+      userRate.findFirst.mockResolvedValue({ hourlyRate: 2450 });
+
+      await expect(service.findEmployeeRateAt(7, CYCLE_START)).resolves.toEqual(
+        {
+          id: 7,
+          name: 'Jane Employee',
+          hourlyRate: 2450,
+        },
+      );
+      expect(userRate.findFirst).toHaveBeenCalledWith({
+        where: { userId: 7, effectiveFrom: { lte: CYCLE_START } },
+        orderBy: { effectiveFrom: 'desc' },
+        select: { hourlyRate: true },
       });
     });
 
     /**
+     * Left null rather than defaulted to 0 — `PayrollService` turns this into a
+     * loud 500. A silent 0 would drop somebody's wages out of the team total,
+     * which is the money nobody notices is missing.
+     */
+    it('findEmployeeRateAt reports a null rate when none is in force yet', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
+      userRate.findFirst.mockResolvedValue(null);
+
+      await expect(service.findEmployeeRateAt(7, CYCLE_START)).resolves.toEqual(
+        {
+          id: 7,
+          name: 'Jane Employee',
+          hourlyRate: null,
+        },
+      );
+    });
+
+    /**
      * Deliberately a batch reader: fifteen employees through
-     * `findEmployeeRate()` in a loop would be fifteen round trips on a page
+     * `findEmployeeRateAt()` in a loop would be thirty round trips on a page
      * that should cost one. `isActive` comes back so the caller can apply its
      * own rule about who belongs on the overview for a given cycle.
      */
-    it('findAllEmployeeRates fetches the team in one query, active flag included', async () => {
+    it('findAllEmployeeRatesAt fetches the team in one query, active flag included', async () => {
       const { service, user } = makeService();
+      user.findMany.mockResolvedValue([
+        { id: 7, name: 'Jane Employee', isActive: true },
+      ]);
 
-      await service.findAllEmployeeRates();
+      await service.findAllEmployeeRatesAt(CYCLE_START);
 
       expect(user.findMany).toHaveBeenCalledTimes(1);
       expect(user.findMany).toHaveBeenCalledWith({
         where: { role: Role.EMPLOYEE },
-        select: { id: true, name: true, hourlyRate: true, isActive: true },
+        select: { id: true, name: true, isActive: true },
         orderBy: { name: 'asc' },
       });
+    });
+
+    /**
+     * ⭐ The N+1 guard, asserted rather than commented. Three employees must
+     * still cost exactly two queries — one for the people, one for every rate
+     * row in force — with the fold happening in memory. A loop would pass every
+     * other test in this file and only show up as a slow page.
+     */
+    it('findAllEmployeeRatesAt stays at two queries regardless of headcount, and picks the rate in force per person', async () => {
+      const { service, user, userRate } = makeService();
+      user.findMany.mockResolvedValue([
+        { id: 7, name: 'Jane', isActive: true },
+        { id: 8, name: 'Karl', isActive: false },
+        { id: 9, name: 'Lars', isActive: true },
+      ]);
+      // Ascending by effectiveFrom, as the query orders them. Jane has two rows
+      // in force and must take the later one; Lars has none at all.
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2000 },
+        { userId: 8, hourlyRate: 2600 },
+        { userId: 7, hourlyRate: 2450 },
+      ]);
+
+      await expect(
+        service.findAllEmployeeRatesAt(CYCLE_START),
+      ).resolves.toEqual([
+        { id: 7, name: 'Jane', isActive: true, hourlyRate: 2450 },
+        { id: 8, name: 'Karl', isActive: false, hourlyRate: 2600 },
+        { id: 9, name: 'Lars', isActive: true, hourlyRate: null },
+      ]);
+      expect(user.findMany).toHaveBeenCalledTimes(1);
+      expect(userRate.findMany).toHaveBeenCalledTimes(1);
+      expect(userRate.findMany).toHaveBeenCalledWith({
+        where: {
+          userId: { in: [7, 8, 9] },
+          effectiveFrom: { lte: CYCLE_START },
+        },
+        select: { userId: true, hourlyRate: true },
+        orderBy: { effectiveFrom: 'asc' },
+      });
+    });
+
+    it('findAllEmployeeRatesAt skips the rate query entirely when there is no team', async () => {
+      const { service, user, userRate } = makeService();
+      user.findMany.mockResolvedValue([]);
+
+      await expect(
+        service.findAllEmployeeRatesAt(CYCLE_START),
+      ).resolves.toEqual([]);
+      expect(userRate.findMany).not.toHaveBeenCalled();
     });
   });
 

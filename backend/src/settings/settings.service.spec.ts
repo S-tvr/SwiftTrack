@@ -141,6 +141,84 @@ describe('SettingsService', () => {
    * here rather than in `TimeEntriesService` because it is derived from
    * `AppSettings` — the same reason `resolveCycleRange()` does.
    */
+  /**
+   * The mirror image of `resolveWritableCycleStart` below: that one looks a
+   * cycle back to decide what may still be edited, this one looks a cycle
+   * forward to decide when a new rate starts applying. Both exist so their
+   * callers never do cycle arithmetic of their own.
+   */
+  describe('resolveRateEffectiveFrom', () => {
+    it('returns the start of the cycle after the one containing now', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-05T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        // ⭐ The reported bug, in one assertion. 5 August with a 25th boundary
+        // sits inside cycle 2026-07 (25 Jul - 24 Aug), which has already been
+        // priced. A raise entered today therefore starts on 25 August, leaving
+        // that cycle — and every one before it — exactly as it was.
+        await expect(service.resolveRateEffectiveFrom()).resolves.toEqual(
+          new Date('2026-08-25T00:00:00.000Z'),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('rolls the year forward correctly at December', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-12-28T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+        // 28 December is past the 25th, so the running cycle is 2026-12 and the
+        // next one starts 25 January — a year the arithmetic must roll itself.
+        await expect(service.resolveRateEffectiveFrom()).resolves.toEqual(
+          new Date('2027-01-25T00:00:00.000Z'),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('moves with cycleStartDay rather than assuming the 25th', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(11, 10));
+        // 3 August with an 11th boundary: running cycle is 2026-07 (11 Jul -
+        // 11 Aug), so a raise today starts on 11 August.
+        await expect(service.resolveRateEffectiveFrom()).resolves.toEqual(
+          new Date('2026-08-11T00:00:00.000Z'),
+        );
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    /**
+     * ⭐ The boundary a raise lands on must be the same instant the *next*
+     * cycle is priced from, or a rate would take effect a cycle late (or early)
+     * and nothing on screen would explain the discrepancy.
+     */
+    it('lands exactly on the start of the cycle that follows the current one', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-08-05T10:00:00.000Z'));
+      try {
+        const { service } = serviceWith(row(25, 24));
+
+        const effectiveFrom = await service.resolveRateEffectiveFrom();
+        const { range } = await service.resolveCycleRange('2026-08');
+
+        expect(effectiveFrom).toEqual(range.start);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('refuses a corrupted stored day rather than computing a wrong boundary', async () => {
+      const { service } = serviceWith(row(31, 30));
+      await expect(service.resolveRateEffectiveFrom()).rejects.toThrow(
+        InternalServerErrorException,
+      );
+    });
+  });
+
   describe('resolveWritableCycleStart', () => {
     it('returns the start of the cycle before the one containing now', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));

@@ -19,6 +19,17 @@ CREATE TABLE "User" (
 );
 
 -- CreateTable
+CREATE TABLE "UserRate" (
+    "id" SERIAL NOT NULL,
+    "hourlyRate" INTEGER NOT NULL,
+    "effectiveFrom" TIMESTAMP(3) NOT NULL,
+    "userId" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "UserRate_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "TimeEntry" (
     "id" SERIAL NOT NULL,
     "userId" INTEGER NOT NULL,
@@ -42,6 +53,15 @@ CREATE TABLE "AppSettings" (
 
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateIndex
+CREATE INDEX "UserRate_userId_effectiveFrom_idx" ON "UserRate"("userId", "effectiveFrom");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "UserRate_userId_effectiveFrom_key" ON "UserRate"("userId", "effectiveFrom");
+
+-- AddForeignKey
+ALTER TABLE "UserRate" ADD CONSTRAINT "UserRate_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "TimeEntry" ADD CONSTRAINT "TimeEntry_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

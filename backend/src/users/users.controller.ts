@@ -106,7 +106,7 @@ export class UsersController {
   @ApiOperation({
     summary: "Edit an employee's name/hourlyRate (ADMIN)",
     description:
-      'Only `name` and `hourlyRate` — email, password, role and isActive each have their own channel. EMPLOYEE rows only: an ADMIN id is a 404, because an admin has no hourlyRate by design. ⚠️ Payroll is recomputed on every request and never frozen, so changing a rate also changes what every past cycle reports.',
+      'Only `name` and `hourlyRate` — email, password, role and isActive each have their own channel. EMPLOYEE rows only: an ADMIN id is a 404, because an admin has no hourlyRate by design. ⚠️ A **changed** `hourlyRate` takes effect from the **start of the next pay cycle** — the cycle in progress and every past one keep the rate they were already priced at. Submitting the rate unchanged writes no history at all, and two raises inside one cycle collapse into a single one, so a typo stays correctable until that cycle begins.',
   })
   @ApiResponse({
     status: 200,

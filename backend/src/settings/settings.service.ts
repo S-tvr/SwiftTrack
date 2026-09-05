@@ -127,6 +127,34 @@ export class SettingsService {
   }
 
   /**
+   * The instant a rate entered *now* starts applying — the start of the **next**
+   * cycle. Used by `UsersService` when an admin changes an employee's rate.
+   *
+   * The mirror image of `resolveWritableCycleStart()` above: that one looks one
+   * cycle back to decide what may still be edited, this one looks one cycle
+   * forward to decide what a raise may touch. Neither is allowed to live in its
+   * caller — `UsersService` owns `User`, not cycle boundaries, and a second copy
+   * of this arithmetic is how the write window and the rate window would come to
+   * disagree about where a cycle begins.
+   *
+   * Anchoring at the *next* cycle rather than at `now` is what makes a raise
+   * forward-effective: the cycle in progress has already been priced at the old
+   * rate, and a rate landing mid-cycle would either reprice it (the bug this
+   * table exists to prevent) or split it in two (see spec §4, decision 5g —
+   * rejected, it adds a fourth rounding point).
+   */
+  async resolveRateEffectiveFrom(): Promise<Date> {
+    const { cycleStartDay } = await this.getSettingsRow();
+    this.assertUsableCycleStartDay(cycleStartDay);
+
+    const nextCycle = shiftCycleKey(
+      resolveCurrentCycleKey(new Date(), cycleStartDay),
+      1,
+    );
+    return computeCycleRange(nextCycle, cycleStartDay).start;
+  }
+
+  /**
    * The shared arithmetic, so the two entry points cannot drift apart. `now` is
    * passed in rather than read here, so a single resolution never consults the
    * clock twice.

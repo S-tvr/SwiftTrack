@@ -115,7 +115,7 @@ It never automatically moves to the next step without this confirmation, even if
   - **Three rounding points and no others** (spec §4 decision 5d): hours to 2 decimals per *cell* (date × zone), a zone's rate never, a zone's pay to whole ISK. `totalHours`/`totalPay`/`totalCost` are exact **sums** — never rounded again, which is what makes every column add up to the figure beneath it
   - Response carries the resolved cycle block, `hourlyRate`, `totalHours`, `totalPay`, `hasOpenShift`, the four `zones` (label, hours, rate, pay) and `days` (row per **date**, column per zone, hours only — no money). Only dates with hours
   - `hasOpenShift` is **cycle-scoped**, matched on `startTime`: open shifts are unpayable so their day is absent from `days`, and this flag is the only thing that explains the gap
-  - `UsersService.findEmployeeRate()` (single) and `findAllEmployeeRates()` (batch, for the overview) — narrow readers with explicit `select`. **Never `findEmployeeRate()` in a loop**: fifteen employees would become fifteen round trips
+  - `UsersService.findEmployeeRateAt()` (single) and `findAllEmployeeRatesAt()` (batch, for the overview) — narrow readers with explicit `select`. **Never the single reader in a loop**: fifteen employees would become fifteen round trips. *(Both took an `at` instant from step 15 on, when rate history arrived — this step built them without one, reading `User.hourlyRate` directly.)*
   - A `null` `hourlyRate` fails loudly with a 500 naming the fix — never a silent 0, which would drop that person's wages out of the team's cost
   - **Tests are written in this step**, as in steps 4 and 5 — `rate-zones.util.spec.ts` (zone boundaries, cross-midnight, Fri→Sat and Sun→Mon handovers, cross-cycle clipping, the rounding rules) and `payroll.service.spec.ts` with stubbed Prisma (404s, who appears on the overview, the query shapes, and that the overview row equals that employee's own page)
 
@@ -688,6 +688,27 @@ The three are independent — none reads another's data — and each detaches it
     - **`.mcp.json`** — **declined on 2026-08-28, not merely unbuilt.** The reasoning is under § Read this before any frontend step, and it is worth restating only so nobody re-opens it as an oversight: the shadcn MCP's discovery value was outweighed by it pinning a second, floating copy of the shadcn CLI, and the registry is queryable over plain HTTP anyway. The **Playwright MCP** is a genuinely open question for step 13b, where an agent driving a real browser is the point — decide it there
 
   </details>
+
+- [x] **15. Rate history (`UserRate`) — a raise applies forward** — ✅ **Done 2026-09-05**
+
+  **A bug fix, and the first change since step 6 to touch the payroll pipeline.** Raising an employee's `hourlyRate` repriced **every cycle they had ever worked**, cycles already paid included: pay is derived from the rate on every request, and nothing recorded what the rate used to be. This was spec §13 gap 1, which the project had recorded as accepted rather than overlooked.
+
+  **The decision** (spec §4, decision 5g): a cycle is priced with the rate **in force at its start**, resolved **once per cycle**. A raise entered mid-cycle takes effect at the **next** one, and the admin does not pick the date.
+
+  ⚠️ **Prorating within a cycle was rejected on structural grounds, not taste.** It partitions the cycle by rate period, turning four money roundings into eight (breaking decision 5d), and the summary shows one `rate` per zone — it would need two rows per zone or a blended rate that cannot reproduce its own Pay column. **Do not "fix" the anchoring as if it were an oversight.**
+
+  ⚠️ **A payroll snapshot per closed cycle — what §13 itself names — was also rejected here.** It needs a cycle-closing mechanism that does not exist, it collides with the "never frozen" invariant that two other decisions rest on, and it would not fix the bug alone: until a cycle closes a raise still rewrites it, and the current cycle is exactly where a raise lands. `UserRate` is forward-compatible with it.
+
+  - **Schema**: `UserRate` (`userId`, `hourlyRate`, `effectiveFrom`, `@@unique([userId, effectiveFrom])`), declared in the `init` migration alongside the other three tables — we are in dev, so the table went where it belongs rather than arriving as a migration on top. `User.hourlyRate` **stays** as the current rate: eight read paths want "what are they paid now" and none is cycle-aware.
+  - **`SettingsService.resolveRateEffectiveFrom()`** — the next cycle's start, sibling of `resolveWritableCycleStart()`. All cycle arithmetic stays in one module.
+  - **`UsersService`** — `findEmployeeRateAt(id, at)` and `findAllEmployeeRatesAt(at)` **replace** the old pair. The team reader batches into **two** queries and folds in memory· the overview goes 4 → 5 queries. The write pairs the `User` update with a `UserRate` upsert in the codebase's first `$transaction`. `createEmployee` writes the first row at the **epoch** — an admin may write a shift at any past date, and a cycle with no rate in force would 500 the whole overview.
+  - **`PayrollService`** — `getPayrollForCycle` now resolves the cycle **before** the employee. ⚠️ `summarise()` and `requireHourlyRate()` are **unchanged**, which was the acceptance criterion and held: neither appears in the diff.
+  - **`PUT /users/:id`** — body unchanged. The same rate resubmitted writes nothing (the form always sends both fields)· two raises in one cycle upsert to one row. The Swagger description had documented the bug as behaviour and was replaced.
+  - **Frontend** — one permanent line under the rate field in edit mode, copying `SettingsPage`'s existing choice of a line over a toast.
+
+  **Tests**: 213 → **234** unit, 106 → **121** e2e, 219 → **230** frontend. The headline e2e is the bug report executed: price a cycle, raise the rate, re-read that cycle and get a **byte-identical** body, then read the next one at the new rate. ⭐ **Spike passed** — removing the `effectiveFrom <= at` filter turned three e2e tests red with exactly the reported symptom (`Expected: 2450, Received: 3000`), so the tests are not empty.
+
+  ⚠️ **§13 gap 1 was narrowed, not closed.** Payroll is still recomputed on every request: editing a **shift** in a past cycle still moves that cycle's total, and a zone-percentage change still would. Only the rate is historised.
 
 ---
 

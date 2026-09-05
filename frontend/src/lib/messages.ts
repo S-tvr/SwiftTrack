@@ -480,6 +480,22 @@ export const NOTICES = {
     "Changing this day moves the boundary of every pay cycle, including ones already paid. Their totals are recalculated, not frozen.",
 
   /**
+   * The counterpart to `cycleBoundaryWarning`, on the other field that changes
+   * what people are paid — and it says the opposite thing, which is why it has
+   * to be said at all. A rate is historised: it applies from the next cycle and
+   * leaves settled ones alone. Without this line an admin who raises somebody
+   * mid-cycle sees the Team list update, opens payroll, finds the old figure,
+   * and reasonably concludes the save failed.
+   *
+   * A permanent line rather than a toast, for the same reason the cycle warning
+   * is one: a toast is gone in four seconds and cannot be re-read by the person
+   * deciding what number to type. Shown only when editing — on create there is
+   * no "before" for the rate to be effective *from*.
+   */
+  rateEffectiveNextCycle:
+    "A new rate applies from the next pay cycle. Past and current cycles keep the rate they were already paid at.",
+
+  /**
    * The confirmation, shown on submit. The static line above explains the
    * setting; this one arrives at the moment the change is actually made, and
    * spells out both halves — what moves, and what does not.
