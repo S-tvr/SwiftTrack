@@ -41,6 +41,9 @@ const employee = (overrides = {}) => ({
   name: 'Jane Employee',
   hourlyRate: HOURLY_RATE,
   isActive: true,
+  // Nothing queued by default — the ordinary case, where the rate on the Team
+  // list and the one pricing this cycle are the same number.
+  pending: null,
   ...overrides,
 });
 
@@ -139,6 +142,36 @@ describe('PayrollService.getPayrollForCycle', () => {
     await service.getPayrollForCycle(2, '2026-07');
 
     expect(findEmployeeRateAt).toHaveBeenCalledWith(2, RANGE.start);
+  });
+
+  /**
+   * ⭐ The page has to be able to explain why the rate pricing this cycle is not
+   * the rate on the Team list. Without these two fields an employee sees one
+   * number on their profile and a smaller one on their payslip, which reads as
+   * an underpayment rather than as a raise that has not started yet.
+   */
+  it('carries the queued rate change through to the response', async () => {
+    const effectiveFrom = new Date('2026-08-25T00:00:00.000Z');
+    const { service } = makeService({
+      employeeRow: employee({
+        pending: { hourlyRate: 3200, effectiveFrom },
+      }),
+    });
+
+    const result = await service.getPayrollForCycle(2, '2026-07');
+
+    // The cycle is still priced at the old rate — that is the whole point.
+    expect(result.hourlyRate).toBe(HOURLY_RATE);
+    expect(result.pendingRate).toBe(3200);
+    expect(result.pendingRateEffectiveFrom).toBe(effectiveFrom.toISOString());
+  });
+
+  it('reports no pending change when none is queued', async () => {
+    const { service } = makeService();
+    const result = await service.getPayrollForCycle(2, '2026-07');
+
+    expect(result.pendingRate).toBeNull();
+    expect(result.pendingRateEffectiveFrom).toBeNull();
   });
 
   it('asks only for CLOSED shifts overlapping the cycle, with gt/lt', async () => {

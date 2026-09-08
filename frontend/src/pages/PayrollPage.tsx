@@ -6,6 +6,8 @@ import { PayrollSummary } from "@/components/payroll/PayrollSummary"
 import { CycleNavigator } from "@/components/shifts/CycleNavigator"
 import { Button } from "@/components/ui/button"
 import { useApiQuery } from "@/hooks/useApiQuery"
+import { formatDate } from "@/lib/datetime"
+import { formatRate } from "@/lib/format"
 import { errorText, LABELS, NOTICES, PAGE_TITLES } from "@/lib/messages"
 
 /**
@@ -105,6 +107,19 @@ export function PayrollPage() {
       {data.hasOpenShift && (
         <p className="rounded-lg border border-foreground/10 px-3 py-2 text-sm text-muted-foreground">
           {isAdminRoute ? NOTICES.openShiftOther : NOTICES.openShiftOwn}
+        </p>
+      )}
+
+      {/* The other thing that can make this page look wrong while being right:
+          a raise that has been entered but does not apply until a later cycle.
+          Without it, the rate here is smaller than the one on the profile and
+          the Team list, and the payslip reads as an underpayment. */}
+      {data.pendingRate !== null && data.pendingRateEffectiveFrom !== null && (
+        <p className="rounded-lg border border-foreground/10 px-3 py-2 text-sm text-muted-foreground">
+          {(isAdminRoute ? NOTICES.pendingRateOther : NOTICES.pendingRateOwn)(
+            formatRate(data.pendingRate),
+            formatDate(data.pendingRateEffectiveFrom),
+          )}
         </p>
       )}
 

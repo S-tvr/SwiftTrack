@@ -95,6 +95,19 @@ export interface PayrollResponse {
   /** Base ISK per hour, always a whole number. Not printed on its own: it is
    *  the `DAY` zone's rate, already in the summary. */
   hourlyRate: number
+  /**
+   * The next rate this employee moves to **after** this cycle, or `null` when
+   * nothing changes after it.
+   *
+   * ⚠️ Relative to the cycle being viewed, not to today: paging ◀ to an older
+   * cycle correctly reports the change that came after it, and the cycle a
+   * raise already applies to reports nothing. It exists so the page can say
+   * why `hourlyRate` here is not the figure the Team list shows.
+   */
+  pendingRate: number | null
+  /** When `pendingRate` starts applying — always a cycle start. Set and
+   *  cleared together with it. */
+  pendingRateEffectiveFrom: string | null
   /** Exact sum of every cell in `days`. Printed as sent. */
   totalHours: number
   /** Whole ISK — a plain sum of `zones[].pay`, never rounded a second time,

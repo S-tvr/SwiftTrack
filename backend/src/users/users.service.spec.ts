@@ -475,6 +475,45 @@ describe('UsersService', () => {
       });
     });
 
+    /**
+     * ⭐ The early return means "*this request* changed no rate", not "nothing
+     * is queued". A rename must not wipe the pending line off the row it just
+     * re-rendered — the response replaces that row on screen.
+     */
+    it('still reports an existing queued rate when this edit changed none', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+      userRate.findFirst.mockResolvedValue({
+        hourlyRate: 3200,
+        effectiveFrom: NEXT_CYCLE_START,
+      });
+
+      const result = await service.updateEmployee(7, { name: 'Jane Renamed' });
+
+      expect(userRate.upsert).not.toHaveBeenCalled();
+      expect(result.pendingRate).toBe(3200);
+      expect(result.pendingRateEffectiveFrom).toBe(
+        NEXT_CYCLE_START.toISOString(),
+      );
+    });
+
+    /**
+     * The row just written *is* the pending one, so it is reported without
+     * reading back what was inserted a line earlier.
+     */
+    it('reports the raise it just queued, without a follow-up read', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+
+      const result = await service.updateEmployee(7, { hourlyRate: 3200 });
+
+      expect(result.pendingRate).toBe(3200);
+      expect(result.pendingRateEffectiveFrom).toBe(
+        NEXT_CYCLE_START.toISOString(),
+      );
+      expect(userRate.findFirst).not.toHaveBeenCalled();
+    });
+
     it('leaves the rate history alone for a name-only edit', async () => {
       const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
@@ -594,6 +633,44 @@ describe('UsersService', () => {
         orderBy: { name: 'asc' },
       });
     });
+
+    /**
+     * ⭐ The N+1 guard for the pending-rate lookup, asserted rather than
+     * commented. Three employees must still cost **two** queries — the people,
+     * then every queued rate in one batch. A per-row lookup would pass every
+     * other test in this file and only show up as a slow Team page.
+     */
+    it('findAllEmployees fetches queued rate changes in one batch, not one per row', async () => {
+      const { service, user, userRate } = makeService();
+      user.findMany.mockResolvedValue([
+        makeUser({ id: 7, hourlyRate: 2450 }),
+        makeUser({ id: 8, hourlyRate: 2600 }),
+        makeUser({ id: 9, hourlyRate: 3000 }),
+      ]);
+      // Only Jane has a raise queued.
+      userRate.findMany.mockResolvedValue([
+        { userId: 8, hourlyRate: 3100, effectiveFrom: NEXT_CYCLE_START },
+      ]);
+
+      const result = await service.findAllEmployees();
+
+      expect(userRate.findMany).toHaveBeenCalledTimes(1);
+      expect(result[0].pendingRate).toBeNull();
+      expect(result[0].pendingRateEffectiveFrom).toBeNull();
+      expect(result[1].pendingRate).toBe(3100);
+      expect(result[1].pendingRateEffectiveFrom).toBe(
+        NEXT_CYCLE_START.toISOString(),
+      );
+      expect(result[2].pendingRate).toBeNull();
+    });
+
+    it('findAllEmployees skips the rate query entirely when there is no team', async () => {
+      const { service, user, userRate } = makeService();
+      user.findMany.mockResolvedValue([]);
+
+      await expect(service.findAllEmployees()).resolves.toEqual([]);
+      expect(userRate.findMany).not.toHaveBeenCalled();
+    });
   });
 
   describe('the narrow cross-service readers', () => {
@@ -700,7 +777,7 @@ describe('UsersService', () => {
       });
       // No employee, no rate lookup — the second query is not merely unused,
       // it is never issued.
-      expect(userRate.findFirst).not.toHaveBeenCalled();
+      expect(userRate.findMany).not.toHaveBeenCalled();
     });
 
     /**
@@ -709,22 +786,56 @@ describe('UsersService', () => {
      * must be paid the older one. Reading "the newest rate" instead is exactly
      * what repriced every past cycle whenever somebody got a raise.
      */
-    it('findEmployeeRateAt asks for the newest rate at or before the instant, not the newest overall', async () => {
+    it('findEmployeeRateAt takes the newest rate at or before the instant, not the newest overall', async () => {
       const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
-      userRate.findFirst.mockResolvedValue({ hourlyRate: 2450 });
+      // Descending, as the query orders them: a raise queued for the next cycle
+      // sits above the rate that actually prices this one.
+      userRate.findMany.mockResolvedValue([
+        { hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
+        { hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+      ]);
 
       await expect(service.findEmployeeRateAt(7, CYCLE_START)).resolves.toEqual(
         {
           id: 7,
           name: 'Jane Employee',
           hourlyRate: 2450,
+          pending: { hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
         },
       );
-      expect(userRate.findFirst).toHaveBeenCalledWith({
-        where: { userId: 7, effectiveFrom: { lte: CYCLE_START } },
+      // One query for both halves — the split happens in memory.
+      expect(userRate.findMany).toHaveBeenCalledTimes(1);
+      expect(userRate.findMany).toHaveBeenCalledWith({
+        where: { userId: 7 },
         orderBy: { effectiveFrom: 'desc' },
-        select: { hourlyRate: true },
+        select: { hourlyRate: true, effectiveFrom: true },
+      });
+    });
+
+    /**
+     * ⭐ Pending is relative to the **cycle being priced**, not to now. An admin
+     * paging back to a cycle that predates a raise must be told the rate changed
+     * after it; viewing the cycle the raise already applies to must report
+     * nothing pending, or the page would promise a change that has happened.
+     */
+    it('findEmployeeRateAt reports nothing pending once the cycle carries the new rate', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
+      userRate.findMany.mockResolvedValue([
+        { hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
+        { hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+      ]);
+
+      // Priced *at* the cycle the raise starts in — so 3200 is in force, and
+      // there is nothing further ahead.
+      await expect(
+        service.findEmployeeRateAt(7, NEXT_CYCLE_START),
+      ).resolves.toEqual({
+        id: 7,
+        name: 'Jane Employee',
+        hourlyRate: 3200,
+        pending: null,
       });
     });
 
@@ -736,13 +847,14 @@ describe('UsersService', () => {
     it('findEmployeeRateAt reports a null rate when none is in force yet', async () => {
       const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
-      userRate.findFirst.mockResolvedValue(null);
+      userRate.findMany.mockResolvedValue([]);
 
       await expect(service.findEmployeeRateAt(7, CYCLE_START)).resolves.toEqual(
         {
           id: 7,
           name: 'Jane Employee',
           hourlyRate: null,
+          pending: null,
         },
       );
     });

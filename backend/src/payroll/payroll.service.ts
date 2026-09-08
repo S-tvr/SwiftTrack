@@ -93,6 +93,13 @@ export class PayrollService {
       userId: employee.id,
       name: employee.name,
       hourlyRate,
+      // Carried straight through from the reader, which found it in the same
+      // query as the rate above. What it explains: `hourlyRate` prices *this*
+      // cycle, so after a raise it is deliberately not the number the Team page
+      // shows — and an unexplained difference reads as an underpayment.
+      pendingRate: employee.pending?.hourlyRate ?? null,
+      pendingRateEffectiveFrom:
+        employee.pending?.effectiveFrom.toISOString() ?? null,
       totalHours: centiToNumber(summary.totalCentiHours),
       totalPay: summary.totalPay,
       hasOpenShift: openShiftCount > 0,

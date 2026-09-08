@@ -179,6 +179,92 @@ describe('/users', () => {
     expect(after.hourlyRate).toBeNull();
   });
 
+  /**
+   * ⭐ A raise applies from the next cycle, so between entering it and that
+   * cycle opening the Team list would otherwise show a rate no current payslip
+   * uses. These two fields are what let the row say so.
+   */
+  describe('a queued rate change is reported back', () => {
+    it('appears on the employee it was entered for, and nowhere else', async () => {
+      const raised = await createActivatedEmployee(server, adminToken, {
+        hourlyRate: 2450,
+      });
+      const untouched = await createActivatedEmployee(server, adminToken, {
+        hourlyRate: 2600,
+      });
+
+      const updated = await request(server)
+        .put(`/users/${raised.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ hourlyRate: 3200 })
+        .expect(200);
+
+      // The write itself reports it — the client needs no follow-up read.
+      expect((updated.body as UserBody).hourlyRate).toBe(3200);
+      expect((updated.body as UserBody).pendingRate).toBe(3200);
+      expect(
+        (updated.body as UserBody).pendingRateEffectiveFrom,
+      ).not.toBeNull();
+
+      const list = await request(server)
+        .get('/users')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const rows = list.body as UserBody[];
+
+      expect(rows.find((row) => row.id === raised.id)?.pendingRate).toBe(3200);
+      // Everyone else stays clean — the batch lookup must not smear one
+      // person's queued rate across the team.
+      expect(
+        rows.find((row) => row.id === untouched.id)?.pendingRate,
+      ).toBeNull();
+      expect(
+        rows.find((row) => row.id === untouched.id)?.pendingRateEffectiveFrom,
+      ).toBeNull();
+    });
+
+    /**
+     * ⚠️ The no-rate-change branch returns early, but "this request changed no
+     * rate" is not "nothing is queued". A rename must not wipe the pending line
+     * off the row it just re-rendered.
+     */
+    it('survives an edit that changed no rate', async () => {
+      const employee = await createActivatedEmployee(server, adminToken, {
+        hourlyRate: 2450,
+      });
+      await request(server)
+        .put(`/users/${employee.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ hourlyRate: 3200 })
+        .expect(200);
+
+      const renamed = await request(server)
+        .put(`/users/${employee.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ name: 'Renamed Only' })
+        .expect(200);
+
+      expect((renamed.body as UserBody).name).toBe('Renamed Only');
+      expect((renamed.body as UserBody).pendingRate).toBe(3200);
+    });
+
+    it('is absent for a freshly created employee', async () => {
+      const created = await createActivatedEmployee(server, adminToken, {
+        hourlyRate: 2450,
+      });
+
+      const list = await request(server)
+        .get('/users')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+      const row = (list.body as UserBody[]).find((r) => r.id === created.id);
+
+      // Their only rate row is the epoch one, which is never in the future.
+      expect(row?.pendingRate).toBeNull();
+      expect(row?.pendingRateEffectiveFrom).toBeNull();
+    });
+  });
+
   it('DELETE is a soft delete — the row survives with isActive false', async () => {
     const employee = await createActivatedEmployee(server, adminToken);
 

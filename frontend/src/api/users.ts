@@ -71,6 +71,22 @@ export interface UserResponse {
   setupCode: string | null
   /** When the code above stops working. Set and cleared together with it. */
   setupCodeExpiresAt: string | null
+  /**
+   * A rate change already entered but not yet in effect, or `null` when nothing
+   * is queued.
+   *
+   * ⚠️ `hourlyRate` above is what this employee is paid **now**, while payroll
+   * prices each cycle at the rate in force when that cycle started. Between
+   * entering a raise and the next cycle opening, the two are deliberately
+   * different — and without showing this, the Team list displays a number no
+   * current payslip uses, which reads as a failed save.
+   *
+   * Set and cleared together with `pendingRateEffectiveFrom`, the way
+   * `setupCode` and its expiry are.
+   */
+  pendingRate: number | null
+  /** When `pendingRate` starts applying — always a cycle start. */
+  pendingRateEffectiveFrom: string | null
 }
 
 /** What `POST /users` accepts. `hourlyRate` is `@IsInt() @Min(1)` on the DTO. */

@@ -2259,3 +2259,60 @@ Date: 2026-09-05
 3. Τα υπόλοιπα του Step 14 (`npm audit`, μέγεθος image) αμετάβλητα.
 
 **Next step**: **13b (Frontend E2E, Playwright)**.
+
+---
+
+## Step 15a — Η εκκρεμής αύξηση να φαίνεται
+Status: ✅ Done
+Date: 2026-09-08
+
+**Συνέχεια του Step 15, από `/review`.** Το `UserRate` έλυσε το bug αλλά άνοιξε **παράθυρο εκκρεμότητας**: από τη στιγμή της αύξησης μέχρι να ξεκινήσει ο επόμενος κύκλος — έως έναν μήνα — η λίστα Team έδειχνε τη νέα τιμή ενώ η μισθοδοσία πλήρωνε την παλιά, χωρίς τίποτα να το εξηγεί. Ο υπάλληλος έβλεπε 3.200 στο προφίλ και πληρωνόταν 2.450: το διαβάζει ως **υποπληρωμή**.
+
+Η μόνη εξήγηση ήταν το `NOTICES.rateEffectiveNextCycle`, κείμενο **πριν** την εγγραφή μέσα στο dialog — χανόταν μόλις έκλεινε, και ο υπάλληλος δεν το έβλεπε ποτέ.
+
+### Files added/changed
+- **Backend**: `users.service.ts` (2 νέοι private readers, διεύρυνση `toResponseDto`, 8 call sites), `users/dto/user-response.dto.ts`, `payroll.service.ts`, `payroll/dto/payroll-response.dto.ts`, `users.controller.ts` (Swagger)
+- **Frontend**: `api/users.ts`, `api/payroll.ts`, `components/team/EmployeeList.tsx`, `pages/PayrollPage.tsx`, `lib/messages.ts` (3 νέα strings)
+- **Tests**: `users.service.spec.ts`, `payroll.service.spec.ts`, `test/helpers/types.ts`, `users.e2e-spec.ts`, `payroll.e2e-spec.ts`, `TeamPage.spec.tsx`, `PayrollPage.spec.tsx`, + 3 fixture factories
+- **Context**: spec §4 (5g), §6, §8, §13 (gap 7 στενεύει, νέο gap 8), `architecture.md`, `README.md`
+
+### Οι αποφάσεις
+1. **Και στα δύο σημεία** (Team + μισθοδοσία). ⚠️ Απαιτεί πεδία **και στα δύο DTO**: η σελίδα μισθοδοσίας κάνει **μία μόνο κλήση** και δεν βλέπει καθόλου το `/users`.
+2. **`UserProfileDto` αμετάβλητο** — μηδέν κόστος σε login/`/users/me`. Ο υπάλληλος καλύπτεται στη σελίδα μισθοδοσίας, εκεί που κοιτάει τα λεφτά του.
+3. **Θέμα 4 (μετακίνηση ορίου κύκλου): μόνο καταγραφή** (§13 gap 8) — το `cycleStartDay` ρυθμίζεται μία φορά στο στήσιμο.
+
+### ⭐ Το σημείο που καθόρισε τον σχεδιασμό
+Τα `toResponseDto`/`toProfileDto` είναι **καθαροί σύγχρονοι mappers** με **8 call sites**, ένα εκ των οποίων (`findAllEmployees`) κάνει map σε όλη την ομάδα. Να γίνουν async θα ήταν **N+1 by construction**.
+
+Λύση: **διεύρυνση υπογραφής** — `toResponseDto(user, pending?)`. Τα single-row writes το δίνουν φθηνά· το `findAllEmployees` παίρνει ένα batched query (`findPendingRates`, fold σε `Map` — ίδιο σχήμα με το `findAllEmployeeRatesAt`).
+
+Στο payroll ήταν **δωρεάν**: το `findEmployeeRateAt` ήδη έκανε query στο `UserRate`, οπότε άλλαξε από δύο `findFirst` σε **ένα `findMany`** που δίνει και τα δύο μισά. Κανένα επιπλέον round trip.
+
+### Δύο σημασιολογίες, σκόπιμα διαφορετικές
+- **Team** (`GET /users`): pending ως προς **τώρα** — η λίστα δεν έχει κύκλο.
+- **Payroll** (`GET /payroll`): pending ως προς **τον κύκλο που βλέπεις** — ώστε ◀ σε παλιό κύκλο να αναφέρει σωστά αλλαγή που έχει ήδη συμβεί, και ο κύκλος ισχύος να μη λέει τίποτα.
+
+Γραμμένο ρητά σε σχόλια και DTO descriptions, αλλιώς μοιάζει με ασυνέπεια.
+
+### ⚠️ Λεπτομέρειες που θα ξέφευγαν
+- **Early return στο `updateEmployee`**: «αυτό το request δεν άλλαξε τιμή» ≠ «δεν εκκρεμεί τίποτα». Μια μετονομασία δεν επιτρέπεται να σβήσει τη γραμμή από το row που μόλις ξαναρέντραρε. Καλύπτεται από unit **και** e2e test.
+- **`createEmployee` δεν χρειάζεται lookup** — η μόνη του γραμμή είναι στο epoch, ποτέ στο μέλλον.
+- **Το `updateEmployee` δεν ξαναδιαβάζει** τη γραμμή που μόλις έγραψε: είναι εξ ορισμού η pending.
+- **Το byte-identical e2e του Step 15 έσπασε — σωστά.** Συγκρίνει ολόκληρο το σώμα, και τώρα το σώμα *πρέπει* να αλλάξει. Διορθώθηκε εξαιρώντας **μόνο** τα δύο `pending*` πεδία, ώστε ο έλεγχος «καμία χρηματική τιμή δεν κουνιέται» να παραμείνει άθικτος.
+
+### Verification που εκτελέστηκε
+- **Backend unit**: **241/241** (από 234).
+- **Backend e2e**: **127/127** (από 121).
+- **Frontend**: **235/235** σε 17 αρχεία (από 230).
+- ⭐ **Spike**: ο pending reader επέστρεψε σκόπιμα `null` → **2 e2e κοκκίνισαν** (`Expected: 3000, Received: null`).
+- `tsc -b` και lint καθαρά και στα δύο.
+
+⚠️ **Το δέκατο τρίτο σφάλμα μέτρησης, ίδιο μοτίβο.** Πρώτο frontend run: `2 failed | 14 passed` με `vitest-pool` worker timeout σε 199s. Καθαρό run: **17/17 σε 128s**. Το `SettingsPage.spec.tsx` δεν πρόλαβε να ξεκινήσει worker. **Ποτέ παράλληλα με άλλο βαρύ run.**
+
+⚠️ **Ένα πραγματικό λάθος δικό μου, που το έπιασαν τα tests:** υπέθεσα ότι το `formatDate` δίνει «25 Sep 2026». Το `en-GB` δίνει **«25 Sept 2026»** (τέσσερα γράμματα). Τρία tests κοκκίνισαν — ο κώδικας ήταν σωστός, τα tests λάθος. Απόδειξη ότι δεν αρκεί να υποθέτεις τη μορφή.
+
+### ⚠️ Open
+1. **13b (Playwright)** — παραμένει το τελευταίο ανοιχτό του build plan.
+2. **§13 gap 8** (μετακίνηση ορίου ολισθαίνει εκκρεμή αύξηση) — καταγεγραμμένο, όχι διορθωμένο, με το σκεπτικό της απόφασης.
+
+**Next step**: **13b (Frontend E2E, Playwright)**.

@@ -52,6 +52,8 @@ function payroll(overrides: Partial<PayrollResponse> = {}): PayrollResponse {
     userId: 4,
     name: "Anna Jónsdóttir",
     hourlyRate: 2450,
+    pendingRate: null,
+    pendingRateEffectiveFrom: null,
     totalHours: 42.62,
     totalPay: 129060,
     hasOpenShift: false,

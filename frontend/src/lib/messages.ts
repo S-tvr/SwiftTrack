@@ -496,6 +496,36 @@ export const NOTICES = {
     "A new rate applies from the next pay cycle. Past and current cycles keep the rate they were already paid at.",
 
   /**
+   * The retrospective half of `rateEffectiveNextCycle` above. That line is a
+   * promise made *while typing* and disappears with the dialog; this one is the
+   * standing fact, on the row itself, for as long as the raise is queued.
+   *
+   * Both halves are needed: without the first, an admin does not know what
+   * pressing Save will do· without this one, they close the dialog and the Team
+   * list shows a rate no current payslip uses, with nothing to say why.
+   *
+   * `rate` and `from` arrive already formatted, per the rule stated on
+   * `cycleEndDerived`: the template holds the sentence, the door holds the
+   * number.
+   */
+  pendingRateOnRow: (rate: string, from: string) => `→ ${rate} from ${from}`,
+
+  /**
+   * The same fact on the payroll page, where it matters most — this is the
+   * screen an employee checks their money on, and the one place the difference
+   * between "what I am paid now" and "what this cycle was priced at" is visible
+   * as an amount. Without it, a raise entered mid-cycle makes a payslip look
+   * like an underpayment.
+   *
+   * Split by role for the same reason `openShiftOwn`/`openShiftOther` are: the
+   * admin is reading about somebody else.
+   */
+  pendingRateOwn: (rate: string, from: string) =>
+    `Your rate changes to ${rate} from ${from}. This cycle is paid at the rate that applied when it started.`,
+  pendingRateOther: (rate: string, from: string) =>
+    `Their rate changes to ${rate} from ${from}. This cycle is paid at the rate that applied when it started.`,
+
+  /**
    * The confirmation, shown on submit. The static line above explains the
    * setting; this one arrives at the moment the change is actually made, and
    * spells out both halves — what moves, and what does not.

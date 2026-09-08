@@ -38,7 +38,63 @@ export class UsersService {
       where: { role: 'EMPLOYEE' },
       orderBy: { name: 'asc' },
     });
-    return users.map((user) => this.toResponseDto(user));
+    // Two queries for the whole team, never one per person — the same shape as
+    // `findAllEmployeeRatesAt`. Without the batch, rendering the Team list would
+    // issue one rate lookup per row.
+    const pending = await this.findPendingRates(users.map((user) => user.id));
+    return users.map((user) =>
+      this.toResponseDto(user, pending.get(user.id) ?? null),
+    );
+  }
+
+  /**
+   * The rate each of these employees is about to move to, keyed by id — the
+   * rows whose `effectiveFrom` has not arrived yet. Absent from the map means
+   * nothing is queued, which is the ordinary case.
+   *
+   * ⚠️ Pending **relative to now**, not to a cycle. The Team list is not a
+   * cycle-aware screen, so "upcoming" can only mean "not yet in effect". The
+   * payroll page asks the same question against the cycle it is showing
+   * (`findEmployeeRateAt`), and the two answers legitimately differ while an
+   * admin is paging through old cycles.
+   *
+   * `updateEmployee` upserts on a single instant, so there is at most one
+   * future row per employee and `Map` needs no conflict rule. Ascending order
+   * makes that explicit anyway: were a second one ever to exist, the earliest
+   * would win, which is the one that lands next.
+   */
+  private async findPendingRates(
+    userIds: number[],
+  ): Promise<Map<number, { hourlyRate: number; effectiveFrom: Date }>> {
+    const pending = new Map<
+      number,
+      { hourlyRate: number; effectiveFrom: Date }
+    >();
+    if (userIds.length === 0) return pending;
+
+    const rows = await this.prisma.userRate.findMany({
+      where: { userId: { in: userIds }, effectiveFrom: { gt: new Date() } },
+      orderBy: { effectiveFrom: 'desc' },
+      select: { userId: true, hourlyRate: true, effectiveFrom: true },
+    });
+    for (const row of rows) {
+      pending.set(row.userId, {
+        hourlyRate: row.hourlyRate,
+        effectiveFrom: row.effectiveFrom,
+      });
+    }
+    return pending;
+  }
+
+  /** The single-employee counterpart, for the six write paths. */
+  private async findPendingRate(
+    userId: number,
+  ): Promise<{ hourlyRate: number; effectiveFrom: Date } | null> {
+    return this.prisma.userRate.findFirst({
+      where: { userId, effectiveFrom: { gt: new Date() } },
+      orderBy: { effectiveFrom: 'asc' },
+      select: { hourlyRate: true, effectiveFrom: true },
+    });
   }
 
   async findMe(userId: number): Promise<UserProfileDto> {
@@ -154,24 +210,52 @@ export class UsersService {
    *
    * A `null` `hourlyRate` (an employee with no rate row in force) is left for
    * the caller to reject loudly, exactly as before.
+   *
+   * `pending` is the next rate **after** `at`, or null. It costs no extra round
+   * trip: both rows come from one `findMany` around the instant. The payroll
+   * page needs it because a raise leaves the cycle being viewed untouched, and
+   * an unexplained gap between the rate shown here and the one on the Team list
+   * reads as an underpayment (see `NOTICES.pendingRate` on the client).
+   *
+   * ⚠️ Pending is relative to **`at`**, not to now — so an admin paging back to
+   * an old cycle is correctly told the rate changed after it, and a cycle that
+   * already carries the new rate reports nothing pending.
    */
   async findEmployeeRateAt(
     id: number,
     at: Date,
-  ): Promise<{ id: number; name: string; hourlyRate: number | null } | null> {
+  ): Promise<{
+    id: number;
+    name: string;
+    hourlyRate: number | null;
+    pending: { hourlyRate: number; effectiveFrom: Date } | null;
+  } | null> {
     const employee = await this.prisma.user.findFirst({
       where: { id, role: Role.EMPLOYEE },
       select: { id: true, name: true },
     });
     if (!employee) return null;
 
-    const rate = await this.prisma.userRate.findFirst({
-      where: { userId: id, effectiveFrom: { lte: at } },
+    // One query for both halves. Ordered descending and sliced at the instant:
+    // everything at or before `at` is history (the first of them is the rate in
+    // force), everything after is the future (the last of them is the next one
+    // to take effect).
+    const rates = await this.prisma.userRate.findMany({
+      where: { userId: id },
       orderBy: { effectiveFrom: 'desc' },
-      select: { hourlyRate: true },
+      select: { hourlyRate: true, effectiveFrom: true },
     });
 
-    return { ...employee, hourlyRate: rate?.hourlyRate ?? null };
+    const inForce = rates.find((rate) => rate.effectiveFrom <= at) ?? null;
+    const upcoming = rates.filter((rate) => rate.effectiveFrom > at);
+
+    return {
+      ...employee,
+      hourlyRate: inForce?.hourlyRate ?? null,
+      // The *earliest* of the future rows — the one that lands next. `rates` is
+      // descending, so that is the last of them.
+      pending: upcoming.length > 0 ? upcoming[upcoming.length - 1] : null,
+    };
   }
 
   /**
@@ -258,6 +342,8 @@ export class UsersService {
           },
         },
       });
+      // No pending rate is possible here: the only row this employee has is the
+      // epoch one written above, and the epoch is never in the future.
       return this.toResponseDto(user);
     } catch (error) {
       // The check above handles the common case with a clean message, but two
@@ -319,7 +405,16 @@ export class UsersService {
       },
     });
 
-    if (!rateChanged) return this.toResponseDto(await updateUser);
+    // ⚠️ Still reports a pending rate. This branch means *this* request changed
+    // nothing about the rate — not that nothing is queued. A rename must not
+    // wipe the "→ 3,800 from 25 Sep" line off the row it just re-rendered.
+    if (!rateChanged) {
+      const [user, pending] = await Promise.all([
+        updateUser,
+        this.findPendingRate(id),
+      ]);
+      return this.toResponseDto(user, pending);
+    }
 
     const hourlyRate = dto.hourlyRate as number;
     const effectiveFrom = await this.settingsService.resolveRateEffectiveFrom();
@@ -332,17 +427,25 @@ export class UsersService {
         create: { userId: id, hourlyRate, effectiveFrom },
       }),
     ]);
-    return this.toResponseDto(user);
+    // The row just written is the pending one, by construction — no need to read
+    // it back. `effectiveFrom` is the next cycle's start, always in the future.
+    return this.toResponseDto(user, { hourlyRate, effectiveFrom });
   }
 
   async deactivate(id: number): Promise<UserResponseDto> {
     await this.findEmployeeByIdOrThrow(id);
 
-    const user = await this.prisma.user.update({
-      where: { id },
-      data: { isActive: false },
-    });
-    return this.toResponseDto(user);
+    const [user, pending] = await Promise.all([
+      this.prisma.user.update({
+        where: { id },
+        data: { isActive: false },
+      }),
+      // Deactivating does not cancel a queued raise — the row stays, and so
+      // does the line on the list. Reported for the same reason as everywhere
+      // else: this response replaces the row on screen.
+      this.findPendingRate(id),
+    ]);
+    return this.toResponseDto(user, pending);
   }
 
   /**
@@ -360,11 +463,14 @@ export class UsersService {
   async reactivate(id: number): Promise<UserResponseDto> {
     await this.findEmployeeByIdOrThrow(id);
 
-    const user = await this.prisma.user.update({
-      where: { id },
-      data: { isActive: true },
-    });
-    return this.toResponseDto(user);
+    const [user, pending] = await Promise.all([
+      this.prisma.user.update({
+        where: { id },
+        data: { isActive: true },
+      }),
+      this.findPendingRate(id),
+    ]);
+    return this.toResponseDto(user, pending);
   }
 
   /**
@@ -385,14 +491,20 @@ export class UsersService {
       );
     }
 
-    const user = await this.prisma.user.update({
-      where: { id },
-      data: {
-        setupCode: this.generateSetupCode(),
-        setupCodeExpiresAt: this.addDays(new Date(), SETUP_CODE_VALIDITY_DAYS),
-      },
-    });
-    return this.toResponseDto(user);
+    const [user, pending] = await Promise.all([
+      this.prisma.user.update({
+        where: { id },
+        data: {
+          setupCode: this.generateSetupCode(),
+          setupCodeExpiresAt: this.addDays(
+            new Date(),
+            SETUP_CODE_VALIDITY_DAYS,
+          ),
+        },
+      }),
+      this.findPendingRate(id),
+    ]);
+    return this.toResponseDto(user, pending);
   }
 
   /**
@@ -415,16 +527,22 @@ export class UsersService {
   async resetPassword(id: number): Promise<UserResponseDto> {
     await this.findEmployeeByIdOrThrow(id);
 
-    const user = await this.prisma.user.update({
-      where: { id },
-      data: {
-        password: null,
-        setupCode: this.generateSetupCode(),
-        setupCodeExpiresAt: this.addDays(new Date(), SETUP_CODE_VALIDITY_DAYS),
-        tokenVersion: { increment: 1 },
-      },
-    });
-    return this.toResponseDto(user);
+    const [user, pending] = await Promise.all([
+      this.prisma.user.update({
+        where: { id },
+        data: {
+          password: null,
+          setupCode: this.generateSetupCode(),
+          setupCodeExpiresAt: this.addDays(
+            new Date(),
+            SETUP_CODE_VALIDITY_DAYS,
+          ),
+          tokenVersion: { increment: 1 },
+        },
+      }),
+      this.findPendingRate(id),
+    ]);
+    return this.toResponseDto(user, pending);
   }
 
   async activateAccount(email: string, hashedPassword: string): Promise<User> {
@@ -536,7 +654,18 @@ export class UsersService {
     };
   }
 
-  private toResponseDto(user: User): UserResponseDto {
+  /**
+   * ⚠️ `pending` is passed in rather than looked up here, and that is the whole
+   * reason this stays a plain synchronous mapper. It lives in `UserRate`, not on
+   * the `User` row, so querying inside would make every caller pay — including
+   * `findAllEmployees`, which maps over the entire team and would turn one page
+   * into one query per employee. Callers fetch it (batched where they can) and
+   * hand it over.
+   */
+  private toResponseDto(
+    user: User,
+    pending: { hourlyRate: number; effectiveFrom: Date } | null = null,
+  ): UserResponseDto {
     return {
       id: user.id,
       name: user.name,
@@ -548,6 +677,13 @@ export class UsersService {
       setupCode: user.setupCode,
       setupCodeExpiresAt: user.setupCodeExpiresAt
         ? user.setupCodeExpiresAt.toISOString()
+        : null,
+      // Set and cleared together, like setupCode/setupCodeExpiresAt: a rate
+      // without a date says nothing useful, and a date without a rate is a
+      // promise with no content.
+      pendingRate: pending?.hourlyRate ?? null,
+      pendingRateEffectiveFrom: pending
+        ? pending.effectiveFrom.toISOString()
         : null,
     };
   }

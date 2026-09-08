@@ -29,6 +29,8 @@ function payroll(overrides: Partial<PayrollResponse> = {}): PayrollResponse {
     userId: EMPLOYEE_ID,
     name: "Anna Jónsdóttir",
     hourlyRate: 2450,
+    pendingRate: null,
+    pendingRateEffectiveFrom: null,
     totalHours: 8.25,
     totalPay: 30832,
     hasOpenShift: false,
@@ -160,6 +162,46 @@ describe("PayrollPage — explaining a gap", () => {
     await renderAt("/payroll")
 
     expect(screen.queryByText(/hasn't been clocked out/)).toBeNull()
+  })
+
+  /**
+   * ⭐ The other way this page can look wrong while being right. A raise applies
+   * from a later cycle, so the rate here is deliberately smaller than the one on
+   * the employee's profile and on the Team list — and to the person reading
+   * their own payslip, an unexplained smaller number is an underpayment.
+   */
+  it("⚠️ explains a queued rate change to the employee, about themselves", async () => {
+    vi.mocked(getMyPayroll).mockResolvedValue(
+      payroll({
+        pendingRate: 3200,
+        pendingRateEffectiveFrom: "2026-09-25T00:00:00.000Z",
+      }),
+    )
+    await renderAt("/payroll")
+
+    expect(
+      screen.queryByText(/Your rate changes to 3,200.00 from 25 Sept 2026/),
+    ).not.toBeNull()
+  })
+
+  it("⚠️ addresses the admin about someone else's queued change", async () => {
+    vi.mocked(getPayrollForUser).mockResolvedValue(
+      payroll({
+        pendingRate: 3200,
+        pendingRateEffectiveFrom: "2026-09-25T00:00:00.000Z",
+      }),
+    )
+    await renderAt(`/payroll/${EMPLOYEE_ID}`)
+
+    expect(
+      screen.queryByText(/Their rate changes to 3,200.00 from 25 Sept 2026/),
+    ).not.toBeNull()
+  })
+
+  it("stays silent when no rate change is queued", async () => {
+    await renderAt("/payroll")
+
+    expect(screen.queryByText(/rate changes to/)).toBeNull()
   })
 })
 

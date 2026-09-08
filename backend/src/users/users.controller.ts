@@ -106,7 +106,7 @@ export class UsersController {
   @ApiOperation({
     summary: "Edit an employee's name/hourlyRate (ADMIN)",
     description:
-      'Only `name` and `hourlyRate` — email, password, role and isActive each have their own channel. EMPLOYEE rows only: an ADMIN id is a 404, because an admin has no hourlyRate by design. ⚠️ A **changed** `hourlyRate` takes effect from the **start of the next pay cycle** — the cycle in progress and every past one keep the rate they were already priced at. Submitting the rate unchanged writes no history at all, and two raises inside one cycle collapse into a single one, so a typo stays correctable until that cycle begins.',
+      'Only `name` and `hourlyRate` — email, password, role and isActive each have their own channel. EMPLOYEE rows only: an ADMIN id is a 404, because an admin has no hourlyRate by design. ⚠️ A **changed** `hourlyRate` takes effect from the **start of the next pay cycle** — the cycle in progress and every past one keep the rate they were already priced at. Submitting the rate unchanged writes no history at all, and two raises inside one cycle collapse into a single one, so a typo stays correctable until that cycle begins. The queued change is reported back as `pendingRate`/`pendingRateEffectiveFrom` — including on an edit that changed no rate, since a rename must not hide a raise that is still coming.',
   })
   @ApiResponse({
     status: 200,

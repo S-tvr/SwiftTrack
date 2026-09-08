@@ -385,11 +385,26 @@ describe('/payroll', () => {
 
       await raiseTo(RATE + 550);
 
-      // The whole point: the same request, the same answer. Compared as whole
-      // bodies rather than field by field — a raise must move *nothing* here,
-      // and asserting on totalPay alone would miss a zone rate that shifted.
+      // The whole point: the same request, the same money. Compared as whole
+      // bodies rather than field by field — asserting on totalPay alone would
+      // miss a zone rate that shifted.
+      //
+      // ⚠️ The two `pending*` fields are deliberately excluded, and only those.
+      // They are the *announcement* of the raise, so of course they change —
+      // that is what tells the reader why this cycle is priced the way it is.
+      // Everything that is an amount must not move, which is what the rest of
+      // this comparison still enforces.
       const after = await payrollFor(previous);
-      expect(after).toEqual(before);
+      const strip = (body: PayrollBody) => {
+        const rest: Partial<PayrollBody> = { ...body };
+        delete rest.pendingRate;
+        delete rest.pendingRateEffectiveFrom;
+        return rest;
+      };
+
+      expect(strip(after)).toEqual(strip(before));
+      // And the announcement itself is present, naming the new rate.
+      expect(after.pendingRate).toBe(RATE + 550);
     });
 
     it('applies the new rate from the next cycle onward', async () => {
@@ -451,6 +466,45 @@ describe('/payroll', () => {
      * the second replaces the first — which is also what makes a typo
      * correctable right up until the cycle it applies to begins.
      */
+    /**
+     * ⭐ The queued raise has to be visible, or the fix above creates a second
+     * problem: for up to a month the payroll page prices the old rate while the
+     * Team list shows the new one, and to the employee reading their own payslip
+     * an unexplained smaller number is an underpayment.
+     */
+    it('reports the queued raise on the cycle it has not reached yet', async () => {
+      await raiseTo(RATE + 550);
+
+      const current = await payrollForCurrentCycle();
+      expect(current.hourlyRate).toBe(RATE);
+      expect(current.pendingRate).toBe(RATE + 550);
+      // Always a cycle start, and always the one after the current cycle.
+      expect(current.pendingRateEffectiveFrom).toBe(
+        new Date(new Date(current.cycleEnd).getTime() + 1).toISOString(),
+      );
+    });
+
+    /**
+     * Pending is relative to the **cycle being viewed**, not to today. Once the
+     * navigator reaches the cycle the raise applies to, the rate is simply in
+     * force and there is nothing left to announce.
+     */
+    it('stops announcing the raise on the cycle that carries it', async () => {
+      const current = await payrollForCurrentCycle();
+      await raiseTo(RATE + 550);
+
+      const next = await payrollFor(current.nextCycle);
+      expect(next.hourlyRate).toBe(RATE + 550);
+      expect(next.pendingRate).toBeNull();
+      expect(next.pendingRateEffectiveFrom).toBeNull();
+    });
+
+    it('announces nothing while no raise is queued', async () => {
+      const current = await payrollForCurrentCycle();
+      expect(current.pendingRate).toBeNull();
+      expect(current.pendingRateEffectiveFrom).toBeNull();
+    });
+
     it('lets a second raise in the same cycle correct the first', async () => {
       const current = await payrollForCurrentCycle();
 

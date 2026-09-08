@@ -56,6 +56,10 @@ function employee(overrides: Partial<UserResponse> = {}): UserResponse {
     hasActivated: true,
     setupCode: null,
     setupCodeExpiresAt: null,
+    // No raise queued — the ordinary row, where the rate shown is the rate
+    // every current payslip uses.
+    pendingRate: null,
+    pendingRateEffectiveFrom: null,
     ...overrides,
   }
 }
@@ -458,6 +462,36 @@ describe("TeamPage — editing an employee", () => {
    * toast because the person choosing the number has to read it *while*
    * choosing — the same call SettingsPage makes for the cycle boundary.
    */
+  /**
+   * ⭐ The retrospective half. The line inside the dialog is gone the moment it
+   * closes; this one stays on the row for as long as the raise is queued. Its
+   * absence is what made the Team list show a rate no current payslip uses,
+   * with nothing to explain the difference.
+   */
+  it("shows a queued rate change on the row, with the date it applies", async () => {
+    vi.mocked(getEmployees).mockResolvedValue([
+      employee({
+        hourlyRate: 2450,
+        pendingRate: 3200,
+        pendingRateEffectiveFrom: "2026-09-25T00:00:00.000Z",
+      }),
+    ])
+    await renderPage()
+
+    // The current rate is still the headline figure...
+    expect(within(row("Anna")).getByText("2,450.00")).toBeTruthy()
+    // ...and the queued one sits under it, dated.
+    expect(
+      within(row("Anna")).getByText("→ 3,200.00 from 25 Sept 2026"),
+    ).toBeTruthy()
+  })
+
+  it("shows nothing extra on a row with no queued change", async () => {
+    await renderPage()
+
+    expect(within(row("Anna")).queryByText(/^→/)).toBeNull()
+  })
+
   it("states when a new rate takes effect, before anything is typed", async () => {
     await openEditForm()
 

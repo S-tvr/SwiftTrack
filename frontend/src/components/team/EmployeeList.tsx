@@ -128,9 +128,26 @@ export function EmployeeList({
                     {employee.email}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {employee.hourlyRate === null
-                      ? LABELS.emptyCell
-                      : formatRate(employee.hourlyRate)}
+                    <div className="flex flex-col gap-1">
+                      <div>
+                        {employee.hourlyRate === null
+                          ? LABELS.emptyCell
+                          : formatRate(employee.hourlyRate)}
+                      </div>
+                      {/* A raise applies from the next cycle, so between
+                          entering it and that cycle opening this column shows a
+                          rate no current payslip uses. Saying so here is what
+                          stops that gap reading as a failed save. */}
+                      {employee.pendingRate !== null &&
+                        employee.pendingRateEffectiveFrom !== null && (
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            {NOTICES.pendingRateOnRow(
+                              formatRate(employee.pendingRate),
+                              formatDate(employee.pendingRateEffectiveFrom),
+                            )}
+                          </span>
+                        )}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">

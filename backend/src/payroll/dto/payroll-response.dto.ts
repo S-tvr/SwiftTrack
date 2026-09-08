@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CycleRangeDto } from '../../settings/dto/cycle-range.dto';
 import { PayZone } from '../rate-zones.util';
 
@@ -114,6 +114,22 @@ export class PayrollResponseDto extends CycleRangeDto {
       'Base ISK per hour used to price **this cycle** — the rate in force at the cycle start, always a whole number. Not necessarily what the employee is paid today: a later raise applies from the cycle after it was entered and does not change this figure. Every `zones[].rate` is this number times the zone factor.',
   })
   hourlyRate!: number;
+
+  @ApiPropertyOptional({
+    example: 3800,
+    nullable: true,
+    description:
+      'The next rate this employee moves to **after** the cycle above, or null when nothing changes after it. Exists so the page can explain why `hourlyRate` here differs from the figure on the Team list — without it, an employee sees one number on their profile and a smaller one on their payslip, which reads as an underpayment. ⚠️ Relative to **this cycle**, not to now: paging back to an older cycle correctly reports the change that came after it, and a cycle that already carries the new rate reports nothing.',
+  })
+  pendingRate!: number | null;
+
+  @ApiPropertyOptional({
+    example: '2026-09-25T00:00:00.000Z',
+    nullable: true,
+    description:
+      'When the rate above starts applying — always the start of a pay cycle. Set and cleared together with `pendingRate`.',
+  })
+  pendingRateEffectiveFrom!: string | null;
 
   @ApiProperty({
     example: 42.62,

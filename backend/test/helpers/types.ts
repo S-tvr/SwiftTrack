@@ -29,6 +29,8 @@ export interface UserBody {
   hasActivated: boolean;
   setupCode: string | null;
   setupCodeExpiresAt: string | null;
+  pendingRate: number | null;
+  pendingRateEffectiveFrom: string | null;
 }
 
 export interface TimeEntryBody {
@@ -84,6 +86,8 @@ export interface PayrollBody {
   userId: number;
   name: string;
   hourlyRate: number;
+  pendingRate: number | null;
+  pendingRateEffectiveFrom: string | null;
   totalHours: number;
   totalPay: number;
   hasOpenShift: boolean;

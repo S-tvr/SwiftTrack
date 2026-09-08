@@ -22,7 +22,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 
 **Admin**
 
-- Team management — create an employee, set their hourly rate, deactivate and reactivate. A changed rate applies from the next pay cycle
+- Team management — create an employee, set their hourly rate, deactivate and reactivate. A changed rate applies from the next pay cycle, and the queued change is shown on the row until it does
 - Onboarding by 4-digit setup code: the employee activates the account and chooses their own password
 - Reset a forgotten password: the account goes back through activation with a fresh code, and every device it was signed in on is signed out
 - Payroll overview for a cycle — hours, pay and total cost across the team, with a warning for anyone still clocked in
@@ -180,7 +180,7 @@ cd backend && npm run seed:demo
 
 ## Testing
 
-**Backend** — 218 unit tests and 117 full-stack tests against a real database:
+**Backend** — 241 unit tests and 127 full-stack tests against a real database:
 
 ```bash
 cd backend
@@ -196,7 +196,7 @@ npm run test:e2e
 
 `swifttrack_test` is created automatically the first time the `db` container initialises. The suite refuses to run against any database whose name does not end in `_test`, because it truncates tables between tests.
 
-**Frontend** — 228 component and unit tests:
+**Frontend** — 235 component and unit tests:
 
 ```bash
 cd frontend
@@ -242,10 +242,11 @@ Swagger UI is at **http://localhost:3000/api** with every endpoint, DTO and erro
     ├── nginx.conf           static serving with SPA history fallback
     └── src/
         ├── api/             the only place that calls fetch
-        ├── components/      pages and UI, shadcn/ui in components/ui
+        ├── pages/           one per route, composition only
+        ├── components/      UI, shadcn/ui in components/ui
         ├── context/         auth state
         ├── hooks/           data fetching
-        └── lib/             user-facing copy, formatting, cycle helpers
+        └── lib/             user-facing copy, formatting, date and number helpers
 ```
 
 ---
