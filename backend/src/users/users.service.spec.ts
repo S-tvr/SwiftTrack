@@ -769,7 +769,7 @@ describe('UsersService', () => {
       user.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.findEmployeeRateAt(1, CYCLE_START),
+        service.findEmployeeRateAt(1, CYCLE_START, NEXT_CYCLE_START),
       ).resolves.toBeNull();
       expect(user.findFirst).toHaveBeenCalledWith({
         where: { id: 1, role: Role.EMPLOYEE },
@@ -796,14 +796,14 @@ describe('UsersService', () => {
         { hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
       ]);
 
-      await expect(service.findEmployeeRateAt(7, CYCLE_START)).resolves.toEqual(
-        {
-          id: 7,
-          name: 'Jane Employee',
-          hourlyRate: 2450,
-          pending: { hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
-        },
-      );
+      await expect(
+        service.findEmployeeRateAt(7, CYCLE_START, NEXT_CYCLE_START),
+      ).resolves.toEqual({
+        id: 7,
+        name: 'Jane Employee',
+        hourlyRate: 2450,
+        pending: { hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
+      });
       // One query for both halves — the split happens in memory.
       expect(userRate.findMany).toHaveBeenCalledTimes(1);
       expect(userRate.findMany).toHaveBeenCalledWith({
@@ -828,13 +828,45 @@ describe('UsersService', () => {
       ]);
 
       // Priced *at* the cycle the raise starts in — so 3200 is in force, and
-      // there is nothing further ahead.
+      // there is nothing further ahead. `until` is that cycle's own end, one
+      // cycle past the raise.
       await expect(
-        service.findEmployeeRateAt(7, NEXT_CYCLE_START),
+        service.findEmployeeRateAt(
+          7,
+          NEXT_CYCLE_START,
+          new Date('2026-09-25T00:00:00.000Z'),
+        ),
       ).resolves.toEqual({
         id: 7,
         name: 'Jane Employee',
         hourlyRate: 3200,
+        pending: null,
+      });
+    });
+
+    /**
+     * ⭐ The regression this signature exists to prevent. A raise landing *two*
+     * cycles ahead is not news about this one: the notice reads "their rate
+     * changes to X from Y", in the future tense, and on a closed cycle that was
+     * already paid it announces a raise the viewer has nothing to do with. The
+     * old filter was `effectiveFrom > at`, which reported every future row, so
+     * three consecutive cycles carried the identical line.
+     */
+    it('findEmployeeRateAt ignores a raise that lands beyond the next cycle', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
+      // The raise starts 2026-09-25 — a full cycle after this one closes.
+      userRate.findMany.mockResolvedValue([
+        { hourlyRate: 3200, effectiveFrom: new Date('2026-09-25T00:00:00.000Z') },
+        { hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+      ]);
+
+      await expect(
+        service.findEmployeeRateAt(7, CYCLE_START, NEXT_CYCLE_START),
+      ).resolves.toEqual({
+        id: 7,
+        name: 'Jane Employee',
+        hourlyRate: 2450,
         pending: null,
       });
     });
@@ -849,14 +881,14 @@ describe('UsersService', () => {
       user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
       userRate.findMany.mockResolvedValue([]);
 
-      await expect(service.findEmployeeRateAt(7, CYCLE_START)).resolves.toEqual(
-        {
-          id: 7,
-          name: 'Jane Employee',
-          hourlyRate: null,
-          pending: null,
-        },
-      );
+      await expect(
+        service.findEmployeeRateAt(7, CYCLE_START, NEXT_CYCLE_START),
+      ).resolves.toEqual({
+        id: 7,
+        name: 'Jane Employee',
+        hourlyRate: null,
+        pending: null,
+      });
     });
 
     /**

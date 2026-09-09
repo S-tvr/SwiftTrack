@@ -61,6 +61,13 @@ interface DemoPerson {
    */
   boundaryShifts?: boolean;
   openShift?: boolean;
+  /**
+   * Gives this person a rate *history* instead of the single epoch row everyone
+   * else gets. Without it no demo employee exercises Step 15 at all: every cycle
+   * prices identically, so nothing on screen distinguishes "priced at the rate
+   * in force then" from "priced at today's rate".
+   */
+  raise?: boolean;
 }
 
 // Mon=1 … Sun=0, matching Date#getUTCDay().
@@ -105,7 +112,43 @@ const PEOPLE: DemoPerson[] = [
     })),
     openShift: true,
   },
+  {
+    // Has a rate history: see RAISE_RATES below for the rows and what each one
+    // demonstrates. `hourlyRate` here is the rate in force *now*, not
+    // the starting one — it is the denormalised head of that history, and the
+    // head is required to agree with the newest non-future row (schema.prisma).
+    //
+    // Plain weekday hours, entirely in the DAY zone, on purpose: the point of
+    // this person is that their rate moves, and a pattern spread across four
+    // zones would make the pay figures harder to read against the rate change.
+    name: 'Ragnar Vilhjálmsson',
+    email: 'ragnar@demo.local',
+    hourlyRate: 2700,
+    pattern: [1, 2, 4, 5].map((weekday) => ({
+      weekday,
+      startHour: 9,
+      lengthHours: 7,
+    })),
+    raise: true,
+  },
 ];
+
+/**
+ * The rate history for the `raise` person, oldest first. Only the amounts are
+ * fixed here; the instants are derived from the cycle boundaries at seed time,
+ * because a hardcoded date would rot the moment `cycleStartDay` changed — the
+ * same reasoning the boundary shifts below already follow.
+ *
+ * One raise, in force from the middle cycle: the oldest cycle is still priced
+ * at the old rate and announces the change, and both later cycles carry the new
+ * one and say nothing. That contrast is the whole of Step 15 in three clicks.
+ */
+const RAISE_RATES = {
+  /** Before the raise. Prices the oldest seeded cycle. */
+  initial: 2400,
+  /** Granted during the oldest cycle, in force from the middle one onward. */
+  raised: 2700,
+};
 
 /** Worked this cycle, then left — must still appear on the overview and be paid. */
 const LEAVER: DemoPerson = {
@@ -270,8 +313,24 @@ async function main(): Promise<void> {
         // an employee seeded without one 500s on their own payroll page. At the
         // epoch for the same reason POST /users uses it: these demo people have
         // shifts in cycles going back months.
+        //
+        // The `raise` person gets a second row. Each `effectiveFrom` is a
+        // cycle-start instant, never a mid-cycle one: schema.prisma documents
+        // that as an invariant of the column, and a mid-cycle value would seed a
+        // state the API cannot produce.
         rates: {
-          create: { hourlyRate: person.hourlyRate, effectiveFrom: RATE_EPOCH },
+          create: person.raise
+            ? [
+                { hourlyRate: RAISE_RATES.initial, effectiveFrom: RATE_EPOCH },
+                {
+                  // In force from the middle cycle, granted while the oldest one
+                  // was running: the oldest keeps the old price and announces
+                  // the change, the two after it carry the new one silently.
+                  hourlyRate: RAISE_RATES.raised,
+                  effectiveFrom: cycles[1].start,
+                },
+              ]
+            : [{ hourlyRate: person.hourlyRate, effectiveFrom: RATE_EPOCH }],
         },
       },
     });
@@ -354,7 +413,13 @@ async function main(): Promise<void> {
       DEMO_PASSWORD +
       ')',
   );
-  for (const person of PEOPLE) console.log(`  ${person.email}`);
+  for (const person of PEOPLE) {
+    console.log(
+      person.raise
+        ? `  ${person.email}  (raised ${RAISE_RATES.initial} → ${RAISE_RATES.raised} from ${cycles[1].start.toISOString().slice(0, 10)})`
+        : `  ${person.email}`,
+    );
+  }
   console.log(
     `  ${LEAVER.email}  (deactivated — cannot log in, appears in payroll)`,
   );

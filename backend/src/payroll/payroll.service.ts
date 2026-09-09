@@ -66,6 +66,7 @@ export class PayrollService {
     const employee = await this.usersService.findEmployeeRateAt(
       userId,
       range.start,
+      range.endExclusive,
     );
     if (!employee) {
       throw notFound(

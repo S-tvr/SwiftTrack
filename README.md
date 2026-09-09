@@ -86,12 +86,13 @@ The first run builds both images, applies the migrations, creates the admin acco
 | Employee | `anna@demo.local` | `demo1234` | |
 | Employee | `bjorn@demo.local` | `demo1234` | |
 | Employee | `elin@demo.local` | `demo1234` | Part-time, and currently clocked in |
+| Employee | `ragnar@demo.local` | `demo1234` | Had a raise — page ◀ on his payroll to see the older cycle still priced at the old rate |
 | Employee | `kristjan@demo.local` | — | Deactivated — cannot log in, still appears in payroll |
 | Employee | `sigridur@demo.local` | — | Pending — activate it with the setup code printed in the backend logs |
 
 The demo roster covers every state the UI has to render, including the two accounts that cannot log in. To watch the activation flow, find the setup code in the startup logs (`docker compose logs backend | grep "setup code"`) and use **Activate your account** on the login page.
 
-The roster also shows why the row actions differ: **Reset password** appears only on the three accounts that have one, while Sigríður offers **New code** instead and Kristján offers **Reactivate** — a code issued to a deactivated account cannot work until they are active again. Resetting Anna's password turns her row into a pending one, code and all, which is the same state Sigríður is already in.
+The roster also shows why the row actions differ: **Reset password** appears only on the four accounts that have one, while Sigríður offers **New code** instead and Kristján offers **Reactivate** — a code issued to a deactivated account cannot work until they are active again. Resetting Anna's password turns her row into a pending one, code and all, which is the same state Sigríður is already in.
 
 To start with an empty roster instead — just the admin, no demo employees — put `SEED_DEMO=false` in a root `.env` (copy `.env.example`), or set it inline:
 

@@ -211,19 +211,29 @@ export class UsersService {
    * A `null` `hourlyRate` (an employee with no rate row in force) is left for
    * the caller to reject loudly, exactly as before.
    *
-   * `pending` is the next rate **after** `at`, or null. It costs no extra round
-   * trip: both rows come from one `findMany` around the instant. The payroll
-   * page needs it because a raise leaves the cycle being viewed untouched, and
-   * an unexplained gap between the rate shown here and the one on the Team list
-   * reads as an underpayment (see `NOTICES.pendingRate` on the client).
+   * `pending` is the rate that takes effect the instant this cycle ends — the
+   * raise the viewer has *not yet* been paid at — or null. It costs no extra
+   * round trip: both rows come from one `findMany`. The payroll page needs it
+   * because a raise leaves the cycle being viewed untouched, and an unexplained
+   * gap between the rate shown here and the one on the Team list reads as an
+   * underpayment (see `NOTICES.pendingRate` on the client).
    *
-   * ⚠️ Pending is relative to **`at`**, not to now — so an admin paging back to
-   * an old cycle is correctly told the rate changed after it, and a cycle that
-   * already carries the new rate reports nothing pending.
+   * ⚠️ **Only a rate landing exactly at `until` counts**, not every future one.
+   * It used to be every row with `effectiveFrom > at`, which meant paging back
+   * to June announced a raise that took effect in September: three cycles in a
+   * row carried the same "changes to X from Y" line, in the future tense, on
+   * cycles that were closed and already paid. The notice exists to explain the
+   * gap between "what I am paid now" and "what this cycle was priced at" — a
+   * closed cycle two raises ago has no such gap, so it must say nothing.
+   *
+   * Relative to the **cycle**, not to now: the cycle immediately before a raise
+   * announces it whether or not it has since taken effect, and the cycle that
+   * already carries the new rate reports nothing.
    */
   async findEmployeeRateAt(
     id: number,
     at: Date,
+    until: Date,
   ): Promise<{
     id: number;
     name: string;
@@ -247,14 +257,18 @@ export class UsersService {
     });
 
     const inForce = rates.find((rate) => rate.effectiveFrom <= at) ?? null;
-    const upcoming = rates.filter((rate) => rate.effectiveFrom > at);
+    // Exactly at the boundary, not merely after it. `effectiveFrom` is always a
+    // cycle-start instant (schema.prisma) and `until` is this cycle's
+    // endExclusive — the same instant the next cycle opens — so equality is the
+    // precise question "does the rate change the moment this cycle closes?".
+    const next =
+      rates.find((rate) => rate.effectiveFrom.getTime() === until.getTime()) ??
+      null;
 
     return {
       ...employee,
       hourlyRate: inForce?.hourlyRate ?? null,
-      // The *earliest* of the future rows — the one that lands next. `rates` is
-      // descending, so that is the last of them.
-      pending: upcoming.length > 0 ? upcoming[upcoming.length - 1] : null,
+      pending: next,
     };
   }
 

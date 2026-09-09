@@ -133,15 +133,24 @@ describe('PayrollService.getPayrollForCycle', () => {
   });
 
   /**
-   * ⭐ The rate is resolved **at the cycle's start**, not "now". That single
-   * argument is what makes a raise forward-effective: ask for today's rate here
+   * ⭐ The rate is resolved **at the cycle's start**, not "now". That first
+   * instant is what makes a raise forward-effective: ask for today's rate here
    * and every past cycle silently reprices itself the moment somebody gets one.
+   *
+   * The second is the cycle's own end, and it bounds what may be *announced*:
+   * only a rate landing exactly there is pending. Passing anything wider brings
+   * back the bug where a raise two cycles ahead was announced on closed cycles
+   * that had already been paid.
    */
   it('resolves the rate as of the cycle start, never the current rate', async () => {
     const { service, findEmployeeRateAt } = makeService();
     await service.getPayrollForCycle(2, '2026-07');
 
-    expect(findEmployeeRateAt).toHaveBeenCalledWith(2, RANGE.start);
+    expect(findEmployeeRateAt).toHaveBeenCalledWith(
+      2,
+      RANGE.start,
+      RANGE.endExclusive,
+    );
   });
 
   /**
@@ -430,11 +439,18 @@ describe('PayrollService.getOverview', () => {
     const overview = await overviewService.service.getOverview('2026-07');
     const own = await ownService.service.getPayrollForCycle(2, '2026-07');
 
-    // Both readers were asked as of the same instant — the cycle's start.
+    // Both readers were asked as of the same instant — the cycle's start. The
+    // single-employee reader takes the cycle's end too, but only to decide what
+    // it may announce; the price still comes from `start`, which is why the two
+    // pages cannot disagree on the money.
     expect(overviewService.findAllEmployeeRatesAt).toHaveBeenCalledWith(
       RANGE.start,
     );
-    expect(ownService.findEmployeeRateAt).toHaveBeenCalledWith(2, RANGE.start);
+    expect(ownService.findEmployeeRateAt).toHaveBeenCalledWith(
+      2,
+      RANGE.start,
+      RANGE.endExclusive,
+    );
 
     expect(overview.rows[0].totalPay).toBe(own.totalPay);
     expect(own.hourlyRate).toBe(HOURLY_RATE);

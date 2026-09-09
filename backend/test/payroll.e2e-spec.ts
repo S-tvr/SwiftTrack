@@ -389,22 +389,19 @@ describe('/payroll', () => {
       // bodies rather than field by field — asserting on totalPay alone would
       // miss a zone rate that shifted.
       //
-      // ⚠️ The two `pending*` fields are deliberately excluded, and only those.
-      // They are the *announcement* of the raise, so of course they change —
-      // that is what tells the reader why this cycle is priced the way it is.
-      // Everything that is an amount must not move, which is what the rest of
-      // this comparison still enforces.
+      // Compared as whole bodies, `pending*` included: this cycle is two cycles
+      // behind the raise, so not even the announcement may move.
       const after = await payrollFor(previous);
-      const strip = (body: PayrollBody) => {
-        const rest: Partial<PayrollBody> = { ...body };
-        delete rest.pendingRate;
-        delete rest.pendingRateEffectiveFrom;
-        return rest;
-      };
 
-      expect(strip(after)).toEqual(strip(before));
-      // And the announcement itself is present, naming the new rate.
-      expect(after.pendingRate).toBe(RATE + 550);
+      expect(after).toEqual(before);
+      // ⭐ Silent, and that is the assertion. The raise takes effect at the start
+      // of the cycle *after* the current one — two boundaries ahead of this one,
+      // which was settled long before. A notice here would read "their rate
+      // changes to X from Y", in the future tense, on a cycle already paid; the
+      // reader has no decision to make about it. Only the cycle immediately
+      // before a raise announces it.
+      expect(after.pendingRate).toBeNull();
+      expect(after.pendingRateEffectiveFrom).toBeNull();
     });
 
     it('applies the new rate from the next cycle onward', async () => {
@@ -416,10 +413,15 @@ describe('/payroll', () => {
       // current cycle is still priced at the old rate...
       const stillCurrent = await payrollForCurrentCycle();
       expect(stillCurrent.hourlyRate).toBe(RATE);
+      // ...but does announce it, because it takes effect the moment this cycle
+      // closes. ⭐ The counterpart to the silence asserted two tests above: the
+      // notice belongs on exactly one cycle, the one immediately before.
+      expect(stillCurrent.pendingRate).toBe(RATE + 550);
 
-      // ...and the next one carries the new one.
+      // ...and the next one carries the new one, with nothing left to announce.
       const next = await payrollFor(current.nextCycle);
       expect(next.hourlyRate).toBe(RATE + 550);
+      expect(next.pendingRate).toBeNull();
     });
 
     /**
