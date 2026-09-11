@@ -23,6 +23,7 @@ describe('e2e harness (auth, guards, pipe)', () => {
   let prisma: PrismaService;
   let adminToken: string;
   let employeeToken: string;
+  let employeeId: number;
 
   const adminEmail = process.env.ADMIN_EMAIL as string;
   const adminPassword = process.env.ADMIN_PASSWORD as string;
@@ -57,6 +58,7 @@ describe('e2e harness (auth, guards, pipe)', () => {
         hourlyRate: employee.hourlyRate,
       })
       .expect(201);
+    employeeId = (created.body as UserBody).id;
 
     await request(server)
       .post('/auth/set-initial-password')
@@ -126,5 +128,29 @@ describe('e2e harness (auth, guards, pipe)', () => {
 
     const body = response.body as ErrorBody;
     expect(JSON.stringify(body.message)).toContain('password');
+  });
+
+  /**
+   * ⭐ The login response carries `UserProfileDto`, so a queued raise reported
+   * here would show an employee a larger rate on their profile than on their
+   * own payroll — the mismatch spec §5g exists to prevent. The raise is entered
+   * against a real database and takes effect next cycle; what they are paid
+   * today is unchanged.
+   */
+  it('reports the rate in force on login, not a raise that has yet to start', async () => {
+    await request(server)
+      .put(`/users/${employeeId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ hourlyRate: 3300 })
+      .expect(200);
+
+    const response = await request(server)
+      .post('/auth/login')
+      .send({ email: employee.email, password: employee.password })
+      .expect(200);
+
+    expect((response.body as LoginBody).user.hourlyRate).toBe(
+      employee.hourlyRate,
+    );
   });
 });

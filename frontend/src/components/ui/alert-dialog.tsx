@@ -52,7 +52,20 @@ function AlertDialogContent({
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(
-          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // ⚠️ Capped like `DialogContent`, and for the same reason: centred by
+          // `-translate-y-1/2`, so content taller than the viewport escapes off
+          // the top, where `position: fixed` leaves it unreachable.
+          //
+          // But the **whole popup** scrolls here, rather than a `DialogBody`
+          // slot in the middle. These dialogs are a title, a sentence, an
+          // optional error and a footer — a *variable* number of children, so
+          // the fixed `grid-rows-[minmax(0,1fr)]` that `DialogContent` relies on
+          // would be wrong. Whole-popup scrolling is the shape `dropdown-menu`
+          // and `select` already use, and it needs no chain of `min-h-0` to stay
+          // correct. The cost — the footer scrolls with the content — is one
+          // these never pay in practice: they are short by design, so the cap is
+          // a safety net rather than something they hit.
+          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}

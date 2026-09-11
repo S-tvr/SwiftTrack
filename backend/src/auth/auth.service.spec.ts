@@ -72,7 +72,7 @@ function makeUser(overrides: Partial<User> = {}): User {
 function makeService(user: User | null) {
   const findByEmail = jest.fn().mockResolvedValue(user);
   const activateAccount = jest.fn().mockResolvedValue(user);
-  const toProfileDto = jest.fn().mockReturnValue({ id: 7, name: 'Jane' });
+  const toProfileFor = jest.fn().mockResolvedValue({ id: 7, name: 'Jane' });
   const signAsync = jest.fn().mockResolvedValue('signed.jwt.token');
   const findCredentialsById = jest.fn().mockResolvedValue(
     user
@@ -93,7 +93,7 @@ function makeService(user: User | null) {
   const usersService = {
     findByEmail,
     activateAccount,
-    toProfileDto,
+    toProfileFor,
     findCredentialsById,
     updatePasswordAndRevokeTokens,
   } as unknown as UsersService;
@@ -103,7 +103,7 @@ function makeService(user: User | null) {
     service: new AuthService(usersService, jwtService),
     findByEmail,
     activateAccount,
-    toProfileDto,
+    toProfileFor,
     signAsync,
     findCredentialsById,
     updatePasswordAndRevokeTokens,
@@ -116,7 +116,7 @@ describe('AuthService', () => {
   describe('login — the order of checks', () => {
     it('issues a token and the caller’s own profile on success', async () => {
       compare.mockResolvedValue(true);
-      const { service, toProfileDto, signAsync } = makeService(makeUser());
+      const { service, toProfileFor, signAsync } = makeService(makeUser());
 
       const result = await service.login('jane@example.com', 'correct');
 
@@ -130,7 +130,7 @@ describe('AuthService', () => {
       });
       // Never UserResponseDto: that one carries setupCode, the secret that
       // unlocks an unactivated account (architecture.md § Invariants).
-      expect(toProfileDto).toHaveBeenCalled();
+      expect(toProfileFor).toHaveBeenCalled();
     });
 
     it('answers an unknown email with the generic credentials message', async () => {

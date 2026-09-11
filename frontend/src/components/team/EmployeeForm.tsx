@@ -12,6 +12,7 @@ import type {
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -102,9 +103,23 @@ function defaultValues(employee: UserResponse | undefined): EmployeeValues {
   return {
     name: employee?.name ?? "",
     email: employee?.email ?? "",
+    // ⚠️ **`pendingRate` first, and it is not a display preference — it is what
+    // stops a rename from silently cancelling a raise.**
+    //
+    // This form always submits `hourlyRate`, even when only the name was
+    // touched, and the API reads a different figure as a new rate. `hourlyRate`
+    // is what the employee is paid *now*, so seeding from it would put 2,450
+    // into a box whose employee has 3,200 queued — and a save that changed
+    // nothing but the name would overwrite the queued row back down.
+    //
+    // The two screens answer different questions, which is why they differ: the
+    // Team row says what is being paid (with the queued figure beside it), while
+    // this box says what has been *set* — and `rateEffectiveNextCycle` below
+    // says when it starts.
+    //
     // NaN rather than 0: an empty field must fail the schema, and 0 would both
     // pass as "a number" and print a misleading zero into the input.
-    hourlyRate: employee?.hourlyRate ?? Number.NaN,
+    hourlyRate: employee?.pendingRate ?? employee?.hourlyRate ?? Number.NaN,
   }
 }
 
@@ -178,7 +193,7 @@ export function EmployeeForm({
     >
       <DialogContent className="sm:max-w-md">
         <form
-          className="flex flex-col gap-4"
+          className="flex min-h-0 flex-col gap-4"
           onSubmit={(event) => void handleSubmit(submit)(event)}
           noValidate
         >
@@ -188,6 +203,9 @@ export function EmployeeForm({
             </DialogTitle>
           </DialogHeader>
 
+          {/* The fields scroll; the header and footer do not, so Save and
+              Cancel stay reachable however short the window is. */}
+          <DialogBody>
           <Field>
             <FieldLabel htmlFor="employeeName">{LABELS.name}</FieldLabel>
             <Input
@@ -248,6 +266,7 @@ export function EmployeeForm({
               {errorText(failure, "team")}
             </p>
           )}
+          </DialogBody>
 
           <DialogFooter>
             <Button

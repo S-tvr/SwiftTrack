@@ -9,6 +9,7 @@ import {
 import { TimezoneNotice } from "@/components/layout/TimezoneNotice"
 import { Button } from "@/components/ui/button"
 import { Toaster } from "@/components/ui/sonner"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { AuthProvider, useAuth } from "@/context/AuthContext"
 import { errorText, LABELS } from "@/lib/messages"
 import { ChangePasswordPage } from "@/pages/ChangePasswordPage"
@@ -104,7 +105,13 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <AppGate />
+        {/* Wraps the whole tree rather than each page: the provider is what
+            shares the open/close timing between tooltips, so moving between two
+            icon buttons shows the second immediately instead of waiting out the
+            delay again. One per app is the intended shape. */}
+        <TooltipProvider>
+          <AppGate />
+        </TooltipProvider>
         {/* Outside AppGate on purpose: that component returns early while
             bootstrapping and on a boot failure, and a toaster that unmounts
             under those states would drop any toast fired near them. Inside the

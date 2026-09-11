@@ -12,6 +12,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   Table,
   TableBody,
   TableCell,
@@ -52,6 +57,51 @@ function statusBadge(employee: UserResponse) {
     <Badge>{LABELS.badgeActive}</Badge>
   ) : (
     <Badge variant="secondary">{LABELS.badgePending}</Badge>
+  )
+}
+
+/**
+ * One of the five icon-only row actions: an icon button with the tooltip that
+ * names it.
+ *
+ * ⚠️ **`aria-label` stays on the button and is not replaced by the tooltip.** A
+ * tooltip appears on hover and on keyboard focus, but it is not the control's
+ * accessible name — a screen reader reading the row needs the label whether or
+ * not anything is hovering. The two carry the same string from `LABELS` so they
+ * cannot drift into saying different things about one button.
+ *
+ * ⚠️ The `onClick` also stops propagation. The row itself navigates to the
+ * employee's shift history, and without this every action would do its job and
+ * then leave the page.
+ */
+function RowAction({
+  label,
+  onClick,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            onClick={(event) => {
+              event.stopPropagation()
+              onClick()
+            }}
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -166,19 +216,20 @@ export function EmployeeList({
                       )}
                     </div>
                   </TableCell>
+                  {/* The cell stops propagation as well as each button, so the
+                      gaps between them are dead space rather than a stripe of
+                      the row that still navigates. */}
                   <TableCell
                     className="text-right"
                     onClick={(event) => event.stopPropagation()}
                   >
                     <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={LABELS.editEmployee}
+                      <RowAction
+                        label={LABELS.editEmployee}
                         onClick={() => onEdit(employee)}
                       >
                         <Pencil className="size-4" />
-                      </Button>
+                      </RowAction>
 
                       {/* ⚠️ Pending only — which since step 8g also covers an
                           employee whose password an admin reset, not just one
@@ -187,14 +238,12 @@ export function EmployeeList({
                           `isActive` before it ever looks at one — so re-issuing
                           here would hand over a code guaranteed to fail. */}
                       {isPending(employee) && (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={LABELS.newCode}
+                        <RowAction
+                          label={LABELS.newCode}
                           onClick={() => onNewCode(employee)}
                         >
                           <KeyRound className="size-4" />
-                        </Button>
+                        </RowAction>
                       )}
 
                       {/* ⚠️ The complement of `New code`, not a duplicate of it,
@@ -210,36 +259,30 @@ export function EmployeeList({
                           fresh code stays inert until someone reactivates them
                           — reactivating is the action that row actually needs. */}
                       {!isPending(employee) && employee.isActive && (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={LABELS.resetPassword}
+                        <RowAction
+                          label={LABELS.resetPassword}
                           onClick={() => onResetPassword(employee)}
                         >
                           <RotateCcwKey className="size-4" />
-                        </Button>
+                        </RowAction>
                       )}
 
                       {/* Replaces rather than disables: an action that is
                           guaranteed to fail should not be on screen. */}
                       {employee.isActive ? (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={LABELS.deactivate}
+                        <RowAction
+                          label={LABELS.deactivate}
                           onClick={() => onDeactivate(employee)}
                         >
                           <UserMinus className="size-4" />
-                        </Button>
+                        </RowAction>
                       ) : (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={LABELS.reactivate}
+                        <RowAction
+                          label={LABELS.reactivate}
                           onClick={() => onReactivate(employee)}
                         >
                           <UserCheck className="size-4" />
-                        </Button>
+                        </RowAction>
                       )}
                     </div>
                   </TableCell>

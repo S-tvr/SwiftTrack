@@ -37,10 +37,21 @@ function makeUser(overrides: Partial<User> = {}): User {
   };
 }
 
-/** The start of the cycle after the current one — what a raise is dated to. */
-const NEXT_CYCLE_START = new Date('2026-08-25T00:00:00.000Z');
-/** The start of a cycle being priced — what a rate is resolved *at*. */
-const CYCLE_START = new Date('2026-07-25T00:00:00.000Z');
+/**
+ * The start of the cycle after the current one — what a raise is dated to.
+ *
+ * ⚠️ **Derived from now, never a hardcoded date.** `findRatesNow` partitions a
+ * rate history against the real clock, so a fixed instant here would quietly
+ * change meaning the moment it slipped into the past: a row written as "queued"
+ * would start being read as "in force", and the tests asserting the difference
+ * would fail for a reason that has nothing to do with the code. That is exactly
+ * what the original `2026-08-25` did once this date passed.
+ */
+const CYCLE_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const NEXT_CYCLE_START = new Date(Date.now() + CYCLE_DAYS_MS);
+/** The start of a cycle being priced — what a rate is resolved *at*. One cycle
+ *  behind the above, and in the past, as a cycle being priced always is. */
+const CYCLE_START = new Date(NEXT_CYCLE_START.getTime() - CYCLE_DAYS_MS);
 /** Mirrors the constant in the service. */
 const RATE_EPOCH = new Date(0);
 
@@ -482,15 +493,18 @@ describe('UsersService', () => {
      */
     it('still reports an existing queued rate when this edit changed none', async () => {
       const { service, user, userRate } = makeService();
-      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
-      userRate.findFirst.mockResolvedValue({
-        hourlyRate: 3200,
-        effectiveFrom: NEXT_CYCLE_START,
-      });
+      // The column already holds the queued figure; the history says what is
+      // actually in force.
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 3200 }));
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+        { userId: 7, hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
+      ]);
 
       const result = await service.updateEmployee(7, { name: 'Jane Renamed' });
 
       expect(userRate.upsert).not.toHaveBeenCalled();
+      expect(result.hourlyRate).toBe(2450);
       expect(result.pendingRate).toBe(3200);
       expect(result.pendingRateEffectiveFrom).toBe(
         NEXT_CYCLE_START.toISOString(),
@@ -498,12 +512,17 @@ describe('UsersService', () => {
     });
 
     /**
-     * The row just written *is* the pending one, so it is reported without
-     * reading back what was inserted a line earlier.
+     * The row just written *is* the pending one, so it is reported from the
+     * write rather than by reading back what was inserted a line earlier. The
+     * single rate query this path does make is the **pre-read** for the in-force
+     * rate, which the write cannot supply.
      */
-    it('reports the raise it just queued, without a follow-up read', async () => {
+    it('reports the raise it just queued, without reading it back', async () => {
       const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+      ]);
 
       const result = await service.updateEmployee(7, { hourlyRate: 3200 });
 
@@ -511,7 +530,27 @@ describe('UsersService', () => {
       expect(result.pendingRateEffectiveFrom).toBe(
         NEXT_CYCLE_START.toISOString(),
       );
-      expect(userRate.findFirst).not.toHaveBeenCalled();
+      // One query, and it ran before the upsert — so the pending rate reported
+      // above cannot have come from it.
+      expect(userRate.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * ⭐ What the admin sees on the row after queueing a raise: still the rate
+     * being paid, with the new one announced beside it. Reporting 3,200 here is
+     * the bug this read path was rewritten to fix.
+     */
+    it('reports the rate still in force, not the one just entered', async () => {
+      const { service, user, userRate } = makeService();
+      user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+      ]);
+
+      const result = await service.updateEmployee(7, { hourlyRate: 3200 });
+
+      expect(result.hourlyRate).toBe(2450);
+      expect(result.pendingRate).toBe(3200);
     });
 
     it('leaves the rate history alone for a name-only edit', async () => {
@@ -536,10 +575,19 @@ describe('UsersService', () => {
     it('upserts rather than inserts, so a second raise in the same cycle replaces the first', async () => {
       const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+      ]);
 
       await service.updateEmployee(7, { hourlyRate: 2800 });
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2800 }));
-      await service.updateEmployee(7, { hourlyRate: 3000 });
+      // After the first raise the history carries the queued row too — which is
+      // what makes the head stop matching the rate in force.
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+        { userId: 7, hourlyRate: 2800, effectiveFrom: NEXT_CYCLE_START },
+      ]);
+      const second = await service.updateEmployee(7, { hourlyRate: 3000 });
 
       expect(userRate.upsert).toHaveBeenCalledTimes(2);
       const [, secondCall] = userRate.upsert.mock.calls as Array<
@@ -549,6 +597,12 @@ describe('UsersService', () => {
         userId_effectiveFrom: { userId: 7, effectiveFrom: NEXT_CYCLE_START },
       });
       expect(secondCall[0].update).toEqual({ hourlyRate: 3000 });
+      // ⭐ The trap: by now `User.hourlyRate` holds 2,800 — the first raise,
+      // which has **not** taken effect. Deriving the reported rate from that
+      // column instead of from the history would announce a raise as though it
+      // were already being paid.
+      expect(second.hourlyRate).toBe(2450);
+      expect(second.pendingRate).toBe(3000);
     });
   });
 
@@ -562,7 +616,7 @@ describe('UsersService', () => {
     it('toProfileDto carries no setupCode, isActive or hasActivated', () => {
       const { service } = makeService();
 
-      const profile = service.toProfileDto(makeUser());
+      const profile = service.toProfileDto(makeUser(), 2450);
 
       expect(profile).toEqual({
         id: 7,
@@ -573,6 +627,39 @@ describe('UsersService', () => {
       });
       expect(profile).not.toHaveProperty('setupCode');
       expect(profile).not.toHaveProperty('setupCodeExpiresAt');
+    });
+
+    /**
+     * ⭐ The profile is what `/users/me` and the **login response** carry, so a
+     * queued raise reported here would show an employee a larger rate on their
+     * profile than on their own payroll — the mismatch spec §5g exists to
+     * prevent. The column holds 3,200; what they are paid is still 2,450.
+     */
+    it('toProfileFor reports the rate in force, not the queued one', async () => {
+      const { service, userRate } = makeService();
+      userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+        { userId: 7, hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
+      ]);
+
+      const profile = await service.toProfileFor(
+        makeUser({ hourlyRate: 3200 }),
+      );
+
+      expect(profile.hourlyRate).toBe(2450);
+    });
+
+    /** An admin has no rate and never gets a `UserRate` row, so the query would
+     *  be guaranteed empty — skipping it keeps the most common login at one. */
+    it('toProfileFor issues no rate query for an admin', async () => {
+      const { service, userRate } = makeService();
+
+      const profile = await service.toProfileFor(
+        makeUser({ role: Role.ADMIN, hourlyRate: null }),
+      );
+
+      expect(profile.hourlyRate).toBeNull();
+      expect(userRate.findMany).not.toHaveBeenCalled();
     });
 
     /**
@@ -640,27 +727,45 @@ describe('UsersService', () => {
      * then every queued rate in one batch. A per-row lookup would pass every
      * other test in this file and only show up as a slow Team page.
      */
-    it('findAllEmployees fetches queued rate changes in one batch, not one per row', async () => {
+    /**
+     * ⭐ The load-bearing test of the read path: **both** halves of every row's
+     * rate — in force and queued — come out of a single query, for the whole
+     * team. Splitting them into two filtered queries would cost a round trip and
+     * let a cycle boundary fall between them, pairing a fresh rate with a stale
+     * announcement.
+     */
+    it('findAllEmployees resolves current and queued rates in one batch, not one query per row', async () => {
       const { service, user, userRate } = makeService();
       user.findMany.mockResolvedValue([
         makeUser({ id: 7, hourlyRate: 2450 }),
-        makeUser({ id: 8, hourlyRate: 2600 }),
+        // ⚠️ The column already holds the raise — the Team list must not repeat
+        // it as though it were being paid.
+        makeUser({ id: 8, hourlyRate: 3100 }),
         makeUser({ id: 9, hourlyRate: 3000 }),
       ]);
-      // Only Jane has a raise queued.
+      // Only id 8 has a raise queued; everyone carries their epoch row.
       userRate.findMany.mockResolvedValue([
+        { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
+        { userId: 8, hourlyRate: 2600, effectiveFrom: RATE_EPOCH },
         { userId: 8, hourlyRate: 3100, effectiveFrom: NEXT_CYCLE_START },
+        { userId: 9, hourlyRate: 3000, effectiveFrom: RATE_EPOCH },
       ]);
 
       const result = await service.findAllEmployees();
 
       expect(userRate.findMany).toHaveBeenCalledTimes(1);
+
+      expect(result[0].hourlyRate).toBe(2450);
       expect(result[0].pendingRate).toBeNull();
       expect(result[0].pendingRateEffectiveFrom).toBeNull();
+
+      expect(result[1].hourlyRate).toBe(2600);
       expect(result[1].pendingRate).toBe(3100);
       expect(result[1].pendingRateEffectiveFrom).toBe(
         NEXT_CYCLE_START.toISOString(),
       );
+
+      expect(result[2].hourlyRate).toBe(3000);
       expect(result[2].pendingRate).toBeNull();
     });
 

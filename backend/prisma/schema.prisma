@@ -43,17 +43,21 @@ model User {
   rates               UserRate[]
 }
 
-// One employee's pay history: what they were paid, and from when.
-//
-// `User.hourlyRate` above is what they are paid *now* — the denormalised head of
-// this history, read by /users, /users/me and the login response, none of which
-// is a cycle-aware question. This table is what they were paid *then*, and it is
+// One employee's pay history: what they were paid, and from when. This table is
 // the only thing payroll reads. Without it a raise would reprice every cycle the
 // employee had ever worked, because pay is derived from the rate on every
 // request and nothing would record what the rate used to be.
 //
-// The two are written together in one transaction (UsersService), so the head
-// can never disagree with the newest row here.
+// ⚠️ `User.hourlyRate` above is the newest rate **entered** — the head of this
+// history by entry, not by effect. While a raise is queued it holds a figure
+// nobody is paid yet, so **no response DTO serves it directly**: /users,
+// /users/me and the login response all report the rate in force, resolved from
+// this table by `UsersService.findRatesNow()`. The column's remaining job is to
+// answer "did this request change the rate?" — a comparison against what was
+// last entered, which is exactly what the form submits back.
+//
+// The two are still written together in one transaction (UsersService), so the
+// head can never disagree with the newest row here.
 model UserRate {
   id            Int      @id @default(autoincrement())
   hourlyRate    Int

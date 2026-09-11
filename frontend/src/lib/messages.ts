@@ -70,8 +70,20 @@ export const LABELS = {
   nextCycle: "Next cycle",
   addShiftTitle: "Add shift",
   editShiftTitle: "Edit shift",
+  /** The two group labels. Each now heads a **pair** of inputs (date + clock)
+   *  rather than one `datetime-local` — see the note on `shiftSchema`. */
   startTime: "Start time",
   endTime: "End time",
+  /**
+   * Screen-reader names for the halves of each pair.
+   *
+   * ⚠️ They exist because the visible `FieldLabel` names the *group* ("Start
+   * time"), which leaves two inputs sharing one label — a screen reader would
+   * announce the same thing for both and give no way to tell them apart. The
+   * group label stays visible· these are attached with `aria-label`.
+   */
+  dateOf: (field: string) => `${field} — date`,
+  clockOf: (field: string) => `${field} — time`,
   notes: "Notes",
   save: "Save",
   cancel: "Cancel",
@@ -646,6 +658,41 @@ export const NOTICES = {
    */
   employeeDeactivated: (name: string) =>
     `${name} has been deactivated. Their row is under “Show deactivated”.`,
+
+  /**
+   * The reactivation confirmation.
+   *
+   * ⚠️ Held to the same test as its three siblings: say the thing the admin
+   * cannot see. Reactivating is the mildest of the four — it is recoverable by
+   * the button that replaces it — so the sentence is short and does not warn.
+   * What it does carry is the part that is easy to get wrong: their **old
+   * password still works**. An admin expecting to hand over a new code would
+   * otherwise reach for `New code`, which is not offered on an activated row.
+   */
+  reactivateEmployeeTitle: "Reactivate this employee?",
+  reactivateEmployeeBody: (name: string) =>
+    `${name} will be able to sign in again with their existing password, and their row returns to the list.`,
+
+  /**
+   * The re-issue confirmation, asked **before** the write.
+   *
+   * ⚠️ **`confirm`-prefixed because `newCodeTitle` above is already taken** — it
+   * titles the dialog that shows the code **after** the write. The two read
+   * almost identically in English and sit in the same object, so the first
+   * attempt here silently overwrote that one: a duplicate key in an object
+   * literal is not an error, it is just the last one winning. The only symptom
+   * was the wrong heading on a dialog nothing had touched.
+   *
+   * ⚠️ **The one fact that makes this worth confirming: the previous code stops
+   * working.** Nothing on screen says so, and the failure is silent and remote —
+   * an admin who read the old code out over the phone an hour ago has just
+   * invalidated it, and will hear about it only when the employee cannot
+   * activate. The expiry is named too, since that is the other thing being
+   * replaced.
+   */
+  confirmNewCodeTitle: "Issue a new activation code?",
+  confirmNewCodeBody: (name: string) =>
+    `${name}'s current code stops working immediately, so anyone who already has it will need the new one. The replacement is valid for 3 days.`,
 } as const
 
 // ── Error codes ──────────────────────────────────────────────────────────────

@@ -200,7 +200,10 @@ describe('/users', () => {
         .expect(200);
 
       // The write itself reports it — the client needs no follow-up read.
-      expect((updated.body as UserBody).hourlyRate).toBe(3200);
+      // ⚠️ `hourlyRate` stays 2,450: it is what the employee is paid, and the
+      // raise does not start until the next cycle. Reporting 3,200 here would
+      // put a figure on the row that no payslip uses.
+      expect((updated.body as UserBody).hourlyRate).toBe(2450);
       expect((updated.body as UserBody).pendingRate).toBe(3200);
       expect(
         (updated.body as UserBody).pendingRateEffectiveFrom,
@@ -212,15 +215,48 @@ describe('/users', () => {
         .expect(200);
       const rows = list.body as UserBody[];
 
+      // Both halves on the list too, not just on the write's response.
+      expect(rows.find((row) => row.id === raised.id)?.hourlyRate).toBe(2450);
       expect(rows.find((row) => row.id === raised.id)?.pendingRate).toBe(3200);
       // Everyone else stays clean — the batch lookup must not smear one
       // person's queued rate across the team.
+      expect(rows.find((row) => row.id === untouched.id)?.hourlyRate).toBe(
+        2600,
+      );
       expect(
         rows.find((row) => row.id === untouched.id)?.pendingRate,
       ).toBeNull();
       expect(
         rows.find((row) => row.id === untouched.id)?.pendingRateEffectiveFrom,
       ).toBeNull();
+    });
+
+    /**
+     * ⭐ The case that cannot be answered without reading the history: after the
+     * first raise, `User.hourlyRate` holds a figure that has **not** taken
+     * effect, so deriving the reported rate from that column would announce the
+     * first raise as though it were already being paid.
+     */
+    it('keeps reporting the rate in force through a second raise in the same cycle', async () => {
+      const employee = await createActivatedEmployee(server, adminToken, {
+        hourlyRate: 2450,
+      });
+
+      await request(server)
+        .put(`/users/${employee.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ hourlyRate: 3200 })
+        .expect(200);
+
+      const second = await request(server)
+        .put(`/users/${employee.id}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ hourlyRate: 3400 })
+        .expect(200);
+
+      expect((second.body as UserBody).hourlyRate).toBe(2450);
+      // The upsert replaced the queued row rather than adding a second one.
+      expect((second.body as UserBody).pendingRate).toBe(3400);
     });
 
     /**
@@ -245,6 +281,7 @@ describe('/users', () => {
         .expect(200);
 
       expect((renamed.body as UserBody).name).toBe('Renamed Only');
+      expect((renamed.body as UserBody).hourlyRate).toBe(2450);
       expect((renamed.body as UserBody).pendingRate).toBe(3200);
     });
 

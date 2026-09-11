@@ -62,7 +62,10 @@ export class AuthService {
     };
     return {
       accessToken: await this.jwtService.signAsync(payload),
-      user: this.usersService.toProfileDto(user),
+      // `toProfileFor`, not the bare mapper: the rate reported here must be the
+      // one in force, and resolving it is the service's job — AuthService never
+      // reads `UserRate` itself.
+      user: await this.usersService.toProfileFor(user),
     };
   }
 

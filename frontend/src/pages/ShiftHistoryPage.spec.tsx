@@ -86,14 +86,22 @@ async function renderAt(path: string) {
   await act(async () => {})
 }
 
+/** Each end of a shift is a **pair** of inputs — a date and a clock — rather
+ *  than one `datetime-local`; see the note on `shiftSchema` for why. */
+function fillInstant(which: "Start time" | "End time", value: string) {
+  const [date, clock] = value.split("T")
+  fireEvent.change(screen.getByLabelText(`${which} — date`), {
+    target: { value: date },
+  })
+  fireEvent.change(screen.getByLabelText(`${which} — time`), {
+    target: { value: clock },
+  })
+}
+
 async function addShift() {
   fireEvent.click(screen.getByRole("button", { name: "Add Shift" }))
-  fireEvent.change(screen.getByLabelText("Start time"), {
-    target: { value: "2026-08-04T02:00" },
-  })
-  fireEvent.change(screen.getByLabelText("End time"), {
-    target: { value: "2026-08-04T10:00" },
-  })
+  fillInstant("Start time", "2026-08-04T02:00")
+  fillInstant("End time", "2026-08-04T10:00")
   fireEvent.click(screen.getByRole("button", { name: "Save" }))
   await act(async () => {})
 }

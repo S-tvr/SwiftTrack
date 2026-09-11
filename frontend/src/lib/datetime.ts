@@ -124,6 +124,40 @@ export function toDatetimeLocal(iso: string): string {
   return match[1]
 }
 
+/**
+ * Splits an API instant into the pair a separate `<input type="date">` and
+ * `<input type="time">` need — `["2026-08-04", "08:00"]`.
+ *
+ * ⚠️ A string slice for the same reason `toDatetimeLocal` is one: routing
+ * through `Date` would read the instant in the browser's zone and open the edit
+ * form on a different time than the one being edited.
+ *
+ * Exists because `ShiftForm` stopped using `datetime-local`: that control's
+ * popup is ~320px of browser chrome anchored under the field, which covered the
+ * dialog's own Save button at every screen height. A `time` popup is a short
+ * list instead, and a `date` one is opened far less often.
+ */
+export function toDateAndTime(iso: string): [date: string, time: string] {
+  const value = toDatetimeLocal(iso)
+  const [date, time] = value.split("T")
+  return [date, time]
+}
+
+/**
+ * The inverse: the two halves back into one `datetime-local` value, which
+ * `toIsoUtc` then turns into the instant the API stores.
+ *
+ * ⚠️ Returns `""` when **either** half is missing, rather than guessing a
+ * default. A date with no time is not a moment, and inventing midnight would
+ * write a shift the user never entered — the empty string flows into the
+ * schema's own "required" rule instead, which is the one place that decides
+ * what an incomplete field means.
+ */
+export function fromDateAndTime(date: string, time: string): string {
+  if (date === "" || time === "") return ""
+  return `${date}T${time}`
+}
+
 /** "25 Aug 2026, 14:30" — an instant from the API. */
 export function formatDateTime(iso: string): string {
   return dateTimeFormatter.format(new Date(iso))

@@ -255,27 +255,48 @@ describe("TeamPage — Reactivate replaces Deactivate", () => {
     expect(actions.queryByRole("button", { name: "Reactivate" })).toBeNull()
   })
 
-  it("calls the reactivate endpoint with that employee's id", async () => {
+  async function confirmReactivate() {
     vi.mocked(getEmployees).mockResolvedValue([DEACTIVATED])
     await renderPage()
     await showDeactivated()
     await click(within(row("Katrín")).getByRole("button", { name: "Reactivate" }))
+    return within(screen.getByRole("alertdialog"))
+  }
+
+  it("asks first, and Cancel writes nothing", async () => {
+    const dialog = await confirmReactivate()
+    await click(dialog.getByRole("button", { name: "Cancel" }))
+
+    expect(reactivateEmployee).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The fact an admin cannot see anywhere else. Someone expecting to hand over
+   * a fresh code would otherwise look for `New code`, which an activated row
+   * does not offer.
+   */
+  it("says the existing password still works", async () => {
+    const dialog = await confirmReactivate()
+
+    expect(dialog.getByText(/existing password/)).toBeTruthy()
+  })
+
+  it("calls the reactivate endpoint with that employee's id", async () => {
+    const dialog = await confirmReactivate()
+    await click(dialog.getByRole("button", { name: "Reactivate" }))
 
     expect(reactivateEmployee).toHaveBeenCalledWith(3)
   })
 
-  it("reports a failed reactivate instead of letting it pass silently", async () => {
-    // No dialog and no form stands between this button and the API, so a
-    // rejection has nowhere else to surface.
-    vi.mocked(getEmployees).mockResolvedValue([DEACTIVATED])
+  it("stays open with the reason when the write fails", async () => {
     vi.mocked(reactivateEmployee).mockRejectedValue(
       new ApiError(404, "EMPLOYEE_NOT_FOUND"),
     )
-    await renderPage()
-    await showDeactivated()
-    await click(within(row("Katrín")).getByRole("button", { name: "Reactivate" }))
+    const dialog = await confirmReactivate()
+    await click(dialog.getByRole("button", { name: "Reactivate" }))
 
-    expect(toastError).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole("alertdialog")).toBeTruthy()
+    expect(screen.getByRole("alert")).toBeTruthy()
   })
 })
 
@@ -297,17 +318,45 @@ describe("TeamPage — the setup code and its expiry", () => {
     expect(within(row("Anna")).queryByText(/Valid until/)).toBeNull()
   })
 
-  it("opens the dialog with the new code after New code", async () => {
+  async function confirmNewCode() {
     vi.mocked(getEmployees).mockResolvedValue([PENDING])
+    await renderPage()
+    await click(within(row("Björn")).getByRole("button", { name: "New code" }))
+    return within(screen.getByRole("alertdialog"))
+  }
+
+  it("asks first, and Cancel issues nothing", async () => {
+    const dialog = await confirmNewCode()
+    await click(dialog.getByRole("button", { name: "Cancel" }))
+
+    expect(resetSetupCode).not.toHaveBeenCalled()
+  })
+
+  /**
+   * ⭐ The reason this confirms at all. The damage is invisible and lands
+   * elsewhere: an admin who read the old code out an hour ago has just
+   * invalidated it, and finds out only when the employee calls back.
+   */
+  it("warns that the current code stops working", async () => {
+    const dialog = await confirmNewCode()
+
+    expect(dialog.getByText(/stops working immediately/)).toBeTruthy()
+  })
+
+  it("opens the dialog with the new code after New code", async () => {
     vi.mocked(resetSetupCode).mockResolvedValue({
       ...PENDING,
       setupCode: "4826",
     })
-    await renderPage()
-    await click(within(row("Björn")).getByRole("button", { name: "New code" }))
+    const confirmation = await confirmNewCode()
+    await click(confirmation.getByRole("button", { name: "New code" }))
 
     expect(resetSetupCode).toHaveBeenCalledWith(2)
-    const dialog = within(screen.getByRole("dialog"))
+    // ⚠️ `getAllByRole`, not `getByRole`: `EmployeeForm` is mounted at all times
+    // and keeps a closed `role="dialog"` in the tree, so the code dialog is not
+    // the only match. The last one is the one that just opened.
+    const dialogs = screen.getAllByRole("dialog")
+    const dialog = within(dialogs[dialogs.length - 1])
     expect(dialog.getByText("New activation code")).toBeTruthy()
     expect(dialog.getByText("4826")).toBeTruthy()
   })
@@ -315,14 +364,15 @@ describe("TeamPage — the setup code and its expiry", () => {
   it("surfaces the admin's wording when the list is stale, not the employee's", async () => {
     // SCREEN_ERRORS.team's first consumer, sitting unused since step 9: the same
     // code reaches an employee about themselves and an admin about someone else.
-    vi.mocked(getEmployees).mockResolvedValue([PENDING])
+    // It now lands inside the confirmation, which is read rather than glimpsed.
     vi.mocked(resetSetupCode).mockRejectedValue(
       new ApiError(409, "ACCOUNT_ALREADY_ACTIVATED"),
     )
-    await renderPage()
-    await click(within(row("Björn")).getByRole("button", { name: "New code" }))
+    const dialog = await confirmNewCode()
+    await click(dialog.getByRole("button", { name: "New code" }))
 
-    expect(toastError).toHaveBeenCalledWith(
+    expect(screen.getByRole("alertdialog")).toBeTruthy()
+    expect(screen.getByRole("alert").textContent).toBe(
       "This employee has already activated their account. Refresh the list.",
     )
   })
@@ -444,6 +494,28 @@ describe("TeamPage — editing an employee", () => {
     await click(within(row("Anna")).getByRole("button", { name: "Edit employee" }))
   }
 
+  /**
+   * ⚠️ Structural, and the mirror of the guard in `ShiftForm.spec.tsx`. jsdom
+   * implements no layout, so "Save is reachable when the dialog is taller than
+   * the window" cannot be asserted here — that was measured in headless Chrome
+   * (Save visible from 317px up). What IS checkable is the arrangement behind
+   * it: the scroll container is the middle and the buttons sit outside it.
+   *
+   * This form took the same change as `ShiftForm` and had no equivalent test,
+   * so a later edit wrapping the whole form in `DialogBody` would have scrolled
+   * the buttons away with nothing to catch it.
+   */
+  it("keeps the buttons outside the scrolling area", async () => {
+    await openEditForm()
+
+    const body = document.querySelector("[data-slot='dialog-body']")
+    expect(body).not.toBeNull()
+    for (const name of ["Save", "Cancel"]) {
+      expect(body?.contains(screen.getByRole("button", { name }))).toBe(false)
+    }
+    expect(body?.contains(screen.getByLabelText("Name"))).toBe(true)
+  })
+
   it("offers NO email field — the endpoint would reject it", async () => {
     // PUT /users/:id takes name and hourlyRate only, and its DTO rejects an
     // undeclared property outright. A disabled input would still say "editable,
@@ -452,6 +524,37 @@ describe("TeamPage — editing an employee", () => {
 
     expect(screen.queryByLabelText("Email")).toBeNull()
     expect(screen.getByLabelText("Name")).toBeTruthy()
+  })
+
+  /**
+   * ⭐ Guards a silent data loss, not a display preference.
+   *
+   * The form submits `hourlyRate` on every save, including one that only
+   * touched the name, and the API reads a different figure as a new rate. So
+   * seeding this box from `hourlyRate` — what the employee is paid *now* —
+   * would make a rename overwrite the queued raise back down to the old rate,
+   * with nothing on screen to say it happened.
+   */
+  it("seeds the rate box with the queued raise, not the rate being paid", async () => {
+    vi.mocked(getEmployees).mockResolvedValue([
+      employee({ hourlyRate: 2450, pendingRate: 3200 }),
+    ])
+    await openEditForm()
+
+    expect(
+      screen.getByLabelText<HTMLInputElement>("Hourly Rate (ISK)").value,
+    ).toBe("3200")
+  })
+
+  it("seeds the rate box with the current rate when nothing is queued", async () => {
+    vi.mocked(getEmployees).mockResolvedValue([
+      employee({ hourlyRate: 2450, pendingRate: null }),
+    ])
+    await openEditForm()
+
+    expect(
+      screen.getByLabelText<HTMLInputElement>("Hourly Rate (ISK)").value,
+    ).toBe("2450")
   })
 
   /**

@@ -1,7 +1,6 @@
 import { useState } from "react"
 import { toast } from "sonner"
 
-import { ApiError } from "@/api/client"
 import {
   createEmployee,
   deactivateEmployee,
@@ -15,6 +14,8 @@ import {
   type UserResponse,
 } from "@/api/users"
 import { DeactivateEmployeeDialog } from "@/components/team/DeactivateEmployeeDialog"
+import { NewCodeDialog } from "@/components/team/NewCodeDialog"
+import { ReactivateEmployeeDialog } from "@/components/team/ReactivateEmployeeDialog"
 import { EmployeeForm } from "@/components/team/EmployeeForm"
 import { EmployeeList } from "@/components/team/EmployeeList"
 import { ResetPasswordDialog } from "@/components/team/ResetPasswordDialog"
@@ -37,18 +38,23 @@ interface CodeDialogState {
  * goes through `useApiQuery`, the states are ordered error → loading → empty →
  * content, and every write is explicit, followed by `refetch()`.
  *
- * ⚠️ **Two of the seven writes have no dialog and no form to report a failure**
- * — `Reactivate` and `New code` fire straight from a row button. `toast.error`
- * is where their failures go, for the same reason `toast.success` exists: the
- * screen the user is left on cannot show it. It is also the only path by which
- * `SCREEN_ERRORS.team` can reach anyone — `ACCOUNT_ALREADY_ACTIVATED` comes
- * back from `reset-setup-code` when the list is stale, and the whole point of
- * the per-screen override written in step 9 is that an admin needs "refresh the
+ * ⚠️ **Every row action confirms first, and each confirmation holds its own
+ * failures.** `Reactivate` and `New code` used to fire straight from their
+ * buttons with `toast.error` as the only place a failure could land; they now
+ * have dialogs like `Deactivate` and `Reset password`. The consistency is the
+ * point: a single button that acts immediately while its neighbours all stop to
+ * ask is the one that gets clicked by accident.
+ *
+ * That also moves `SCREEN_ERRORS.team` into the dialogs, where it is read rather
+ * than glimpsed — `ACCOUNT_ALREADY_ACTIVATED` comes back from
+ * `reset-setup-code` when the list is stale, and the whole point of the
+ * per-screen override written in step 9 is that an admin needs "refresh the
  * list", not the employee's "go and sign in".
  *
- * `Reset password` (step 13-5) is deliberately **not** among those two: it is
- * the most disruptive write here — it signs the employee out everywhere — so it
- * confirms first, and its dialog holds its own failures like the other three.
+ * The four confirmations differ only in what their sentence has to carry: the
+ * two that replace a credential (`Reset password`, `New code`) say that the old
+ * one stops working· `Deactivate` says the row survives· `Reactivate` says the
+ * old password still works.
  */
 export function TeamPage() {
   const { data, error, refetch } = useApiQuery(getEmployees, [])
@@ -60,6 +66,8 @@ export function TeamPage() {
   const [deactivating, setDeactivating] = useState<UserResponse | null>(null)
   const [resettingPassword, setResettingPassword] =
     useState<UserResponse | null>(null)
+  const [reactivating, setReactivating] = useState<UserResponse | null>(null)
+  const [issuingCode, setIssuingCode] = useState<UserResponse | null>(null)
 
   function openCreate() {
     setEditing(undefined)
@@ -130,38 +138,38 @@ export function TeamPage() {
     setCodeDialog({ employee: updated, reason: "passwordReset" })
   }
 
-  async function handleReactivate(employee: UserResponse) {
-    try {
-      await reactivateEmployee(employee.id)
-      refetch()
-    } catch (caught) {
-      toast.error(
-        errorText(
-          caught instanceof ApiError ? caught.code : "UNKNOWN_ERROR",
-          "team",
-        ),
-      )
-    }
+  /**
+   * Catches nothing, like the two above — `ReactivateEmployeeDialog` needs the
+   * rejection to stay open with the reason inside it.
+   *
+   * No toast: the row reappearing in the list *is* the confirmation, which is
+   * the toast rule's own condition. That is also why deactivation takes one and
+   * this does not — there the row vanishes instead.
+   */
+  async function confirmReactivate(employee: UserResponse) {
+    await reactivateEmployee(employee.id)
+    refetch()
+    setReactivating(null)
   }
 
   /**
+   * Catches nothing, like its siblings — `NewCodeDialog` needs the rejection to
+   * stay open with the reason inside it.
+   *
    * The response carries the new code, so nothing here needs a follow-up read to
    * show it — but the list behind the dialog is refetched anyway, because the
    * row prints the code too and would otherwise still show the dead one.
+   *
+   * ⚠️ Ends the same way `confirmResetPassword` does, and for the same reason:
+   * the job is not finished when the request returns, only when the code has
+   * reached the employee. So this closes the confirmation and opens the code
+   * dialog rather than announcing success.
    */
-  async function handleNewCode(employee: UserResponse) {
-    try {
-      const updated = await resetSetupCode(employee.id)
-      refetch()
-      setCodeDialog({ employee: updated, reason: "reissued" })
-    } catch (caught) {
-      toast.error(
-        errorText(
-          caught instanceof ApiError ? caught.code : "UNKNOWN_ERROR",
-          "team",
-        ),
-      )
-    }
+  async function confirmNewCode(employee: UserResponse) {
+    const updated = await resetSetupCode(employee.id)
+    refetch()
+    setIssuingCode(null)
+    setCodeDialog({ employee: updated, reason: "reissued" })
   }
 
   const heading = (
@@ -214,8 +222,8 @@ export function TeamPage() {
           onShowDeactivatedChange={setShowDeactivated}
           onEdit={openEdit}
           onDeactivate={setDeactivating}
-          onReactivate={(employee) => void handleReactivate(employee)}
-          onNewCode={(employee) => void handleNewCode(employee)}
+          onReactivate={setReactivating}
+          onNewCode={setIssuingCode}
           onResetPassword={setResettingPassword}
         />
       )}
@@ -244,6 +252,18 @@ export function TeamPage() {
         employee={resettingPassword}
         onCancel={() => setResettingPassword(null)}
         onConfirm={confirmResetPassword}
+      />
+
+      <ReactivateEmployeeDialog
+        employee={reactivating}
+        onCancel={() => setReactivating(null)}
+        onConfirm={confirmReactivate}
+      />
+
+      <NewCodeDialog
+        employee={issuingCode}
+        onCancel={() => setIssuingCode(null)}
+        onConfirm={confirmNewCode}
       />
     </div>
   )
