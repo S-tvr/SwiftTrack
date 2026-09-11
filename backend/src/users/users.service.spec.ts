@@ -1,5 +1,6 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { UsersService } from './users.service';
+import { AuditService } from '../audit/audit.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { SettingsService } from '../settings/settings.service';
 import { Prisma, Role, type User } from '../generated/prisma/client';
@@ -52,6 +53,13 @@ const NEXT_CYCLE_START = new Date(Date.now() + CYCLE_DAYS_MS);
 /** The start of a cycle being priced — what a rate is resolved *at*. One cycle
  *  behind the above, and in the past, as a cycle being priced always is. */
 const CYCLE_START = new Date(NEXT_CYCLE_START.getTime() - CYCLE_DAYS_MS);
+/**
+ * The admin performing the write. Deliberately not 7 — every subject in this
+ * file is employee 7, so a distinct id is what makes an audit assertion able to
+ * fail when actor and subject are confused for one another.
+ */
+const ACTOR = 99;
+
 /** Mirrors the constant in the service. */
 const RATE_EPOCH = new Date(0);
 
@@ -65,19 +73,37 @@ function makeService() {
   };
   const userRate = {
     findFirst: jest.fn().mockResolvedValue(null),
+    // The rate this write is about to replace, read before the upsert — null
+    // on an ordinary first raise, which is the default here.
+    findUnique: jest.fn().mockResolvedValue(null),
     findMany: jest.fn().mockResolvedValue([]),
     upsert: jest.fn().mockResolvedValue({}),
   };
-  // The array form resolves each promise it is handed. The stubs above are
-  // already resolved values, so awaiting them here reproduces what Prisma does
-  // without pretending to be a real transaction — what these tests assert is
-  // that both writes are handed over *together*, which the call itself shows.
+  // Typed at the declaration so assertions on the recorded row are checked
+  // rather than reaching through `any` — the same shape as audit.service.spec.
+  const auditLog = {
+    create: jest
+      .fn<Promise<void>, [{ data: { action: string } }]>()
+      .mockResolvedValue(),
+  };
+  // ⚠️ Both forms, because step 18 moved several writes from the array form to
+  // the callback form (an audit row naming what a write replaced cannot be a
+  // promise built before that write runs). The array branch resolves what it is
+  // handed, as before; the callback branch hands back this same stub as `tx`.
+  // Neither pretends to be a real transaction — what these tests assert is that
+  // the writes are handed over *together*, which the call itself shows.
   const $transaction = jest
     .fn()
-    .mockImplementation((operations: Promise<unknown>[]) =>
-      Promise.all(operations),
+    .mockImplementation(
+      (arg: Promise<unknown>[] | ((tx: unknown) => unknown)) =>
+        typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
     );
-  const prisma = { user, userRate, $transaction } as unknown as PrismaService;
+  const prisma = {
+    user,
+    userRate,
+    auditLog,
+    $transaction,
+  } as unknown as PrismaService;
   const resolveRateEffectiveFrom = jest
     .fn()
     .mockResolvedValue(NEXT_CYCLE_START);
@@ -86,9 +112,10 @@ function makeService() {
   } as unknown as SettingsService;
 
   return {
-    service: new UsersService(prisma, settings),
+    service: new UsersService(prisma, settings, new AuditService()),
     user,
     userRate,
+    auditLog,
     $transaction,
     resolveRateEffectiveFrom,
   };
@@ -104,11 +131,11 @@ describe('UsersService', () => {
      */
     it('404s instead of writing, and never issues the update', async () => {
       for (const call of [
-        (s: UsersService) => s.updateEmployee(1, { name: 'Renamed' }),
-        (s: UsersService) => s.deactivate(1),
-        (s: UsersService) => s.reactivate(1),
-        (s: UsersService) => s.resetSetupCode(1),
-        (s: UsersService) => s.resetPassword(1),
+        (s: UsersService) => s.updateEmployee(ACTOR, 1, { name: 'Renamed' }),
+        (s: UsersService) => s.deactivate(ACTOR, 1),
+        (s: UsersService) => s.reactivate(ACTOR, 1),
+        (s: UsersService) => s.resetSetupCode(ACTOR, 1),
+        (s: UsersService) => s.resetPassword(ACTOR, 1),
       ]) {
         const { service, user } = makeService();
         // The lookup filters on role, so an ADMIN id resolves to null.
@@ -126,7 +153,7 @@ describe('UsersService', () => {
       const { service, user } = makeService();
       user.findFirst.mockResolvedValue(makeUser());
 
-      await service.deactivate(7);
+      await service.deactivate(ACTOR, 7);
 
       expect(user.findFirst).toHaveBeenCalledWith({
         where: { id: 7, role: 'EMPLOYEE' },
@@ -149,7 +176,7 @@ describe('UsersService', () => {
       const { service, user } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ isActive: false }));
 
-      await service.reactivate(7);
+      await service.reactivate(ACTOR, 7);
 
       expect(user.update).toHaveBeenCalledWith({
         where: { id: 7 },
@@ -164,7 +191,9 @@ describe('UsersService', () => {
       const { service, user } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ isActive: true }));
 
-      await expect(service.reactivate(7)).resolves.toMatchObject({ id: 7 });
+      await expect(service.reactivate(ACTOR, 7)).resolves.toMatchObject({
+        id: 7,
+      });
     });
 
     it('issues a fresh 4-digit code and a fresh 3-day expiry', async () => {
@@ -172,7 +201,7 @@ describe('UsersService', () => {
       user.findFirst.mockResolvedValue(makeUser({ setupCode: '0001' }));
       const before = Date.now();
 
-      await service.resetSetupCode(7);
+      await service.resetSetupCode(ACTOR, 7);
 
       const [firstCall] = user.update.mock.calls as Array<
         [{ data: { setupCode: string; setupCodeExpiresAt: Date } }]
@@ -195,7 +224,7 @@ describe('UsersService', () => {
       const { service, user } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ password: 'hashed' }));
 
-      await expect(service.resetSetupCode(7)).rejects.toThrow(
+      await expect(service.resetSetupCode(ACTOR, 7)).rejects.toThrow(
         'This account has already been activated.',
       );
       expect(user.update).not.toHaveBeenCalled();
@@ -215,7 +244,7 @@ describe('UsersService', () => {
       );
       const before = Date.now();
 
-      await service.resetPassword(7);
+      await service.resetPassword(ACTOR, 7);
 
       const [firstCall] = user.update.mock.calls as Array<
         [
@@ -245,7 +274,7 @@ describe('UsersService', () => {
       const { service, user } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ password: null }));
 
-      await expect(service.resetPassword(7)).resolves.toMatchObject({
+      await expect(service.resetPassword(ACTOR, 7)).resolves.toMatchObject({
         id: 7,
       });
       expect(user.update).toHaveBeenCalled();
@@ -257,7 +286,7 @@ describe('UsersService', () => {
         makeUser({ password: 'hashed', isActive: false }),
       );
 
-      await service.resetPassword(7);
+      await service.resetPassword(ACTOR, 7);
 
       const [firstCall] = user.update.mock.calls as Array<
         [{ data: Record<string, unknown> }]
@@ -270,7 +299,7 @@ describe('UsersService', () => {
     it('creates without a password and with a 4-digit code expiring in 3 days', async () => {
       const { service, user } = makeService();
 
-      await service.createEmployee({
+      await service.createEmployee(ACTOR, {
         name: 'Jane',
         email: 'jane@example.com',
         hourlyRate: 2450,
@@ -309,7 +338,7 @@ describe('UsersService', () => {
     it('writes the first rate row alongside the user, effective from the epoch', async () => {
       const { service, user } = makeService();
 
-      await service.createEmployee({
+      await service.createEmployee(ACTOR, {
         name: 'Jane',
         email: 'jane@example.com',
         hourlyRate: 2450,
@@ -339,7 +368,7 @@ describe('UsersService', () => {
       user.findUnique.mockResolvedValue(makeUser());
 
       await expect(
-        service.createEmployee({
+        service.createEmployee(ACTOR, {
           name: 'Jane',
           email: 'jane@example.com',
           hourlyRate: 2450,
@@ -363,7 +392,7 @@ describe('UsersService', () => {
       );
 
       const error = await service
-        .createEmployee({
+        .createEmployee(ACTOR, {
           name: 'Jane',
           email: 'jane@example.com',
           hourlyRate: 2450,
@@ -386,7 +415,7 @@ describe('UsersService', () => {
       // A catch-all here would turn an outage into "email already exists",
       // which is both wrong and unactionable.
       await expect(
-        service.createEmployee({
+        service.createEmployee(ACTOR, {
           name: 'Jane',
           email: 'jane@example.com',
           hourlyRate: 2450,
@@ -432,7 +461,7 @@ describe('UsersService', () => {
       // The row as it stands: 2450. The raise is to 2800.
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
 
-      await service.updateEmployee(7, { hourlyRate: 2800 });
+      await service.updateEmployee(ACTOR, 7, { hourlyRate: 2800 });
 
       expect(resolveRateEffectiveFrom).toHaveBeenCalledTimes(1);
       expect(userRate.upsert).toHaveBeenCalledWith({
@@ -471,19 +500,82 @@ describe('UsersService', () => {
       } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
 
-      await service.updateEmployee(7, {
+      await service.updateEmployee(ACTOR, 7, {
         name: 'Jane Renamed',
         hourlyRate: 2450,
       });
 
       expect(userRate.upsert).not.toHaveBeenCalled();
-      expect($transaction).not.toHaveBeenCalled();
+      // ⚠️ This asserted `$transaction` was never called until step 18, which
+      // was a fair proxy for "no rate row was written" while the transaction
+      // existed only to pair the two rate writes. It is no longer: this branch
+      // now opens one to carry its audit row. What the test is *about* — that a
+      // rename queues no raise — is the upsert assertion above and the rate
+      // read below, both unchanged.
+      expect($transaction).toHaveBeenCalledTimes(1);
       // The cycle is not even resolved — there is nothing to date.
       expect(resolveRateEffectiveFrom).not.toHaveBeenCalled();
       expect(user.update).toHaveBeenCalledWith({
         where: { id: 7 },
         data: { name: 'Jane Renamed', hourlyRate: 2450 },
       });
+    });
+
+    /**
+     * ⭐ Found by the step 18 review, against the running backend: an identical
+     * re-save wrote an `EMPLOYEE_UPDATED` row whose `before` and `after` were
+     * the same — an event that did not happen.
+     *
+     * ⚠️ Not a hypothetical. `EmployeeForm` submits **both** fields on every
+     * save, so opening a row and pressing Save without editing is the ordinary
+     * way to reach this. The rate branch below always guarded it· this branch
+     * did not, and the four mutation tests could not find the gap because a
+     * mutation breaks a guard that exists rather than revealing one that is
+     * missing.
+     *
+     * The **write** still goes out — the endpoint's answer must not change —
+     * only the audit row is withheld.
+     */
+    it('writes no audit row when neither the name nor the rate changed', async () => {
+      const { service, user, auditLog, $transaction } = makeService();
+      user.findFirst.mockResolvedValue(
+        makeUser({ name: 'Jane Employee', hourlyRate: 2450 }),
+      );
+
+      await service.updateEmployee(ACTOR, 7, {
+        name: 'Jane Employee',
+        hourlyRate: 2450,
+      });
+
+      expect(auditLog.create).not.toHaveBeenCalled();
+      // Nothing to pair the write with, so no transaction is opened either —
+      // the shape this branch had before step 18.
+      expect($transaction).not.toHaveBeenCalled();
+      // ⚠️ The write itself is unchanged: this is an audit decision, not a
+      // behavioural one, and a caller must not be able to tell the difference.
+      expect(user.update).toHaveBeenCalledWith({
+        where: { id: 7 },
+        data: { name: 'Jane Employee', hourlyRate: 2450 },
+      });
+    });
+
+    /**
+     * The other half of the same rule, on the branch that always had it: a
+     * raise submitted with an unchanged name is **one** event, not two.
+     */
+    it('writes only the rate row when a raise carries an unchanged name', async () => {
+      const { service, user, auditLog } = makeService();
+      user.findFirst.mockResolvedValue(
+        makeUser({ name: 'Jane Employee', hourlyRate: 2450 }),
+      );
+
+      await service.updateEmployee(ACTOR, 7, {
+        name: 'Jane Employee',
+        hourlyRate: 2800,
+      });
+
+      expect(auditLog.create).toHaveBeenCalledTimes(1);
+      expect(auditLog.create.mock.calls[0][0].data.action).toBe('RATE_QUEUED');
     });
 
     /**
@@ -501,7 +593,9 @@ describe('UsersService', () => {
         { userId: 7, hourlyRate: 3200, effectiveFrom: NEXT_CYCLE_START },
       ]);
 
-      const result = await service.updateEmployee(7, { name: 'Jane Renamed' });
+      const result = await service.updateEmployee(ACTOR, 7, {
+        name: 'Jane Renamed',
+      });
 
       expect(userRate.upsert).not.toHaveBeenCalled();
       expect(result.hourlyRate).toBe(2450);
@@ -524,7 +618,9 @@ describe('UsersService', () => {
         { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
       ]);
 
-      const result = await service.updateEmployee(7, { hourlyRate: 3200 });
+      const result = await service.updateEmployee(ACTOR, 7, {
+        hourlyRate: 3200,
+      });
 
       expect(result.pendingRate).toBe(3200);
       expect(result.pendingRateEffectiveFrom).toBe(
@@ -547,7 +643,9 @@ describe('UsersService', () => {
         { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
       ]);
 
-      const result = await service.updateEmployee(7, { hourlyRate: 3200 });
+      const result = await service.updateEmployee(ACTOR, 7, {
+        hourlyRate: 3200,
+      });
 
       expect(result.hourlyRate).toBe(2450);
       expect(result.pendingRate).toBe(3200);
@@ -557,7 +655,7 @@ describe('UsersService', () => {
       const { service, user, userRate } = makeService();
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2450 }));
 
-      await service.updateEmployee(7, { name: 'Jane Renamed' });
+      await service.updateEmployee(ACTOR, 7, { name: 'Jane Renamed' });
 
       expect(userRate.upsert).not.toHaveBeenCalled();
       expect(user.update).toHaveBeenCalledWith({
@@ -579,7 +677,7 @@ describe('UsersService', () => {
         { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
       ]);
 
-      await service.updateEmployee(7, { hourlyRate: 2800 });
+      await service.updateEmployee(ACTOR, 7, { hourlyRate: 2800 });
       user.findFirst.mockResolvedValue(makeUser({ hourlyRate: 2800 }));
       // After the first raise the history carries the queued row too — which is
       // what makes the head stop matching the rate in force.
@@ -587,7 +685,9 @@ describe('UsersService', () => {
         { userId: 7, hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
         { userId: 7, hourlyRate: 2800, effectiveFrom: NEXT_CYCLE_START },
       ]);
-      const second = await service.updateEmployee(7, { hourlyRate: 3000 });
+      const second = await service.updateEmployee(ACTOR, 7, {
+        hourlyRate: 3000,
+      });
 
       expect(userRate.upsert).toHaveBeenCalledTimes(2);
       const [, secondCall] = userRate.upsert.mock.calls as Array<

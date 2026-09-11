@@ -1,6 +1,7 @@
 import { MiddlewareConsumer, Module, type NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, seconds } from '@nestjs/throttler';
+import { AuditModule } from './audit/audit.module';
 import { FailedRequestMiddleware } from './common/logging/failed-request.middleware';
 import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
@@ -14,6 +15,10 @@ import { PayrollModule } from './payroll/payroll.module';
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: seconds(60), limit: 5 }]),
     PrismaModule,
+    // Imported by each module that writes (users, settings, time-entries)
+    // rather than being global, so the module graph still says who records
+    // what. Listed here too because it is a feature module like any other.
+    AuditModule,
     UsersModule,
     AuthModule,
     SettingsModule,

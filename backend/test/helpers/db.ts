@@ -22,6 +22,14 @@ const DEFAULT_CYCLE_END_DAY = 24;
  *   every later payroll test resolves to.
  */
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
+  // ⚠️ **TRUNCATE, not `deleteMany`, and that is forced rather than chosen.**
+  // `AuditLog` carries a BEFORE UPDATE OR DELETE trigger making it append-only
+  // (step 18's migration), so a `deleteMany` here fails outright. TRUNCATE is
+  // not consulted by a row-level trigger — measured — which is precisely the
+  // documented escape hatch: the guarantee is that no individual row can be
+  // altered or removed, while emptying the whole table is conspicuous and is
+  // what a retention policy would eventually need.
+  await prisma.$executeRaw`TRUNCATE TABLE "AuditLog" RESTART IDENTITY`;
   // Time entries and rate rows first — both hold an FK to User, and the delete
   // below is RESTRICT, so leaving either behind fails the whole reset rather
   // than cascading. Every employee has at least one rate row (POST /users

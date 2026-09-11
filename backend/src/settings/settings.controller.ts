@@ -5,6 +5,8 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { JwtPayload } from '../auth/jwt-payload.interface';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -55,7 +57,10 @@ export class SettingsController {
     description: 'Day out of range, or the two days are not contiguous.',
   })
   @ApiResponse({ status: 403, description: 'Not an ADMIN.' })
-  updateSettings(@Body() dto: UpdateSettingsDto): Promise<SettingsResponseDto> {
-    return this.settingsService.updateSettings(dto);
+  updateSettings(
+    @Body() dto: UpdateSettingsDto,
+    @CurrentUser() actor: JwtPayload,
+  ): Promise<SettingsResponseDto> {
+    return this.settingsService.updateSettings(actor.userId, dto);
   }
 }

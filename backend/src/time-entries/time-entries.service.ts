@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ErrorCode } from '../common/error-codes';
 import { badRequest, notFound } from '../common/domain-errors';
+import { AuditService } from '../audit/audit.service';
+import { toShiftSnapshot } from '../audit/audit-entry.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { UsersService } from '../users/users.service';
@@ -13,7 +15,12 @@ import {
   CycleTimeEntryDto,
   TimeEntryResponseDto,
 } from './dto/time-entry-response.dto';
-import { Prisma, Role, type TimeEntry } from '../generated/prisma/client';
+import {
+  AuditAction,
+  Prisma,
+  Role,
+  type TimeEntry,
+} from '../generated/prisma/client';
 
 /**
  * Reused verbatim from spec §8a — same situation, same required action.
@@ -33,6 +40,7 @@ export class TimeEntriesService {
     private readonly prisma: PrismaService,
     private readonly settingsService: SettingsService,
     private readonly usersService: UsersService,
+    private readonly auditService: AuditService,
   ) {}
 
   /**
@@ -111,8 +119,26 @@ export class TimeEntriesService {
     await this.assertOwnerHasNoOpenShift(userId, caller.role);
     await this.assertNoOverlap(userId, startTime, endTime);
 
-    const entry = await this.prisma.timeEntry.create({
-      data: { userId, startTime, endTime, notes: dto.notes ?? null },
+    // The write and its audit row in one transaction — see AuditService. A
+    // manually entered shift is hours somebody will be paid for, and §13 gap 2
+    // is precisely that those carried no history.
+    const entry = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.timeEntry.create({
+        data: { userId, startTime, endTime, notes: dto.notes ?? null },
+      });
+      await this.auditService.record(tx, {
+        action: AuditAction.SHIFT_CREATED,
+        actorId: caller.userId,
+        // The row's owner, never the caller: on the admin's /shifts/:userId
+        // route these differ, and which employee's hours were written is the
+        // half a reader cannot reconstruct from the actor.
+        subjectId: userId,
+        entityType: 'TimeEntry',
+        entityId: created.id,
+        before: null,
+        after: toShiftSnapshot(created),
+      });
+      return created;
     });
     return this.toResponseDto(entry);
   }
@@ -137,9 +163,25 @@ export class TimeEntriesService {
     await this.assertOwnerHasNoOpenShift(existing.userId, caller.role);
     await this.assertNoOverlap(existing.userId, startTime, endTime, id);
 
-    const entry = await this.prisma.timeEntry.update({
-      where: { id },
-      data: { startTime, endTime, notes: dto.notes ?? null },
+    const entry = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.timeEntry.update({
+        where: { id },
+        data: { startTime, endTime, notes: dto.notes ?? null },
+      });
+      await this.auditService.record(tx, {
+        action: AuditAction.SHIFT_UPDATED,
+        actorId: caller.userId,
+        subjectId: existing.userId,
+        entityType: 'TimeEntry',
+        entityId: id,
+        // `existing` was read above for the ownership check, so the before/after
+        // pair costs no extra query here. This is the record that an entry was
+        // edited at all — and by how much, which is what makes a disputed
+        // figure answerable.
+        before: toShiftSnapshot(existing),
+        after: toShiftSnapshot(updated),
+      });
+      return updated;
     });
     return this.toResponseDto(entry);
   }
@@ -157,7 +199,23 @@ export class TimeEntriesService {
 
     // No open-shift block and no overlap check: removing a row can create
     // neither a second open shift nor a collision.
-    await this.prisma.timeEntry.delete({ where: { id } });
+    //
+    // ⚠️ This is the only hard delete in the backend, which makes the audit row
+    // the single surviving record of those hours — `before` is not a
+    // convenience here, it is the data. Written in the same transaction as the
+    // delete, so the row cannot vanish while its record fails.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.timeEntry.delete({ where: { id } });
+      await this.auditService.record(tx, {
+        action: AuditAction.SHIFT_DELETED,
+        actorId: caller.userId,
+        subjectId: existing.userId,
+        entityType: 'TimeEntry',
+        entityId: id,
+        before: toShiftSnapshot(existing),
+        after: null,
+      });
+    });
   }
 
   /**

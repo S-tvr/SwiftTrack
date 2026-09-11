@@ -20,6 +20,85 @@ enum Role {
   EMPLOYEE
 }
 
+// What happened. Named after the domain act, not the HTTP verb or the table
+// touched: a reader asking "who reset this password" is not asking which row
+// received an UPDATE. Same discipline as ErrorCode — the enum is generated from
+// this schema and imported from the client, never hand-written as a union.
+//
+// ⚠️ One request can produce two of these. PUT /users/:id may both rename an
+// employee and queue a raise, and they are separate rows: collapsing them would
+// lose which of the two a given request actually did.
+enum AuditAction {
+  SHIFT_CREATED
+  SHIFT_UPDATED
+  SHIFT_DELETED
+  EMPLOYEE_CREATED
+  EMPLOYEE_UPDATED
+  EMPLOYEE_DEACTIVATED
+  EMPLOYEE_REACTIVATED
+  SETUP_CODE_REISSUED
+  PASSWORD_RESET_BY_ADMIN
+  PASSWORD_CHANGED
+  ACCOUNT_ACTIVATED
+  RATE_QUEUED
+  SETTINGS_UPDATED
+}
+
+// Who changed what, and what it said before. Append-only.
+//
+// Closes spec §13 gap 2 (an employee's hours carried no history — nothing
+// recorded that an entry was edited or deleted) and the gap 8g recorded but
+// could not fix from one endpoint (nothing recorded which admin reset which
+// employee's password). Step 17's operational logging does not overlap: that
+// writes a line per *failed* request and is deliberately silent on 2xx, so a
+// *successful* write left no trace at all.
+//
+// ⚠️ `before`/`after` are built from an explicit per-entity **allowlist**, never
+// by spreading a row. The distinction is the same one architecture.md makes for
+// request logging — the absence of a path, not a filter over one: a whole-row
+// snapshot would carry `password` and `setupCode` into this table and leave a
+// blocklist to maintain at every future column, whose failure mode is silent.
+// `password`, `setupCode`, `setupCodeExpiresAt` and `tokenVersion` are never
+// values here. A revocation is recorded as an *action*, never as a counter.
+//
+// ⚠️ **No relation to User, deliberately.** `actorId`/`subjectId` are plain Int
+// columns with no foreign key: a relation makes these rows reachable by cascade,
+// and an audit trail that can be deleted by deleting its subject is not one.
+// This also keeps a row readable after a user row is gone. Do not "fix" this by
+// adding a relation — the missing FK is the feature.
+model AuditLog {
+  id     Int         @id @default(autoincrement())
+  action AuditAction
+
+  // Who acted. Null only for ACCOUNT_ACTIVATED — the one mutation in this system
+  // performed without a session, where the actor is the subject by construction.
+  actorId Int?
+  // Who it was done to. Null for SETTINGS_UPDATED, which has no subject: it is
+  // global configuration, and the actor is the whole of the answer.
+  subjectId Int?
+
+  // Which row, in the words of the domain model: "TimeEntry", "User",
+  // "UserRate", "AppSettings". A string rather than an enum because it names a
+  // table, and a second enum tracking the first buys nothing.
+  entityType String
+  // Null for AppSettings, whose row is the singleton id=1 and carries no
+  // information.
+  entityId Int?
+
+  // The allowlisted fields as they stood, and as they became. `before` is null
+  // on a create, `after` is null on a delete — which is what makes a deleted
+  // shift's hours recoverable from this table and nowhere else.
+  before Json?
+  after  Json?
+
+  createdAt DateTime @default(now())
+
+  // Reading is "what happened lately" and "what happened to this person",
+  // the only two questions this table is built to answer.
+  @@index([createdAt])
+  @@index([subjectId, createdAt])
+}
+
 model User {
   id                  Int       @id @default(autoincrement())
   name                String
@@ -33,8 +112,11 @@ model User {
   // Bumped whenever every token issued for this user must stop working. Signed
   // into the JWT and compared on every request by JwtStrategy, which already
   // reads this row to check isActive — so revocation costs no extra query.
-  // Only change-password bumps it: activation cannot have issued a token yet,
-  // and deactivation is already enforced live through isActive.
+  // Two writes bump it: change-password (step 8e/8f) and the admin's
+  // reset-password (step 8g). ⚠️ This comment said "only change-password" until
+  // step 18 and had been stale since 8g landed. Activation cannot have issued a
+  // token yet, and deactivation is already enforced live through isActive, so
+  // neither of those touches it.
   tokenVersion        Int       @default(0)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt

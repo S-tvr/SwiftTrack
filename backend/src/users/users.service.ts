@@ -2,13 +2,24 @@ import { Injectable } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { ErrorCode } from '../common/error-codes';
 import { conflict, notFound } from '../common/domain-errors';
+import { AuditService } from '../audit/audit.service';
+import {
+  toEmployeeSnapshot,
+  toRateSnapshot,
+  type AuditEntry,
+} from '../audit/audit-entry.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserResponseDto } from './dto/user-response.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
-import { Prisma, Role, type User } from '../generated/prisma/client';
+import {
+  AuditAction,
+  Prisma,
+  Role,
+  type User,
+} from '../generated/prisma/client';
 
 const SETUP_CODE_VALIDITY_DAYS = 3;
 
@@ -50,6 +61,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settingsService: SettingsService,
+    private readonly auditService: AuditService,
   ) {}
 
   async findAllEmployees(): Promise<UserResponseDto[]> {
@@ -369,7 +381,10 @@ export class UsersService {
     }));
   }
 
-  async createEmployee(dto: CreateUserDto): Promise<UserResponseDto> {
+  async createEmployee(
+    actorId: number,
+    dto: CreateUserDto,
+  ): Promise<UserResponseDto> {
     const existing = await this.findByEmail(dto.email);
     if (existing) {
       throw conflict(
@@ -385,25 +400,46 @@ export class UsersService {
       // create keeps them from ever existing apart — an employee with a rate on
       // their row but no rate row would 500 on their own payroll page.
       // See RATE_EPOCH above for why the first one starts at the epoch.
-      const user = await this.prisma.user.create({
-        data: {
-          name: dto.name,
-          email: dto.email,
-          hourlyRate: dto.hourlyRate,
-          role: 'EMPLOYEE',
-          password: null,
-          setupCode: this.generateSetupCode(),
-          setupCodeExpiresAt: this.addDays(
-            new Date(),
-            SETUP_CODE_VALIDITY_DAYS,
-          ),
-          rates: {
-            create: {
-              hourlyRate: dto.hourlyRate,
-              effectiveFrom: RATE_EPOCH,
+      // ⚠️ The callback form, where the nested create alone would have done:
+      // the audit row needs the new `id`, which does not exist until the insert
+      // returns, so it cannot be a third statement in an array. The nested
+      // write is already atomic on its own — this widens that atomicity to
+      // cover the audit row too, rather than adding it where there was none.
+      const user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            name: dto.name,
+            email: dto.email,
+            hourlyRate: dto.hourlyRate,
+            role: 'EMPLOYEE',
+            password: null,
+            setupCode: this.generateSetupCode(),
+            setupCodeExpiresAt: this.addDays(
+              new Date(),
+              SETUP_CODE_VALIDITY_DAYS,
+            ),
+            rates: {
+              create: {
+                hourlyRate: dto.hourlyRate,
+                effectiveFrom: RATE_EPOCH,
+              },
             },
           },
-        },
+        });
+        await this.auditService.record(tx, {
+          action: AuditAction.EMPLOYEE_CREATED,
+          actorId,
+          subjectId: created.id,
+          entityType: 'User',
+          entityId: created.id,
+          before: null,
+          // ⚠️ The snapshot, never the row: `created` carries the fresh
+          // `setupCode`, which is the secret unlocking this account and must
+          // never reach the audit table. `toEmployeeSnapshot` cannot copy it —
+          // it does not accept it.
+          after: toEmployeeSnapshot(created),
+        });
+        return created;
       });
       // Both halves are known by construction, so this path needs no rate read
       // at all: the only row this employee has is the epoch one written above,
@@ -456,6 +492,7 @@ export class UsersService {
    * single UPDATE.
    */
   async updateEmployee(
+    actorId: number,
     id: number,
     dto: UpdateUserDto,
   ): Promise<UserResponseDto> {
@@ -471,20 +508,49 @@ export class UsersService {
     const rateChanged =
       dto.hourlyRate !== undefined && dto.hourlyRate !== employee.hourlyRate;
 
-    const updateUser = this.prisma.user.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.hourlyRate !== undefined && { hourlyRate: dto.hourlyRate }),
-      },
-    });
+    // ⚠️ The same question as `rateChanged`, asked about the other field, and it
+    // lives here beside it rather than inline at one of the two write branches —
+    // which is exactly the bug the step 18 review caught. `EmployeeForm` submits
+    // **both** fields on every save, so an admin opening a row and pressing Save
+    // without editing sends an identical name and rate. The write below is still
+    // issued (the API's answer must not change), but there is nothing to record:
+    // an audit row whose `before` and `after` are identical describes an event
+    // that did not happen, and a trail carrying those makes every other row less
+    // believable. Same rule as `reactivate`'s no-op guard — the state decides,
+    // never the request.
+    const nameChanged = dto.name !== undefined && dto.name !== employee.name;
+
+    const data = {
+      ...(dto.name !== undefined && { name: dto.name }),
+      ...(dto.hourlyRate !== undefined && { hourlyRate: dto.hourlyRate }),
+    };
 
     // ⚠️ Still reports a pending rate. This branch means *this* request changed
     // nothing about the rate — not that nothing is queued. A rename must not
     // wipe the "→ 3,800 from 25 Sep" line off the row it just re-rendered.
     if (!rateChanged) {
+      // ⚠️ This branch wrote outside any transaction before step 18, since a
+      // lone UPDATE needs none. It takes one **only when there is an audit row
+      // to pair with the write** — the two must land together or not at all.
+      // When nothing changed there is nothing to record, so the transaction has
+      // no work to do either and the write goes out on its own, exactly as it
+      // did before step 18. The shape says which case this is.
       const [user, rates] = await Promise.all([
-        updateUser,
+        nameChanged
+          ? this.prisma.$transaction(async (tx) => {
+              const updated = await tx.user.update({ where: { id }, data });
+              await this.auditService.record(tx, {
+                action: AuditAction.EMPLOYEE_UPDATED,
+                actorId,
+                subjectId: id,
+                entityType: 'User',
+                entityId: id,
+                before: toEmployeeSnapshot(employee),
+                after: toEmployeeSnapshot(updated),
+              });
+              return updated;
+            })
+          : this.prisma.user.update({ where: { id }, data }),
         this.findRateNow(id),
       ]);
       return this.toResponseDto(user, rates);
@@ -505,14 +571,59 @@ export class UsersService {
       this.findRateNow(id),
     ]);
 
-    const [user] = await this.prisma.$transaction([
-      updateUser,
-      this.prisma.userRate.upsert({
+    // ⚠️ Read **before** the upsert, and this is the single most valuable row
+    // in the audit table. The upsert's key is `(userId, effectiveFrom)`, so a
+    // second raise entered in the same cycle **overwrites** the first and
+    // leaves nothing behind: without this read, the figure that was previously
+    // queued is gone from the system entirely. It is `null` on an ordinary
+    // first raise, which is the common case.
+    const supersededRate = await this.prisma.userRate.findUnique({
+      where: { userId_effectiveFrom: { userId: id, effectiveFrom } },
+      select: { hourlyRate: true, effectiveFrom: true },
+    });
+
+    // ⚠️ The callback form, converted from the array form in step 18. An array
+    // cannot express "insert a row naming what the upsert just replaced" —
+    // those promises are built before any of them runs. The atomicity the array
+    // form was chosen for is unchanged; only the shape is.
+    const user = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.user.update({ where: { id }, data });
+      await tx.userRate.upsert({
         where: { userId_effectiveFrom: { userId: id, effectiveFrom } },
         update: { hourlyRate },
         create: { userId: id, hourlyRate, effectiveFrom },
-      }),
-    ]);
+      });
+
+      // ⚠️ Two rows, not one, and the pair is the point. A single request can
+      // both rename an employee and change their pay; recording one event would
+      // leave a reader unable to tell which of the two this request did. They
+      // are also read by different people asking different questions.
+      const entries: AuditEntry[] = [];
+      if (nameChanged) {
+        entries.push({
+          action: AuditAction.EMPLOYEE_UPDATED,
+          actorId,
+          subjectId: id,
+          entityType: 'User',
+          entityId: id,
+          before: toEmployeeSnapshot(employee),
+          after: toEmployeeSnapshot(updated),
+        });
+      }
+      entries.push({
+        action: AuditAction.RATE_QUEUED,
+        actorId,
+        subjectId: id,
+        entityType: 'UserRate',
+        // The upsert returns the row, but its id is of no use to a reader: the
+        // rate is identified by whose it is and when it starts.
+        entityId: null,
+        before: supersededRate ? toRateSnapshot(supersededRate) : null,
+        after: toRateSnapshot({ hourlyRate, effectiveFrom }),
+      });
+      await this.auditService.recordAll(tx, entries);
+      return updated;
+    });
     // The row just written is the pending one, by construction — reported from
     // the write rather than from `rates`, which was read before it and would
     // still hold whatever was queued previously.
@@ -522,14 +633,45 @@ export class UsersService {
     });
   }
 
-  async deactivate(id: number): Promise<UserResponseDto> {
-    await this.findEmployeeByIdOrThrow(id);
+  /**
+   * One `User` write and the audit row describing it, in one transaction.
+   *
+   * Four methods here — deactivate, reactivate, resetSetupCode, resetPassword —
+   * are the same shape: resolve the row, write one column set, record what
+   * changed. Written out four times, the transaction is four chances to forget
+   * one; written once, the audit row is not something a new sibling has to
+   * remember, because there is no way to call this without producing one.
+   *
+   * The entry is built from the **written** row rather than passed in, so
+   * `after` always describes what actually landed.
+   */
+  private writeAndAudit(
+    write: (tx: Prisma.TransactionClient) => Promise<User>,
+    entry: (written: User) => AuditEntry,
+  ): Promise<User> {
+    return this.prisma.$transaction(async (tx) => {
+      const written = await write(tx);
+      await this.auditService.record(tx, entry(written));
+      return written;
+    });
+  }
+
+  async deactivate(actorId: number, id: number): Promise<UserResponseDto> {
+    const employee = await this.findEmployeeByIdOrThrow(id);
 
     const [user, rates] = await Promise.all([
-      this.prisma.user.update({
-        where: { id },
-        data: { isActive: false },
-      }),
+      this.writeAndAudit(
+        (tx) => tx.user.update({ where: { id }, data: { isActive: false } }),
+        (updated) => ({
+          action: AuditAction.EMPLOYEE_DEACTIVATED,
+          actorId,
+          subjectId: id,
+          entityType: 'User',
+          entityId: id,
+          before: toEmployeeSnapshot(employee),
+          after: toEmployeeSnapshot(updated),
+        }),
+      ),
       // Deactivating does not cancel a queued raise — the row stays, and so
       // does the line on the list. Reported for the same reason as everywhere
       // else: this response replaces the row on screen.
@@ -550,14 +692,33 @@ export class UsersService {
    * Contrast `resetSetupCode()`, which refuses — there the repeat is not a no-op
    * but a new secret written to an account that no longer needs one.
    */
-  async reactivate(id: number): Promise<UserResponseDto> {
-    await this.findEmployeeByIdOrThrow(id);
+  async reactivate(actorId: number, id: number): Promise<UserResponseDto> {
+    const employee = await this.findEmployeeByIdOrThrow(id);
+
+    // ⚠️ **No audit row when the employee was already active.** The 200-on-a
+    // -repeat behaviour documented above means this write is reachable as a
+    // no-op — a double submit — and it still issues an UPDATE. Recording it
+    // would put an event in the table that did not happen, and a trail that
+    // reports reactivations nobody performed is worse than a sparse one: it
+    // makes every other row less believable. The state is what decides, not
+    // the request.
+    const wasInactive = !employee.isActive;
 
     const [user, rates] = await Promise.all([
-      this.prisma.user.update({
-        where: { id },
-        data: { isActive: true },
-      }),
+      wasInactive
+        ? this.writeAndAudit(
+            (tx) => tx.user.update({ where: { id }, data: { isActive: true } }),
+            (updated) => ({
+              action: AuditAction.EMPLOYEE_REACTIVATED,
+              actorId,
+              subjectId: id,
+              entityType: 'User',
+              entityId: id,
+              before: toEmployeeSnapshot(employee),
+              after: toEmployeeSnapshot(updated),
+            }),
+          )
+        : this.prisma.user.update({ where: { id }, data: { isActive: true } }),
       this.findRateNow(id),
     ]);
     return this.toResponseDto(user, rates);
@@ -571,7 +732,7 @@ export class UsersService {
    * permanently, while the expiry message told them to "contact your admin",
    * who had no tool.
    */
-  async resetSetupCode(id: number): Promise<UserResponseDto> {
+  async resetSetupCode(actorId: number, id: number): Promise<UserResponseDto> {
     const employee = await this.findEmployeeByIdOrThrow(id);
 
     if (employee.password !== null) {
@@ -582,16 +743,34 @@ export class UsersService {
     }
 
     const [user, rates] = await Promise.all([
-      this.prisma.user.update({
-        where: { id },
-        data: {
-          setupCode: this.generateSetupCode(),
-          setupCodeExpiresAt: this.addDays(
-            new Date(),
-            SETUP_CODE_VALIDITY_DAYS,
-          ),
-        },
-      }),
+      this.writeAndAudit(
+        (tx) =>
+          tx.user.update({
+            where: { id },
+            data: {
+              setupCode: this.generateSetupCode(),
+              setupCodeExpiresAt: this.addDays(
+                new Date(),
+                SETUP_CODE_VALIDITY_DAYS,
+              ),
+            },
+          }),
+        (updated) => ({
+          action: AuditAction.SETUP_CODE_REISSUED,
+          actorId,
+          subjectId: id,
+          entityType: 'User',
+          entityId: id,
+          // ⚠️ before and after are **identical here, and correctly so**: the
+          // snapshot carries name/hourlyRate/isActive, none of which this write
+          // touches. What changed is a credential, and a credential is never a
+          // value in this table — the *action* is the whole record. A reader
+          // learns that a new code was issued, by whom and when, which is the
+          // question; the code itself belongs only in the admin's response.
+          before: toEmployeeSnapshot(employee),
+          after: toEmployeeSnapshot(updated),
+        }),
+      ),
       this.findRateNow(id),
     ]);
     return this.toResponseDto(user, rates);
@@ -614,36 +793,75 @@ export class UsersService {
    * there is no replacement token to hand back: the caller is the admin, not
    * the employee, who has no session for this call to preserve.
    */
-  async resetPassword(id: number): Promise<UserResponseDto> {
-    await this.findEmployeeByIdOrThrow(id);
+  async resetPassword(actorId: number, id: number): Promise<UserResponseDto> {
+    const employee = await this.findEmployeeByIdOrThrow(id);
 
     const [user, rates] = await Promise.all([
-      this.prisma.user.update({
-        where: { id },
-        data: {
-          password: null,
-          setupCode: this.generateSetupCode(),
-          setupCodeExpiresAt: this.addDays(
-            new Date(),
-            SETUP_CODE_VALIDITY_DAYS,
-          ),
-          tokenVersion: { increment: 1 },
-        },
-      }),
+      this.writeAndAudit(
+        (tx) =>
+          tx.user.update({
+            where: { id },
+            data: {
+              password: null,
+              setupCode: this.generateSetupCode(),
+              setupCodeExpiresAt: this.addDays(
+                new Date(),
+                SETUP_CODE_VALIDITY_DAYS,
+              ),
+              tokenVersion: { increment: 1 },
+            },
+          }),
+        (updated) => ({
+          // ⚠️ **This row is the reason step 8g recorded a gap it could not
+          // close.** The most privileged write in the system — one admin blanks
+          // another person's password and kills every session they hold — and
+          // until now nothing anywhere recorded which admin did it, to whom, or
+          // when. `actorId`/`subjectId` is that record.
+          action: AuditAction.PASSWORD_RESET_BY_ADMIN,
+          actorId,
+          subjectId: id,
+          entityType: 'User',
+          entityId: id,
+          // As in `resetSetupCode`, the snapshots are identical by design:
+          // neither the old password (a hash), the new code, nor the bumped
+          // `tokenVersion` is ever a value here. The revocation is recorded as
+          // an action, which is what the action name says.
+          before: toEmployeeSnapshot(employee),
+          after: toEmployeeSnapshot(updated),
+        }),
+      ),
       this.findRateNow(id),
     ]);
     return this.toResponseDto(user, rates);
   }
 
   async activateAccount(email: string, hashedPassword: string): Promise<User> {
-    return this.prisma.user.update({
-      where: { email },
-      data: {
-        password: hashedPassword,
-        setupCode: null,
-        setupCodeExpiresAt: null,
-      },
-    });
+    return this.writeAndAudit(
+      (tx) =>
+        tx.user.update({
+          where: { email },
+          data: {
+            password: hashedPassword,
+            setupCode: null,
+            setupCodeExpiresAt: null,
+          },
+        }),
+      (updated) => ({
+        action: AuditAction.ACCOUNT_ACTIVATED,
+        // ⚠️ The only `null` actor in the system, and it is an answer rather
+        // than a missing value: this is the one mutation performed without a
+        // session (`POST /auth/set-initial-password` is unauthenticated), so
+        // there is no actor distinct from the subject. Recording the subject in
+        // both columns would invent a fact — that somebody acted on somebody —
+        // where the truth is that the account activated itself.
+        actorId: null,
+        subjectId: updated.id,
+        entityType: 'User',
+        entityId: updated.id,
+        before: toEmployeeSnapshot(updated),
+        after: toEmployeeSnapshot(updated),
+      }),
+    );
   }
 
   /**
@@ -683,11 +901,31 @@ export class UsersService {
     id: number,
     hashedPassword: string,
   ): Promise<number> {
-    const updated = await this.prisma.user.update({
-      where: { id },
-      data: { password: hashedPassword, tokenVersion: { increment: 1 } },
-      select: { tokenVersion: true },
-    });
+    // ⚠️ The `select` is widened from `{ tokenVersion }` to the whole row, and
+    // only because the audit snapshot needs name/hourlyRate/isActive. The
+    // return value is unchanged — still just the counter — so no caller learns
+    // anything new, and nothing wider than the snapshot reaches the table.
+    const updated = await this.writeAndAudit(
+      (tx) =>
+        tx.user.update({
+          where: { id },
+          data: { password: hashedPassword, tokenVersion: { increment: 1 } },
+        }),
+      (written) => ({
+        // Self-service: the actor is the subject, and unlike an admin's reset
+        // that identity is guaranteed by construction — `changePassword` reads
+        // its `userId` from the JWT and there is no variant taking one from a
+        // body. Recorded with both columns set rather than a null actor, since
+        // here somebody genuinely did act: themselves.
+        action: AuditAction.PASSWORD_CHANGED,
+        actorId: id,
+        subjectId: id,
+        entityType: 'User',
+        entityId: id,
+        before: toEmployeeSnapshot(written),
+        after: toEmployeeSnapshot(written),
+      }),
+    );
     return updated.tokenVersion;
   }
 

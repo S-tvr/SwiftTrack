@@ -1,4 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
+import { toSettingsSnapshot } from '../audit/audit-entry.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsResponseDto } from './dto/settings-response.dto';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
@@ -10,7 +12,7 @@ import {
   toCycleRangeDto,
   type CycleRange,
 } from './cycle.util';
-import type { AppSettings } from '../generated/prisma/client';
+import { AuditAction, type AppSettings } from '../generated/prisma/client';
 
 const SETTINGS_ROW_ID = 1;
 const MIN_CYCLE_START_DAY = 11;
@@ -49,23 +51,51 @@ export interface ResolvedCycle {
 
 @Injectable()
 export class SettingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly auditService: AuditService,
+  ) {}
 
   async getSettings(): Promise<SettingsResponseDto> {
     return this.toResponseDto(await this.getSettingsRow());
   }
 
-  async updateSettings(dto: UpdateSettingsDto): Promise<SettingsResponseDto> {
+  async updateSettings(
+    actorId: number,
+    dto: UpdateSettingsDto,
+  ): Promise<SettingsResponseDto> {
     // Checked first so a missing row reports the actionable message below
-    // rather than surfacing Prisma's P2025 as an opaque 500.
-    await this.getSettingsRow();
+    // rather than surfacing Prisma's P2025 as an opaque 500. Since step 18 it
+    // does double duty: this row is also the audit `before`, at no extra cost.
+    const previous = await this.getSettingsRow();
 
-    const settings = await this.prisma.appSettings.update({
-      where: { id: SETTINGS_ROW_ID },
-      data: {
-        cycleStartDay: dto.cycleStartDay,
-        cycleEndDay: dto.cycleEndDay,
-      },
+    const settings = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.appSettings.update({
+        where: { id: SETTINGS_ROW_ID },
+        data: {
+          cycleStartDay: dto.cycleStartDay,
+          cycleEndDay: dto.cycleEndDay,
+        },
+      });
+      await this.auditService.record(tx, {
+        // ⚠️ The widest-reaching write in the system, and the one whose effect
+        // is least visible afterwards: payroll is recomputed per request and
+        // never frozen, so moving this boundary silently **re-cuts every past
+        // cycle** — every historical figure changes and nothing on screen says
+        // a change occurred. Recording the old and new days is what makes a
+        // total that "used to be different" explicable rather than spooky.
+        action: AuditAction.SETTINGS_UPDATED,
+        actorId,
+        // No subject: this is global configuration, not something done to a
+        // person. `null` is the answer, not a gap.
+        subjectId: null,
+        entityType: 'AppSettings',
+        // The singleton's id is always 1 and carries no information.
+        entityId: null,
+        before: toSettingsSnapshot(previous),
+        after: toSettingsSnapshot(updated),
+      });
+      return updated;
     });
     return this.toResponseDto(settings);
   }

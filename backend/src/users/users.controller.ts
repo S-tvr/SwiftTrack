@@ -96,8 +96,11 @@ export class UsersController {
     description:
       'Code: `EMAIL_ALREADY_EXISTS`. Both layers of the uniqueness rule — the explicit check and the unique index behind it — answer with this one.',
   })
-  createEmployee(@Body() dto: CreateUserDto): Promise<UserResponseDto> {
-    return this.usersService.createEmployee(dto);
+  createEmployee(
+    @Body() dto: CreateUserDto,
+    @CurrentUser() actor: JwtPayload,
+  ): Promise<UserResponseDto> {
+    return this.usersService.createEmployee(actor.userId, dto);
   }
 
   @Put(':id')
@@ -126,8 +129,9 @@ export class UsersController {
   updateEmployee(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateUserDto,
+    @CurrentUser() actor: JwtPayload,
   ): Promise<UserResponseDto> {
-    return this.usersService.updateEmployee(id, dto);
+    return this.usersService.updateEmployee(actor.userId, id, dto);
   }
 
   @Delete(':id')
@@ -150,8 +154,11 @@ export class UsersController {
     description:
       'Code: `EMPLOYEE_NOT_FOUND`. No EMPLOYEE with this id — an admin id included.',
   })
-  deactivate(@Param('id', ParseIntPipe) id: number): Promise<UserResponseDto> {
-    return this.usersService.deactivate(id);
+  deactivate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() actor: JwtPayload,
+  ): Promise<UserResponseDto> {
+    return this.usersService.deactivate(actor.userId, id);
   }
 
   @Patch(':id/reactivate')
@@ -174,8 +181,11 @@ export class UsersController {
     description:
       'No EMPLOYEE with this id — an admin id included. Code: `EMPLOYEE_NOT_FOUND`.',
   })
-  reactivate(@Param('id', ParseIntPipe) id: number): Promise<UserResponseDto> {
-    return this.usersService.reactivate(id);
+  reactivate(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() actor: JwtPayload,
+  ): Promise<UserResponseDto> {
+    return this.usersService.reactivate(actor.userId, id);
   }
 
   @Post(':id/reset-setup-code')
@@ -206,8 +216,9 @@ export class UsersController {
   })
   resetSetupCode(
     @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() actor: JwtPayload,
   ): Promise<UserResponseDto> {
-    return this.usersService.resetSetupCode(id);
+    return this.usersService.resetSetupCode(actor.userId, id);
   }
 
   @Post(':id/reset-password')
@@ -234,7 +245,8 @@ export class UsersController {
   })
   resetPassword(
     @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() actor: JwtPayload,
   ): Promise<UserResponseDto> {
-    return this.usersService.resetPassword(id);
+    return this.usersService.resetPassword(actor.userId, id);
   }
 }

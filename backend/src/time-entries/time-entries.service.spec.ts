@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { TimeEntriesService } from './time-entries.service';
+import { AuditService } from '../audit/audit.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { SettingsService } from '../settings/settings.service';
 import type { UsersService } from '../users/users.service';
@@ -104,9 +105,18 @@ function makeService() {
       Promise.resolve({ id, name: `Employee ${id}` }),
     );
 
+  // The callback form, resolving against this same stub: the audit row and the
+  // mutation share one transaction in the service, and these tests assert what
+  // was handed over rather than pretending to be a real transaction (the shape
+  // `users.service.spec.ts` already established for the array form).
+  const auditCreate = jest.fn().mockResolvedValue(undefined);
   const prisma = {
     timeEntry: { findFirst, findMany, create, update, delete: remove },
+    auditLog: { create: auditCreate },
   } as unknown as PrismaService;
+  (prisma as unknown as { $transaction: unknown }).$transaction = jest
+    .fn()
+    .mockImplementation((fn: (tx: unknown) => unknown) => fn(prisma));
   // The write floor and "has this cycle opened?" ride along with the cycle:
   // all three come from one reading of `cycleStartDay` and one reading of the
   // clock, so the read paths take them from here and only the write paths call
@@ -123,7 +133,13 @@ function makeService() {
   } as unknown as UsersService;
 
   return {
-    service: new TimeEntriesService(prisma, settings, users),
+    service: new TimeEntriesService(
+      prisma,
+      settings,
+      users,
+      new AuditService(),
+    ),
+    auditCreate,
     findFirst,
     findMany,
     create,

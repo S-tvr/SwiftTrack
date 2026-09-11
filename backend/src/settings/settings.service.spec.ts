@@ -1,3 +1,4 @@
+import { AuditService } from '../audit/audit.service';
 import { InternalServerErrorException } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -11,6 +12,9 @@ import type { AppSettings } from '../generated/prisma/client';
  *
  * Prisma is stubbed — the real DB read is covered by the endpoint checks.
  */
+/** The admin performing the write. */
+const ACTOR = 1;
+
 function serviceWith(row: AppSettings | null): {
   service: SettingsService;
   update: jest.Mock;
@@ -20,8 +24,19 @@ function serviceWith(row: AppSettings | null): {
   const findUnique = jest.fn().mockResolvedValue(row);
   const prisma = {
     appSettings: { findUnique, update },
+    auditLog: { create: jest.fn().mockResolvedValue(undefined) },
   } as unknown as PrismaService;
-  return { service: new SettingsService(prisma), update, findUnique };
+  // The callback form, resolving against the same stub — the audit row shares
+  // the write's transaction (see AuditService), so the write path only runs at
+  // all if this is present.
+  (prisma as unknown as { $transaction: unknown }).$transaction = jest
+    .fn()
+    .mockImplementation((fn: (tx: unknown) => unknown) => fn(prisma));
+  return {
+    service: new SettingsService(prisma, new AuditService()),
+    update,
+    findUnique,
+  };
 }
 
 const row = (cycleStartDay: number, cycleEndDay: number): AppSettings => ({
@@ -65,7 +80,7 @@ describe('SettingsService', () => {
       update.mockResolvedValue(row(11, 10));
 
       await expect(
-        service.updateSettings({ cycleStartDay: 11, cycleEndDay: 10 }),
+        service.updateSettings(ACTOR, { cycleStartDay: 11, cycleEndDay: 10 }),
       ).resolves.toEqual({ cycleStartDay: 11, cycleEndDay: 10 });
 
       expect(update).toHaveBeenCalledWith({
@@ -77,7 +92,7 @@ describe('SettingsService', () => {
     it('fails with the seed message rather than an opaque Prisma error', async () => {
       const { service, update } = serviceWith(null);
       await expect(
-        service.updateSettings({ cycleStartDay: 11, cycleEndDay: 10 }),
+        service.updateSettings(ACTOR, { cycleStartDay: 11, cycleEndDay: 10 }),
       ).rejects.toThrow(/prisma db seed/);
       expect(update).not.toHaveBeenCalled();
     });
