@@ -1,9 +1,11 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { HttpAdapterHost } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { App } from 'supertest/types';
 
 import { AppModule } from '../../src/app.module';
+import { AllExceptionsFilter } from '../../src/common/logging/all-exceptions.filter';
 import { PrismaService } from '../../src/prisma/prisma.service';
 
 export interface E2EContext {
@@ -19,14 +21,20 @@ export interface E2EContext {
 /**
  * Boots the real AppModule — every module, every guard, every pipe.
  *
- * ⚠️ The global `ValidationPipe` and CORS are registered in `main.ts`, which a
- * testing application never executes: `createNestApplication()` builds the app
- * from the module graph only. They are therefore re-applied here, and the
- * settings must stay identical to `main.ts`. Without the pipe every validation
- * assertion in the suite passes for the wrong reason — a body with an
- * unexpected field would be accepted, and the test asserting 400 would be the
- * one reporting the bug rather than the code. `auth.e2e-spec.ts` has a smoke
- * test for exactly this, so the harness cannot rot silently.
+ * ⚠️ The global `ValidationPipe`, CORS and the `AllExceptionsFilter` are
+ * registered in `main.ts`, which a testing application never executes:
+ * `createNestApplication()` builds the app from the module graph only. They are
+ * therefore re-applied here, and the settings must stay identical to `main.ts`.
+ * Without the pipe every validation assertion in the suite passes for the wrong
+ * reason — a body with an unexpected field would be accepted, and the test
+ * asserting 400 would be the one reporting the bug rather than the code.
+ * `auth.e2e-spec.ts` has a smoke test for exactly this, so the harness cannot
+ * rot silently.
+ *
+ * The filter (step 17) carries the same risk in a sharper form: without it,
+ * `logging.e2e-spec.ts` would prove the response body untouched in an app the
+ * filter was never installed in. ⚠️ `FailedRequestMiddleware` is deliberately
+ * absent — it is declared on `AppModule` and arrives with the module graph.
  */
 export interface CreateTestAppOptions {
   /**
@@ -65,6 +73,10 @@ export async function createTestApp(
   app.enableCors({
     origin: process.env.FRONTEND_URL ?? 'http://localhost:5173',
   });
+
+  app.useGlobalFilters(
+    new AllExceptionsFilter(app.get(HttpAdapterHost).httpAdapter),
+  );
 
   // Required before the app can serve requests (NestJS docs, e2e section).
   // Note it does NOT bind a port — supertest talks to the server object

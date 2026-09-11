@@ -21,6 +21,14 @@ services:
     # Survives a laptop sleeping, a Docker Desktop restart or a transient crash,
     # without coming back up after an explicit `docker compose stop`.
     restart: unless-stopped
+    # Docker's default json-file driver keeps every line forever; ~30 MB is weeks
+    # of history here. ⚠️ Repeated on all three services because compose has no
+    # inheritance, and the one left out is the one that stays unbounded.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       POSTGRES_USER: swifttrack
       POSTGRES_PASSWORD: swifttrack
@@ -43,6 +51,11 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       # db is the compose service name — resolved inside the network, not by the browser.
       DATABASE_URL: postgresql://swifttrack:swifttrack@db:5432/swifttrack
@@ -78,6 +91,11 @@ services:
 
   frontend:
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: ./frontend
       args:

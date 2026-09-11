@@ -2796,3 +2796,94 @@ Date: 2026-09-11
 4. **Η μορφή των native inputs ακολουθεί τη γλώσσα του browser** — βλ. #3b. Πιθανή ασυνέπεια με το `en-GB` της λίστας βαρδιών. Η αποθηκευμένη τιμή είναι σωστή· μόνο η εμφάνιση διαφέρει.
 
 **Next step**: **13b (Frontend E2E, Playwright)**.
+
+---
+
+## Step 17 — Operational logging (backend)
+Status: ✅ Done
+Date: 2026-09-11
+
+Το `backend/src/` είχε **μηδέν** logging: καμία `console.*`, κανένας `Logger`, κανένα filter/interceptor/middleware. Το κενό που μετρούσε: ένα 500 έφευγε χωρίς να λέει ποιο request το προκάλεσε.
+
+### Απόφαση (χρήστη)
+| Ερώτημα | Απόφαση |
+|---|---|
+| Εύρος | **Μόνο αποτυχίες** — γραμμή ανά failed request, στοίβα ανά 5xx, σιωπή στα 2xx |
+| Bodies/headers | **Ποτέ** — απουσία μονοπατιού, όχι φιλτράρισμα |
+| Audit log | **Εκτός** — ξεχωριστό βήμα (§13 gap 2, θέλει νέο πίνακα) |
+| Εξαρτήσεις | **Καμία** — ενσωματωμένα `Logger`/`ExceptionFilter`/`NestMiddleware` |
+
+### ⭐ Το εύρημα που στένεψε τον σκοπό — και δικαίωσε το filter
+Διαβάζοντας τον **εγκατεστημένο** κώδικα (`@nestjs/core` 11.1.28, `base-exception-filter.js:51`) φάνηκε ότι ο Nest **ήδη** καταγράφει ό,τι **δεν** είναι `HttpException`. Άρα το πραγματικό κενό δεν ήταν «τα σφάλματα δεν καταγράφονται» αλλά κάτι πολύ στενότερο: **`HttpException` με 5xx** — δηλαδή ακριβώς τα τρία σκόπιμα `InternalServerErrorException` του project, που ονομάζουν τη λύση τους σε μήνυμα που κανείς δεν έβλεπε ποτέ.
+
+Χωρίς αυτή την ανάγνωση το filter θα διπλοέγραφε κάθε crash.
+
+### Files added/changed
+- `src/common/logging/failed-request.middleware.ts` — μία γραμμή ανά αποτυχία· `res.on('finish')`, `warn` για 4xx, `error` για 5xx.
+- `src/common/logging/all-exceptions.filter.ts` — 5xx με στοίβα· κάθε κλάδος τελειώνει σε `super.catch()`.
+- `src/common/logging/all-exceptions.filter.spec.ts` — 6 tests (filter).
+- `src/common/logging/failed-request.middleware.spec.ts` — 5 tests (middleware)· χωριστό αρχείο μετά το review.
+- `src/common/logging/capture-logger.testing.ts` — ο κοινός spy helper των δύο spec.
+- `test/logging.e2e-spec.ts` — 7 tests, όλα για **ένα** πράγμα: το συμβόλαιο του API δεν άλλαξε.
+- `src/main.ts` — `useGlobalFilters`, `enableShutdownHooks`, γραμμή εκκίνησης.
+- `src/app.module.ts` — `implements NestModule` + `configure()`.
+- `test/helpers/app.ts` — `useGlobalFilters` ⚠️ **το σημείο απόκλισης**.
+- `docker-compose.yml` — `logging:` σε **και τις τρεις** υπηρεσίες.
+- Context: `architecture.md` (2 invariants + διόρθωση του 8g invariant), `build-plan.md` (Step 17).
+
+### ⭐ Τρεις μεταλλάξεις, όλες εκτελεσμένες, όλες κόκκινες
+Το μοτίβο του Step 16 (τεστ που περνούσε ενώ ο κώδικας ήταν σπασμένος) εφαρμόστηκε **πριν** δηλωθεί το βήμα ολοκληρωμένο:
+
+| # | Μετάλλαξη | Αποτέλεσμα |
+|---|---|---|
+| 1 | Το middleware γράφει `req.body` | **1 unit κόκκινο** ✅ |
+| 2 | Ο κλάδος 5xx του filter αφαιρέθηκε | **2 unit κόκκινα** ✅ |
+| 3 | Το filter ξαναγράφει το body | **4 e2e κόκκινα** ✅ |
+
+⚠️ Η **τρίτη** είναι η σημαντική: αποδεικνύει ότι το `helpers/app.ts` όντως εγκατέστησε το filter. Χωρίς εκείνη τη μία γραμμή, και τα 7 e2e θα έμεναν πράσινα ελέγχοντας εφαρμογή στην οποία το filter δεν υπήρχε ποτέ.
+
+⚠️ **Δύο δικά μου λάθη στα tests, πιασμένα από το ίδιο το run**: έλεγχα `not.toContain('3')` και `not.toContain('7')` για το `tokenVersion`, αλλά και τα δύο ψηφία εμφανίζονται τυχαία μέσα στο `500`/`400` της ίδιας γραμμής. Ο ισχυρισμός ήταν **αδύνατο** να ισχύσει. Άλλαξε σε `77`.
+
+### Verification που εκτελέστηκε
+- Backend unit **262/262** (253 → **+9**), e2e **137/137** (130 → **+7**), `tsc --noEmit` + `eslint` καθαρά.
+  - ⚠️ **Δέκατο έκτο σφάλμα μέτρησης, δικό μου, πιασμένο στο review.** Είχα γράψει «250 → +12» και «128 → +9» αντιγράφοντας τη βάση από τον tracker του Step 16 **χωρίς να τη μετρήσω** πριν αρχίσω. Η πραγματική βάση ήταν 253/130: το commit `0e58336` (δουλειά του χρήστη, πριν από αυτή τη συνεδρία) είχε ήδη προσθέσει 3 unit και 2 e2e. Μετρήθηκε εκ των υστέρων με `--testPathIgnorePatterns` στα νέα spec.
+- ⭐ **Ζωντανά** (`docker compose up -d --build backend`), με πραγματικά μυστικά σε πραγματικά requests:
+  - λάθος κωδικός `LEAKCANARY-PW-99887` → **0** εμφανίσεις στα logs
+  - `setupCode` 7719 από πραγματικό `POST /users` → **0**
+  - `Bearer` → **0** · ολόκληρο το token (185 χαρακτήρες) → **0**
+  - επιτυχημένο `GET /settings 200` → **καμία** γραμμή ✅
+  - `GET /payroll/999999 404 21ms user=1` → γραμμή ✅
+  - πραγματικό 500 (σβήστηκε το `AppSettings` row): `GET /payroll/overview 500 user=1 — Settings not initialised. Run \`npx prisma db seed\`.` **με πλήρη στοίβα μέχρι το `settings.service.js:72`** ✅ — επαναφέρθηκε αμέσως, `200` ✅
+- ⚠️ **Μία εμφάνιση του `admin@swifttrack.local`** στα logs, **δεν είναι διαρροή**: προέρχεται από το `prisma/seed.ts:23` στο entrypoint, προϋπάρχει του Step 17, και καμία γραμμή `[Request]`/`[Exception]` δεν το περιέχει.
+- ⭐ **Το compose recreate ήταν όντως απαραίτητο**: μετά το `up --build backend`, το `docker inspect` έδειξε `db` και `backend` με `max-size` αλλά **`frontend` με κενό LogConfig** — το `logging:` εφαρμόζεται στη δημιουργία, όχι στο YAML. Χρειάστηκε `up -d frontend`. Το YAML φαινόταν σωστό· μόνο το `inspect` το έδειξε.
+- **Shutdown (bug #2)**: `docker compose restart backend` σε **1.8s**, κανένα σφάλμα κλεισίματος, υγιές μετά.
+- **Επίδοση, μετρημένη όχι υποτιθέμενη**: `/payroll/overview` × 10 → min 23.2ms, **διάμεσος 27.4ms**, max 117.2ms. Καμία μετρήσιμη επιβάρυνση — το middleware δεν αγγίζει τη διαδρομή επιτυχίας πέρα από ένα `Date.now()` και έναν listener.
+
+### ⚠️ Ανοιχτά
+1. **Audit log** (§13 gap 2) — το επόμενο βήμα κατόπιν απόφασης του χρήστη. Θέλει νέο πίνακα + migration + ενημέρωση και των 3 context αρχείων. Το Step 17 αφήνει έτοιμο τον εντοπισμό του `userId` και το sink, αλλά **δεν** το υποκαθιστά: ένα *επιτυχημένο* reset password δεν γράφει τίποτα.
+2. **Frontend observability** — μηδέν και εκεί: κανένα ErrorBoundary, κανένας `window.onerror`, χωρίς sourcemaps· ένα throw στο render δίνει λευκή σελίδα χωρίς ίχνος. Πραγματικό κενό, ξεχωριστό βήμα.
+3. **13b (Playwright)** και **§13 gaps 7, 8** — αμετάβλητα.
+
+### Follow-up από `/review` (ίδια μέρα)
+Το review βρήκε **5 ευρήματα** — 2 important, 3 minor, κανένα critical. Διορθώθηκαν και τα 5.
+
+⭐ **Important — ο ισχυρισμός «One event, one line» ήταν ψευδής.** Το σχόλιο του filter αιτιολογούσε τη σιωπή στα 4xx λέγοντας ότι δύο γραμμές ανά συμβάν θα ήταν πρόβλημα. **Μετρημένο ζωντανά, ένα 500 βγάζει δύο:**
+```
+ERROR [Exception] GET /payroll/overview 500 user=1 — Settings not initialised…   ← στοίβα
+ERROR [Request]   GET /payroll/overview 500 10ms user=1                           ← διάρκεια
+```
+Δεν είναι bug — οι δύο γραμμές απαντούν σε διαφορετικά ερωτήματα και η στοίβα γράφεται **μία** φορά (ένα filter παίρνει εξαίρεση, όχι την αρχή του request, άρα δεν μπορεί να μετρήσει διάρκεια). Είναι **τεκμηρίωση που αντιφάσκει με τη συμπεριφορά** — ίδιο μοτίβο με τα δύο ευρήματα doc/κώδικα του Step 16. Το σχόλιο ξαναγράφτηκε ώστε να δηλώνει τις δύο γραμμές ρητά, το ίδιο και ο invariant στο `architecture.md` που το είχε αντιγράψει.
+- ⚠️ **Καμία δοκιμή δεν το κάλυπτε**: filter και middleware τεστάρονταν χωριστά, άρα η αλληλεπίδρασή τους δεν φάνηκε ποτέ — μόνο ζωντανά. Προστέθηκαν **δύο** tests που κλειδώνουν τους αριθμούς (`writes the stack exactly once`, `writes exactly one line per failed request`), και **spike #4**: διπλή γραμμή στο middleware → το test **κοκκινίζει** ✅.
+
+⭐ **Important — λάθος αριθμοί tests** (βλ. παραπάνω): 253/130 αντί 250/128.
+
+**Τα 3 minor:**
+- **Το `FailedRequestMiddleware` δεν είχε δικό του spec** — τεσταριζόταν μέσα στο spec του filter, παρά τη σύμβαση του project (spec δίπλα στο αρχείο του). Σπάστηκε σε `failed-request.middleware.spec.ts`· ο κοινός `captureLogger` βγήκε σε `capture-logger.testing.ts` (⚠️ κατάληξη `.testing.ts` και όχι `.spec.ts`, αλλιώς ο jest το τρέχει ως κενό suite και κοκκινίζει).
+- **`host.getType() === 'http'` ήταν νεκρός κλάδος** — το project δεν έχει microservices/ws/GraphQL (επαληθεύτηκε με grep). Αφαιρέθηκε: ένας κλάδος που δεν εκτελείται ποτέ δεν ελέγχεται ποτέ. Το σχόλιο λέει πού θα ξαναχρειαζόταν.
+- **Το `/favicon.ico` 404 — δεν ήταν πραγματικό εύρημα.** Το είχα δει χτυπώντας το `:3000` απευθείας με curl· στην κανονική χρήση ο nginx σερβίρει το `/favicon.svg` στο frontend origin και ο browser **ποτέ** δεν ζητά favicon από το API. **Δεν** προστέθηκε ignore-list: συντήρηση για αίτημα που δεν γίνεται, και τέτοιες λίστες αργότερα κρύβουν 404 που κάποιος χρειαζόταν. Τεκμηριώθηκε στο αρχείο.
+
+### Verification μετά τα fixes
+- Backend unit **264/264** (+2 νέα), e2e **137/137**, `tsc --noEmit` + `eslint` καθαρά.
+- Spike #4 επαναλήφθηκε και **κοκκινίζει** σωστά.
+
+**Next step**: **audit log** ή **13b**, κατ' επιλογή του χρήστη.

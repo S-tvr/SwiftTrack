@@ -182,7 +182,7 @@ cd backend && npm run seed:demo
 
 ## Testing
 
-**Backend** — 241 unit tests and 127 full-stack tests against a real database:
+**Backend** — 264 unit tests and 137 full-stack tests against a real database:
 
 ```bash
 cd backend
@@ -198,7 +198,7 @@ npm run test:e2e
 
 `swifttrack_test` is created automatically the first time the `db` container initialises. The suite refuses to run against any database whose name does not end in `_test`, because it truncates tables between tests.
 
-**Frontend** — 235 component and unit tests:
+**Frontend** — 251 component and unit tests:
 
 ```bash
 cd frontend
@@ -237,7 +237,8 @@ Swagger UI is at **http://localhost:3000/api** with every endpoint, DTO and erro
 │   │   ├── time-entries/    clock in/out, shift CRUD, overlap rules
 │   │   ├── payroll/         rate zones and pay calculation
 │   │   ├── settings/        pay-cycle configuration
-│   │   └── main.ts          bootstrap, CORS, Swagger, global ValidationPipe
+│   │   ├── common/          error codes, and the request/error logging
+│   │   └── main.ts          bootstrap, CORS, Swagger, ValidationPipe, error filter
 │   └── test/                end-to-end suite
 └── frontend/
     ├── Dockerfile
@@ -259,7 +260,7 @@ Deliberate boundaries of this version, not oversights:
 
 - **Payroll is never frozen.** Pay is recomputed from raw shifts on every request. Hourly rates are historised, so a raise does not reach past cycles — but editing a shift in a past cycle still changes that cycle's total. A snapshot per closed cycle would fix the rest.
 - **A new rate takes effect at the next cycle, and cannot be corrected afterwards.** Until that cycle starts the rate stays editable; once it is in force, changing it means editing the database.
-- **No audit log and no approval flow.** Employees write the hours they are paid for, and an edit leaves no history behind.
+- **No audit log and no approval flow.** Employees write the hours they are paid for, and an edit leaves no history behind. The server logs failed requests and errors, but nothing records who changed what once a write succeeds.
 - **Overlapping shifts are checked, not constrained.** Two simultaneous submissions can both pass the check; the result is one duplicate row an admin can delete. A database-level exclusion constraint would close it.
 - **Single tenant, single admin.** There is no public registration — the first admin comes from the seed script, and every employee is created by that admin.
 - **Password recovery runs through the admin, and stops there.** An employee who forgets their password asks the admin, who resets it and reads out a new activation code; there is no email, so the code travels out of band by design. The admin has no such route of their own — no email reset and no second admin — so recovering *that* password means editing the database or re-running the seed.
@@ -284,6 +285,22 @@ FRONTEND_URL=http://192.168.1.10:5173
 ```
 
 All three are needed together: `BIND_HOST` opens the ports, `VITE_API_URL` is baked into the bundle at build time (hence `--build`), and `FRONTEND_URL` is the single origin CORS allows.
+
+**Something failed and the screen only says so vaguely.** The API logs every failed request and every server error:
+
+```bash
+docker compose logs backend              # everything since startup
+docker compose logs -f backend           # follow as it happens
+docker compose logs backend | grep ERROR # server errors only
+```
+
+A failed request is one line (`WARN [Request] GET /payroll/99999 404 12ms user=1`); a server error adds the stack and, for the three cases the app refuses on purpose, the fix:
+
+```
+ERROR [Exception] GET /payroll/overview 500 user=1 — Settings not initialised. Run `npx prisma db seed`.
+```
+
+Successful requests are deliberately silent, and nothing a request carried — no password, no token, no activation code — is ever written to a log.
 
 **Starting over.** `docker compose down -v` deletes the database volume; the next `up` re-runs the migrations and the seeds from scratch.
 

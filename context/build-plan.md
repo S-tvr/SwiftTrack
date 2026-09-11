@@ -742,6 +742,26 @@ The step the four-zone decision was taken to make cheap, and it held: **neither 
 
 ---
 
+
+## Step 17 — Operational logging *(backend, done 2026-09-11)*
+
+The backend had **zero** logging: no `console.*`, no `Logger`, no filter, no interceptor, no middleware. The consequence that mattered: a 500 left without saying which request caused it, and the three deliberate `InternalServerErrorException`s — each naming its own fix in its message — were written for a reader who could not exist.
+
+**Scope, decided with the user: failures only.** One line per failed request, a stack per 5xx, and nothing at all for a success. One install, few users, the author reads the logs; a line per success is noise that buries the two or three a day worth reading. Widening it is a one-word change to the `statusCode < 400` test.
+
+- **No body, no headers, ever** — the absence of a path, not a filter over one. Four endpoints take a secret in their body and every authenticated request carries a bearer token; an allowlist of safe fields fails silently at the next DTO. Two invariants in `architecture.md` record this and the `req.user` → `userId` narrowing.
+- **`AllExceptionsFilter` only reads.** It reopens the alternative `domain-errors.ts` rejected — legitimately, since what was refused is a filter that *decides* the body. ⚠️ The gap is narrower than "log errors": Nest already logs non-`HttpException`s, so what was invisible was an `HttpException` carrying a 5xx.
+- **4xx is silent in the filter** — the middleware owns that line. It also sidesteps `ValidationPipe`'s 400s, which put the offending **values** in `getResponse()`.
+- **The middleware lives on `AppModule`, not `main.ts`** — so e2e inherits it with the module graph and it cannot drift. The filter cannot: `test/helpers/app.ts` re-applies it, like the pipe and CORS.
+
+**Two pre-existing bugs fixed in the same files**, unrelated to logging: `app.enableShutdownHooks()` was missing (so `PrismaService.onModuleDestroy` never ran on `docker compose restart`), and no compose service had a `logging:` block (default `json-file`, unbounded).
+
+**Tests**: 253 → **262** unit, 130 → **137** e2e. ⚠️ The baselines are 253/130, not the 250/128 the step 16 entry ends on — commit `0e58336` landed in between. Stated because the first draft of this line copied the older figures instead of measuring, and the review caught it. ⭐ **Four mutations, all executed and all red**: the middleware logging `req.body` (security test fails), the filter's 5xx branch removed (two fail), the filter rewriting the body (**four e2e** fail — which is what proves `helpers/app.ts` actually installed it), and a duplicated middleware line (the line-count test fails).
+
+**Out of scope, explicitly**: the audit log (§13 gap 2) — it needs a new table, so it is a separate step under the AGENTS.md domain-model rule.
+
+---
+
 ## Rule for every step
 
 Before a module is considered "done":
