@@ -39,11 +39,12 @@ function payroll(overrides: Partial<PayrollResponse> = {}): PayrollResponse {
       { zone: "EVENING", label: "Evening +33%", hours: 3.25, rate: 3258.5, pay: 10590 },
       { zone: "NIGHT", label: "Night +45%", hours: 0, rate: 3552.5, pay: 0 },
       { zone: "WEEKEND", label: "Weekend +45%", hours: 0, rate: 3552.5, pay: 0 },
+      { zone: "OVERTIME", label: "Overtime +80%", hours: 0, rate: 4410, pay: 0 },
     ],
     days: [
       {
         date: "2026-07-25",
-        hours: { DAY: 5, EVENING: 3.25, NIGHT: 0, WEEKEND: 0 },
+        hours: { DAY: 5, EVENING: 3.25, NIGHT: 0, WEEKEND: 0, OVERTIME: 0 },
         totalHours: 8.25,
       },
     ],

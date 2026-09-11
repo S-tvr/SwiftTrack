@@ -242,12 +242,22 @@ describe('PayrollService.getPayrollForCycle', () => {
         rate: 3552.5,
         pay: 44_406,
       },
+      {
+        // 42.62 hours is far below the 173.33 threshold, so the worked example
+        // is priced exactly as it was before overtime existed. The line is
+        // still present, at zero — the client always renders a fixed grid.
+        zone: PayZone.OVERTIME,
+        label: 'Overtime +80%',
+        hours: 0,
+        rate: 4410,
+        pay: 0,
+      },
     ]);
     const summed = result.zones.reduce((total, zone) => total + zone.pay, 0);
     expect(summed).toBe(result.totalPay);
   });
 
-  it('returns one row per worked day, ascending, with all four zone keys', async () => {
+  it('returns one row per worked day, ascending, with all five zone keys', async () => {
     const { service } = makeService({ payableShifts: WORKED_EXAMPLE() });
     const result = await service.getPayrollForCycle(2);
 
@@ -263,7 +273,7 @@ describe('PayrollService.getPayrollForCycle', () => {
     ]);
     expect(result.days[2]).toEqual({
       date: '2026-07-28',
-      hours: { DAY: 5, EVENING: 3.25, NIGHT: 0, WEEKEND: 0 },
+      hours: { DAY: 5, EVENING: 3.25, NIGHT: 0, WEEKEND: 0, OVERTIME: 0 },
       totalHours: 8.25,
     });
   });
@@ -278,14 +288,14 @@ describe('PayrollService.getPayrollForCycle', () => {
     expect(Math.round(fromZones * 100)).toBe(4262);
   });
 
-  it('still returns all four zones, at zero, for a cycle with no shifts', async () => {
+  it('still returns all five zones, at zero, for a cycle with no shifts', async () => {
     const { service } = makeService();
     const result = await service.getPayrollForCycle(2);
 
     expect(result.days).toEqual([]);
     expect(result.totalHours).toBe(0);
     expect(result.totalPay).toBe(0);
-    expect(result.zones).toHaveLength(4);
+    expect(result.zones).toHaveLength(5);
     expect(
       result.zones.every((zone) => zone.hours === 0 && zone.pay === 0),
     ).toBe(true);
@@ -409,6 +419,44 @@ describe('PayrollService.getOverview', () => {
 
     expect(overview.rows[0].totalHours).toBe(own.totalHours);
     expect(overview.rows[0].totalPay).toBe(own.totalPay);
+  });
+
+  /**
+   * ⭐ The overtime threshold is per cycle AND per person, so it is the second
+   * thing (after the rate) that the two pages could disagree about. They cannot
+   * here, because both reach it through `buildDayZoneHours` — but only as long
+   * as neither grows a shortcut that prices shifts without going through it.
+   */
+  it('applies the overtime threshold on the overview exactly as on the employee’s page', async () => {
+    // 20 weekday shifts of 9 h = 180 h, which is 6.67 h past the threshold.
+    // Closed shifts only — `payableShifts` never carries an open one.
+    const shifts: { userId: number; startTime: Date; endTime: Date }[] = [];
+    const cursor = new Date(Date.UTC(2026, 6, 27)); // Mon 27 Jul
+    while (shifts.length < 20) {
+      const weekday = cursor.getUTCDay();
+      if (weekday !== 0 && weekday !== 6) {
+        const date = cursor.toISOString().slice(0, 10);
+        shifts.push({
+          userId: 2,
+          startTime: new Date(`${date}T08:00:00Z`),
+          endTime: new Date(`${date}T17:00:00Z`),
+        });
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    const overview = await makeService({
+      allEmployees: [jane],
+      payableShifts: shifts,
+    }).service.getOverview();
+    const own = await makeService({
+      payableShifts: shifts,
+    }).service.getPayrollForCycle(2);
+
+    const overtime = own.zones.find((zone) => zone.zone === PayZone.OVERTIME);
+    expect(overtime?.hours).toBe(6.67);
+    expect(overview.rows[0].totalPay).toBe(own.totalPay);
+    expect(overview.rows[0].totalHours).toBe(own.totalHours);
   });
 
   /**

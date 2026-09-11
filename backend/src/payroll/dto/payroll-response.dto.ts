@@ -3,7 +3,7 @@ import { CycleRangeDto } from '../../settings/dto/cycle-range.dto';
 import { PayZone } from '../rate-zones.util';
 
 /**
- * Hours worked on one date, split by rate zone. All four keys are always
+ * Hours worked on one date, split by rate zone. All five keys are always
  * present (0 where nothing was worked), so the client renders a fixed grid and
  * never handles a missing key.
  *
@@ -22,6 +22,13 @@ export class DayZoneHoursDto {
 
   @ApiProperty({ example: 0, description: 'Sat & Sun, all day, +45%.' })
   WEEKEND!: number;
+
+  @ApiProperty({
+    example: 0,
+    description:
+      'Hours past 173.33 for the cycle, +80%. Unlike the four above this is not a time of day: it is whatever was worked after the cycle total passed the threshold, in whichever zone. Hours counted here have been **moved out of** their clock zone on the same row, so a row still totals the hours actually worked that date.',
+  })
+  OVERTIME!: number;
 }
 
 /**
@@ -46,7 +53,7 @@ export class PayrollDayDto {
   @ApiProperty({
     example: 8.25,
     description:
-      'The row total, already computed. Render it as sent — do not add the four cells yourself. They arrive as decimal numbers, and summing those in JavaScript disagrees with this figure about a third of the time (1.99 + 22.35 + 2.92 gives 27.259999999999998, not 27.26). The integers behind them do sum exactly· their decimal representations do not.',
+      'The row total, already computed. Render it as sent — do not add the five cells yourself. They arrive as decimal numbers, and summing those in JavaScript disagrees with this figure about a third of the time (1.99 + 22.35 + 2.92 gives 27.259999999999998, not 27.26). The integers behind them do sum exactly· their decimal representations do not.',
   })
   totalHours!: number;
 }
@@ -60,7 +67,7 @@ export class PayrollZoneDto {
     enum: PayZone,
     example: PayZone.EVENING,
     description:
-      'Stable key — also the key into PayrollDayDto.hours. NIGHT and WEEKEND share a rate but stay separate, because a client can merge two rows and never split one.',
+      'Stable key — also the key into PayrollDayDto.hours. NIGHT and WEEKEND share a rate but stay separate, because a client can merge two rows and never split one. OVERTIME is the one zone not decided by the clock: it is the hours past 173.33 in this cycle, whatever time of day they fell in.',
   })
   zone!: PayZone;
 
@@ -153,7 +160,7 @@ export class PayrollResponseDto extends CycleRangeDto {
 
   @ApiProperty({
     type: [PayrollZoneDto],
-    description: 'Always four entries, in display order, zero hours included.',
+    description: 'Always five entries, in display order, zero hours included.',
   })
   zones!: PayrollZoneDto[];
 

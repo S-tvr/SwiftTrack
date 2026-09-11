@@ -182,13 +182,76 @@ describe('/payroll', () => {
       expect(z.pay).toBe(Math.round(z.hours * z.rate));
     }
 
-    // Always four zones, even the empty ones — the client renders a list.
+    // Always five zones, even the empty ones — the client renders a list.
     expect(body.zones.map((z) => z.zone)).toEqual([
       'DAY',
       'EVENING',
       'NIGHT',
       'WEEKEND',
+      'OVERTIME',
     ]);
+  });
+
+  it('moves hours past 173.33 into overtime, and still adds up', async () => {
+    // 20 weekday shifts of 9 h inside the 2026-07 cycle (25 Jul - 25 Aug):
+    // 180 h worked, 173.33 of it normal and the remaining 6.67 h overtime.
+    const cursor = new Date(Date.UTC(2026, 6, 27)); // Mon 27 Jul
+    let seeded = 0;
+    while (seeded < 20) {
+      const weekday = cursor.getUTCDay();
+      if (weekday !== 0 && weekday !== 6) {
+        const date = cursor.toISOString().slice(0, 10);
+        await seedShift(server, adminToken, employee.id, {
+          startTime: `${date}T08:00:00.000Z`,
+          endTime: `${date}T17:00:00.000Z`,
+        });
+        seeded += 1;
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    const body = await payrollFor('2026-07');
+
+    expect(body.totalHours).toBe(180);
+    expect(zone(body, 'OVERTIME').hours).toBe(6.67);
+    expect(zone(body, 'OVERTIME').rate).toBe(RATE * 1.8);
+
+    // The four clock zones stop exactly at the threshold.
+    const normal = ['DAY', 'EVENING', 'NIGHT', 'WEEKEND'].reduce(
+      (sum, name) => sum + zone(body, name).hours,
+      0,
+    );
+    expect(normal).toBeCloseTo(173.33, 10);
+
+    // The same integrity rules as the cycle above — overtime must not become a
+    // place where the columns stop reconciling.
+    expect(body.zones.reduce((sum, z) => sum + z.pay, 0)).toBe(body.totalPay);
+    expect(body.days.reduce((sum, d) => sum + d.totalHours, 0)).toBeCloseTo(
+      body.totalHours,
+      10,
+    );
+    for (const z of body.zones) {
+      expect(z.pay).toBe(Math.round(z.hours * z.rate));
+    }
+
+    // The day carrying the threshold splits across two columns, and its row
+    // still totals the nine hours actually worked.
+    const crossing = body.days.find((d) => d.hours.OVERTIME > 0)!;
+    expect(crossing.hours.DAY + crossing.hours.OVERTIME).toBeCloseTo(
+      crossing.totalHours,
+      10,
+    );
+
+    // And the admin's team overview prices the same cycle identically.
+    const overview = await request(server)
+      .get('/payroll/overview?cycle=2026-07')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    const row = (overview.body as PayrollOverviewBody).rows.find(
+      (r) => r.userId === employee.id,
+    );
+    expect(row?.totalPay).toBe(body.totalPay);
+    expect(row?.totalHours).toBe(body.totalHours);
   });
 
   it('returns the identical shape to the admin and the employee', async () => {

@@ -10,7 +10,18 @@ import { request } from "./client"
  * it — which is why the columns are generated from `zones[]` and the short
  * label falls back to the one the server sent (`zoneShortLabel` in messages.ts).
  */
-export type PayZone = "DAY" | "EVENING" | "NIGHT" | "WEEKEND"
+export type PayZone =
+  | "DAY"
+  | "EVENING"
+  | "NIGHT"
+  | "WEEKEND"
+  /**
+   * Hours past 173.33 in the cycle, +80%. Unlike the four above this is not a
+   * time of day: it is whatever was worked after the cycle total passed the
+   * threshold, in whichever zone. Those hours are **moved out of** their clock
+   * zone, so a day row still totals the hours actually worked that date.
+   */
+  | "OVERTIME"
 
 /**
  * One zone's line in the summary. Every figure is reproducible by hand:

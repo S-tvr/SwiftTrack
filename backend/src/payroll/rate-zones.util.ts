@@ -34,6 +34,7 @@ export enum PayZone {
   EVENING = 'EVENING',
   NIGHT = 'NIGHT',
   WEEKEND = 'WEEKEND',
+  OVERTIME = 'OVERTIME',
 }
 
 interface ZoneDefinition {
@@ -45,19 +46,40 @@ interface ZoneDefinition {
 }
 
 /**
- * The four zones, in display order. NIGHT and WEEKEND share a factor but stay
+ * The five zones, in display order. NIGHT and WEEKEND share a factor but stay
  * separate on purpose: a client can always merge two rows, never split one.
  *
  * These are hardcoded rather than stored in AppSettings deliberately — payroll
  * is computed on the fly and never frozen, so an editable percentage would
  * silently rewrite every past cycle. Changing one is a developer action.
+ *
+ * ⚠️ OVERTIME is not like the other four, and the difference matters whenever
+ * this list is read. The first four answer "WHEN was this hour worked?" and are
+ * decided by the clock alone (`resolveZone`). OVERTIME answers "HOW MANY hours
+ * came before it?" — it is a position in the cycle, not a time of day, and
+ * `resolveZone` never returns it. It sits last because it is what remains after
+ * the other four are capped.
  */
 export const PAY_ZONES: readonly ZoneDefinition[] = [
   { zone: PayZone.DAY, label: 'Day', rateFactorHundredths: 100 },
   { zone: PayZone.EVENING, label: 'Evening +33%', rateFactorHundredths: 133 },
   { zone: PayZone.NIGHT, label: 'Night +45%', rateFactorHundredths: 145 },
   { zone: PayZone.WEEKEND, label: 'Weekend +45%', rateFactorHundredths: 145 },
+  { zone: PayZone.OVERTIME, label: 'Overtime +80%', rateFactorHundredths: 180 },
 ];
+
+/**
+ * Hours beyond this in one cycle are overtime, whatever zone they fall in.
+ *
+ * ⚠️ 173.33 is the threshold **by definition**, not a rounding of 520/3
+ * (173.3333…). Do not "correct" it to a more precise figure: the number agreed
+ * with the employee is the one on this line, and every hour total in the system
+ * is held to two decimals anyway.
+ *
+ * Kept in code rather than AppSettings for the same reason as the factors
+ * above — an editable threshold would silently reprice every past cycle.
+ */
+export const OVERTIME_THRESHOLD_CENTIHOURS = 17_333;
 
 /** Mon-Fri 00:00-08:00 is NIGHT; 08:00-17:00 is DAY; 17:00-24:00 is EVENING. */
 const DAY_ZONE_START_HOUR = 8;
@@ -73,7 +95,7 @@ const HUNDREDTHS = 100;
 export interface DayZoneHours {
   /** `YYYY-MM-DD`, UTC. */
   date: string;
-  /** All four zones always present, so the client never handles a missing key. */
+  /** All five zones always present, so the client never handles a missing key. */
   centiHours: Record<PayZone, number>;
   totalCentiHours: number;
 }
@@ -82,6 +104,12 @@ interface DayZoneSegment {
   date: string;
   zone: PayZone;
   ms: number;
+  /**
+   * When this piece began, as an epoch instant. Carried so the overtime
+   * threshold can walk the cycle in the order the hours were actually worked —
+   * once segments are accumulated into (date × zone) cells, that order is gone.
+   */
+  startMs: number;
 }
 
 function zoneDefinition(zone: PayZone): ZoneDefinition {
@@ -95,7 +123,14 @@ function zoneDefinition(zone: PayZone): ZoneDefinition {
   return definition;
 }
 
-/** Which zone an instant falls in. Weekend wins the whole day; no zone ever overlaps another. */
+/**
+ * Which zone an instant falls in. Weekend wins the whole day; no zone ever
+ * overlaps another.
+ *
+ * ⚠️ Never returns OVERTIME, and must not be changed to. Overtime depends on
+ * how much was worked *earlier in the cycle*, which an instant on its own
+ * cannot answer — it is applied downstream, in `buildDayZoneHours`.
+ */
 export function resolveZone(instant: Date): PayZone {
   const dayOfWeek = instant.getUTCDay();
   if (dayOfWeek === 0 || dayOfWeek === 6) return PayZone.WEEKEND;
@@ -167,6 +202,7 @@ export function splitShiftIntoDayZoneSegments(
       date: at.toISOString().slice(0, 10),
       zone: resolveZone(at),
       ms: boundary - cursor,
+      startMs: cursor,
     });
     cursor = boundary;
   }
@@ -180,27 +216,56 @@ export function splitShiftIntoDayZoneSegments(
  * Rounding happens here and only here for hours: milliseconds are accumulated
  * across ALL shifts first, then each cell is rounded once. Rounding per shift
  * instead would let two short shifts on the same day each lose 18 seconds.
+ *
+ * ── The overtime threshold ───────────────────────────────────────────────────
+ * Once the cycle's running total passes OVERTIME_THRESHOLD_CENTIHOURS, every
+ * further hour is OVERTIME whatever zone the clock says, so this is the first
+ * calculation in the system where **the order of the hours changes the money**.
+ * Two consequences, both load-bearing:
+ *
+ *  1. Segments are walked in chronological order, sorted by `startMs` across
+ *     all shifts — the caller's array order is whatever Prisma returned and
+ *     means nothing. Shifts never overlap (spec §7a rule 3), so this order is
+ *     unambiguous.
+ *  2. The cut happens in **milliseconds, before** any cell is rounded. Cutting
+ *     rounded cells instead would round the boundary cell twice — once for its
+ *     normal part and once for its overtime part — and the day column would
+ *     stop adding up to the zone total below it.
+ *
+ * The threshold is per cycle and per person, which is why it lives here rather
+ * than in the service: both the employee's own page and the admin overview go
+ * through this function, so neither can be given a differently-priced cycle.
  */
 export function buildDayZoneHours(
   shifts: readonly { startTime: Date; endTime: Date | null }[],
   range: CycleRange,
 ): DayZoneHours[] {
-  const msByDate = new Map<string, Record<PayZone, number>>();
+  const segments = shifts
+    .flatMap((shift) =>
+      splitShiftIntoDayZoneSegments(shift.startTime, shift.endTime, range),
+    )
+    .sort((left, right) => left.startMs - right.startMs);
 
-  for (const shift of shifts) {
-    const segments = splitShiftIntoDayZoneSegments(
-      shift.startTime,
-      shift.endTime,
-      range,
-    );
-    for (const segment of segments) {
-      let row = msByDate.get(segment.date);
-      if (!row) {
-        row = emptyZoneRecord();
-        msByDate.set(segment.date, row);
-      }
-      row[segment.zone] += segment.ms;
+  const msByDate = new Map<string, Record<PayZone, number>>();
+  const thresholdMs = OVERTIME_THRESHOLD_CENTIHOURS * MS_PER_CENTIHOUR;
+  let workedMs = 0;
+
+  for (const segment of segments) {
+    let row = msByDate.get(segment.date);
+    if (!row) {
+      row = emptyZoneRecord();
+      msByDate.set(segment.date, row);
     }
+
+    // A segment straddling the threshold splits in two: the part below keeps
+    // the zone it was worked in, the rest becomes overtime. `room` is 0 once
+    // the threshold is behind us, which puts whole segments into overtime
+    // without a second branch.
+    const room = Math.max(0, thresholdMs - workedMs);
+    const normalMs = Math.min(segment.ms, room);
+    row[segment.zone] += normalMs;
+    row[PayZone.OVERTIME] += segment.ms - normalMs;
+    workedMs += segment.ms;
   }
 
   return (
@@ -273,5 +338,6 @@ function emptyZoneRecord(): Record<PayZone, number> {
     [PayZone.EVENING]: 0,
     [PayZone.NIGHT]: 0,
     [PayZone.WEEKEND]: 0,
+    [PayZone.OVERTIME]: 0,
   };
 }

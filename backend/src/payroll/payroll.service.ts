@@ -261,6 +261,7 @@ export class PayrollService {
         [PayZone.EVENING]: centiToNumber(day.centiHours[PayZone.EVENING]),
         [PayZone.NIGHT]: centiToNumber(day.centiHours[PayZone.NIGHT]),
         [PayZone.WEEKEND]: centiToNumber(day.centiHours[PayZone.WEEKEND]),
+        [PayZone.OVERTIME]: centiToNumber(day.centiHours[PayZone.OVERTIME]),
       },
       totalHours: centiToNumber(day.totalCentiHours),
     };

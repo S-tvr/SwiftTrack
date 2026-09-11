@@ -857,7 +857,10 @@ describe('UsersService', () => {
       user.findFirst.mockResolvedValue({ id: 7, name: 'Jane Employee' });
       // The raise starts 2026-09-25 — a full cycle after this one closes.
       userRate.findMany.mockResolvedValue([
-        { hourlyRate: 3200, effectiveFrom: new Date('2026-09-25T00:00:00.000Z') },
+        {
+          hourlyRate: 3200,
+          effectiveFrom: new Date('2026-09-25T00:00:00.000Z'),
+        },
         { hourlyRate: 2450, effectiveFrom: RATE_EPOCH },
       ]);
 

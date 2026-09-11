@@ -229,6 +229,7 @@ const SHORT_ZONE_LABELS: Record<string, string> = {
   EVENING: "Evening",
   NIGHT: "Night",
   WEEKEND: "Weekend",
+  OVERTIME: "Overtime",
 }
 
 /**

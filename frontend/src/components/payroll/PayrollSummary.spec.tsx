@@ -42,6 +42,7 @@ function payroll(overrides: Partial<PayrollResponse> = {}): PayrollResponse {
       zone({ zone: "EVENING", label: "Evening +33%", hours: 5.25, rate: 3258.5, pay: 17107 }),
       zone({ zone: "NIGHT", label: "Night +45%", hours: 6, rate: 3552.5, pay: 21315 }),
       zone({ zone: "WEEKEND", label: "Weekend +45%", hours: 12.5, rate: 3552.5, pay: 44406 }),
+      zone({ zone: "OVERTIME", label: "Overtime +80%", hours: 6.67, rate: 4410, pay: 29415 }),
     ],
     days: [],
     ...overrides,
@@ -61,7 +62,7 @@ describe("PayrollSummary — the rows come from the response", () => {
     render(<PayrollSummary data={payroll()} />)
 
     const rows = within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row")
-    expect(rows).toHaveLength(4)
+    expect(rows).toHaveLength(5)
     expect(rows[0].textContent).toContain("Day")
     expect(rows[1].textContent).toContain("Evening +33%")
   })
@@ -74,6 +75,19 @@ describe("PayrollSummary — the rows come from the response", () => {
     expect(screen.queryByText("Evening +33%")).not.toBeNull()
     expect(screen.queryByText("Night +45%")).not.toBeNull()
     expect(screen.queryByText("Weekend +45%")).not.toBeNull()
+  })
+
+  it("renders the overtime line with its own rate and pay", () => {
+    // Arrives as a zone like any other — this component needed no change to
+    // show it, which is the property the four-zone decision was taken under.
+    render(<PayrollSummary data={payroll()} />)
+
+    const rows = within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row")
+    const overtime = rows[4].textContent ?? ""
+    expect(overtime).toContain("Overtime +80%")
+    expect(overtime).toContain("6.67")
+    expect(overtime).toContain("4,410.00")
+    expect(overtime).toContain("29,415")
   })
 
   it("renders a zone this client has never heard of", () => {

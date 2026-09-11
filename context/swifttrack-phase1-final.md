@@ -202,6 +202,11 @@ The employee's pay history, and the only thing payroll prices a cycle with. Pay 
 | `EVENING` | Mon–Fri 17:00–24:00 | +33% |
 | `NIGHT` | Mon–Fri 00:00–08:00 | +45% |
 | `WEEKEND` | Sat & Sun, 00:00–24:00 | +45% |
+| `OVERTIME` | Every hour past **173.33** in the cycle, whatever the clock says | +80% |
+
+⚠️ **`OVERTIME` is not a time of day**, and that is the one way it differs from the four above. The first four answer *when* an hour was worked and are decided by the clock alone (`resolveZone` never returns `OVERTIME`). `OVERTIME` answers *how many hours came before it* — it is a position in the cycle. An hour counted there has been **moved out of** its clock zone, so a day row still totals the hours actually worked that date, and the four clock zones together stop at exactly 173.33 for the cycle.
+
+Which hours move is decided **chronologically**: once the cycle's running total passes the threshold, everything worked after it is overtime (added in step 16).
 
 ```
 relevantEntries = the user's closed TimeEntries (endTime != null) that OVERLAP the cycle
@@ -211,8 +216,23 @@ relevantEntries = the user's closed TimeEntries (endTime != null) that OVERLAP t
 
 Each entry is clipped to [cycleStart, cycleEndExclusive) and then cut at every zone
 boundary it crosses (08:00, 17:00, midnight), producing pieces of (date, zone).
-Pieces are accumulated per cell — one date × one zone — across ALL of the user's
-shifts, and only then rounded.
+
+Those pieces are then sorted CHRONOLOGICALLY across all of the user's shifts, and
+the overtime threshold is applied to them in that order, still in milliseconds:
+
+  worked = 0
+  for each piece, earliest first:
+    room     = max(0, 173.33h - worked)     ← 0 once the threshold is behind us
+    normal   = min(piece, room)             → stays in the zone it was worked in
+    overtime = piece - normal               → moves to OVERTIME
+    worked  += piece
+
+A piece straddling the threshold splits in two. Cutting here — before any rounding —
+is what keeps the day column adding up to the zone total: cutting rounded cells
+instead would round the boundary cell twice, once per half.
+
+Pieces are then accumulated per cell — one date × one zone — across ALL of the
+user's shifts, and only then rounded.
 
 cellHours   = round2(Σ milliseconds in that cell)     ← the ONE rounding of hours
 zoneHours   = Σ cellHours over the cycle              (exact sum, no rounding)

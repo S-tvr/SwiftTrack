@@ -34,7 +34,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 - Change your own password. Every other signed-in device is signed out; the one making the change stays in
 - Forgotten it instead? The sign-in page says to ask an admin, who resets it and hands over a new activation code — there is no email, so the code travels out of band
 
-**Pay calculation** happens on the server and is recomputed from the raw shifts on every request. Hours are split across four rate zones, and a shift crossing a boundary is divided between them. Each cycle is priced at the hourly rate in force when it started, so a raise applies from the next cycle and leaves past ones untouched.
+**Pay calculation** happens on the server and is recomputed from the raw shifts on every request. Hours are split across four rate zones by when they were worked, and anything past 173.33 hours in a cycle becomes overtime whatever the clock said. A shift crossing a boundary is divided between zones. Each cycle is priced at the hourly rate in force when it started, so a raise applies from the next cycle and leaves past ones untouched.
 
 | Zone | When | Rate |
 | --- | --- | --- |
@@ -42,6 +42,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 | Evening | Mon–Fri 17:00–24:00 | +33% |
 | Night | Mon–Fri 00:00–08:00 | +45% |
 | Weekend | All day Sat and Sun | +45% |
+| Overtime | Every hour past 173.33 in the cycle | +80% |
 
 ---
 
@@ -84,13 +85,13 @@ The first run builds both images, applies the migrations, creates the admin acco
 | --- | --- | --- | --- |
 | **Admin** | `admin@swifttrack.local` | `admin1234` | Lands on Team |
 | Employee | `anna@demo.local` | `demo1234` | |
-| Employee | `bjorn@demo.local` | `demo1234` | |
+| Employee | `bjorn@demo.local` | `demo1234` | Works all four zones, and goes into overtime — page ◀ to a completed cycle to see the Overtime line |
 | Employee | `elin@demo.local` | `demo1234` | Part-time, and currently clocked in |
 | Employee | `ragnar@demo.local` | `demo1234` | Had a raise — page ◀ on his payroll to see the older cycle still priced at the old rate |
 | Employee | `kristjan@demo.local` | — | Deactivated — cannot log in, still appears in payroll |
 | Employee | `sigridur@demo.local` | — | Pending — activate it with the setup code printed in the backend logs |
 
-The demo roster covers every state the UI has to render, including the two accounts that cannot log in. To watch the activation flow, find the setup code in the startup logs (`docker compose logs backend | grep "setup code"`) and use **Activate your account** on the login page.
+The demo roster covers every state the UI has to render, including the two accounts that cannot log in. ⚠️ Overtime only shows on a **completed** cycle: shifts stop at yesterday, so the cycle in progress has not reached 173.33 hours yet — press ◀ once. To watch the activation flow, find the setup code in the startup logs (`docker compose logs backend | grep "setup code"`) and use **Activate your account** on the login page.
 
 The roster also shows why the row actions differ: **Reset password** appears only on the four accounts that have one, while Sigríður offers **New code** instead and Kristján offers **Reactivate** — a code issued to a deactivated account cannot work until they are active again. Resetting Anna's password turns her row into a pending one, code and all, which is the same state Sigríður is already in.
 

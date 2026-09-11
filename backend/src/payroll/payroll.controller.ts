@@ -56,7 +56,7 @@ export class PayrollController {
     status: 200,
     type: PayrollResponseDto,
     description:
-      "The caller's breakdown for the resolved cycle: the four zones with hours/rate/pay, and a row per date with hours only. Render `zones[]` as a list, never as hardcoded columns.",
+      "The caller's breakdown for the resolved cycle: the five zones with hours/rate/pay, and a row per date with hours only. Render `zones[]` as a list, never as hardcoded columns — the fifth (OVERTIME) was added without any client change, which is the property to preserve.",
   })
   @ApiResponse({
     status: 400,

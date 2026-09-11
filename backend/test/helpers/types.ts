@@ -64,7 +64,7 @@ export interface OpenShiftBody {
 }
 
 export interface PayrollZone {
-  zone: 'DAY' | 'EVENING' | 'NIGHT' | 'WEEKEND';
+  zone: 'DAY' | 'EVENING' | 'NIGHT' | 'WEEKEND' | 'OVERTIME';
   label: string;
   hours: number;
   rate: number;
@@ -73,7 +73,13 @@ export interface PayrollZone {
 
 export interface PayrollDay {
   date: string;
-  hours: { DAY: number; EVENING: number; NIGHT: number; WEEKEND: number };
+  hours: {
+    DAY: number;
+    EVENING: number;
+    NIGHT: number;
+    WEEKEND: number;
+    OVERTIME: number;
+  };
   totalHours: number;
 }
 

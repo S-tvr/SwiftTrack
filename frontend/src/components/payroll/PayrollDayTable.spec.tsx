@@ -27,6 +27,7 @@ const ZONES: PayrollZone[] = [
   zone({ zone: "EVENING", label: "Evening +33%", hours: 5.25, rate: 3258.5, pay: 17107 }),
   zone({ zone: "NIGHT", label: "Night +45%", hours: 6, rate: 3552.5, pay: 21315 }),
   zone({ zone: "WEEKEND", label: "Weekend +45%", hours: 12.5, rate: 3552.5, pay: 44406 }),
+  zone({ zone: "OVERTIME", label: "Overtime +80%", hours: 0, rate: 4410, pay: 0 }),
 ]
 
 function day(overrides: Partial<PayrollDay> = {}): PayrollDay {
@@ -36,7 +37,7 @@ function day(overrides: Partial<PayrollDay> = {}): PayrollDay {
     // A formatter without `timeZone: "UTC"` prints the **24th** here — which is
     // how a Saturday's weekend hours land on a row labelled Friday.
     date: "2026-07-25",
-    hours: { DAY: 5, EVENING: 3.25, NIGHT: 0, WEEKEND: 0 },
+    hours: { DAY: 5, EVENING: 3.25, NIGHT: 0, WEEKEND: 0, OVERTIME: 0 },
     totalHours: 8.25,
     ...overrides,
   }
@@ -76,7 +77,7 @@ describe("PayrollDayTable — the columns", () => {
     // Two different sets of words, both binding: the summary prints the full
     // label because the surcharge is checkable there against Rate and Total
     // Pay. This table has no money in it, so a percentage would be
-    // unverifiable noise across six columns.
+    // unverifiable noise across seven columns.
     render(<PayrollDayTable data={payroll()} />)
 
     const headers = screen
@@ -88,6 +89,7 @@ describe("PayrollDayTable — the columns", () => {
       "Evening",
       "Night",
       "Weekend",
+      "Overtime",
       "Total",
     ])
   })
@@ -170,7 +172,7 @@ describe("PayrollDayTable — the cells", () => {
     expect(cells[4].textContent).toBe("—")
   })
 
-  it("⚠️ prints the row total as sent, never the sum of the four cells", () => {
+  it("⚠️ prints the row total as sent, never the sum of the cells", () => {
     // The measurement behind the rule: `1.99 + 22.35 + 2.92` in JavaScript is
     // 27.259999999999998, not 27.26 — and it disagrees in about a third of
     // rows. The fixture is deliberately inconsistent so that reading and
@@ -181,7 +183,9 @@ describe("PayrollDayTable — the cells", () => {
 
     const row = within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row")[0]
     const cells = within(row).getAllByRole("cell")
-    expect(cells[5].textContent).toBe("99.99")
+    // The last cell, derived rather than hardcoded: the column count follows
+    // `zones[]`, so a sixth zone must not turn this into an off-by-one.
+    expect(cells[cells.length - 1].textContent).toBe("99.99")
   })
 
   it("lists only the dates the server sent", () => {
@@ -207,11 +211,33 @@ describe("PayrollDayTable — the Total row is read, not computed", () => {
     // The "Total" label is a `<th scope="row">`, so the data cells start at the
     // first zone column.
     const cells = within(footerOf(container)).getAllByRole("cell")
-    expect(cells).toHaveLength(5)
+    // One cell per zone, plus the grand total — counted from the fixture so a
+    // new zone updates this on its own.
+    expect(cells).toHaveLength(ZONES.length + 1)
     expect(cells[0].textContent).toBe("18.87")
     expect(cells[1].textContent).toBe("5.25")
     expect(cells[2].textContent).toBe("6.00")
     expect(cells[3].textContent).toBe("12.50")
+    // A zero column total prints 0.00, not a dash — see the component.
+    expect(cells[4].textContent).toBe("0.00")
+  })
+
+  it("renders overtime as its own column, split from the zone it came from", () => {
+    // The day the cycle crosses 173.33: 2.33 h stay DAY and 6.67 h move to
+    // OVERTIME, on the same row. What the employee needs to see is that the
+    // row still totals the nine hours they actually worked.
+    const crossing = day({
+      hours: { DAY: 2.33, EVENING: 0, NIGHT: 0, WEEKEND: 0, OVERTIME: 6.67 },
+      totalHours: 9,
+    })
+    render(<PayrollDayTable data={payroll({ days: [crossing] })} />)
+
+    const row = within(screen.getAllByRole("rowgroup")[1]).getAllByRole("row")[0]
+    const cells = within(row).getAllByRole("cell")
+    // Date, DAY, EVENING, NIGHT, WEEKEND, OVERTIME, Total
+    expect(cells[1].textContent).toBe("2.33")
+    expect(cells[5].textContent).toBe("6.67")
+    expect(cells[cells.length - 1].textContent).toBe("9.00")
   })
 
   it("⚠️ takes the grand total from totalHours", () => {
@@ -220,6 +246,6 @@ describe("PayrollDayTable — the Total row is read, not computed", () => {
     )
 
     const cells = within(footerOf(container)).getAllByRole("cell")
-    expect(cells[4].textContent).toBe("55.55")
+    expect(cells[cells.length - 1].textContent).toBe("55.55")
   })
 })

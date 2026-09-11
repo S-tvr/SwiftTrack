@@ -712,6 +712,36 @@ The three are independent — none reads another's data — and each detaches it
 
 ---
 
+## Step 16 — Overtime: hours past 173.33 in a cycle *(backend, done 2026-09-11)*
+
+Every hour beyond **173.33** in one cycle is overtime at **+80%** of the base rate, whatever zone the clock puts it in. A fifth `PayZone.OVERTIME` joins `PAY_ZONES`, so the summary and the day table each gain a line/column without either component changing.
+
+- **Which hours move is decided chronologically** — once the cycle's running total passes the threshold, everything worked after it is overtime.
+- **`buildDayZoneHours` owns the threshold**, not `PayrollService`. `/payroll/:userId` and `/payroll/overview` both go through it, so there is no second path to forget· `payroll.service.ts` changed only in `toDayDto`.
+- **The cut happens in milliseconds, before any cell is rounded.** Cutting rounded cells would round the boundary cell twice and the day column would stop adding up to the zone total. The three rounding points stay three.
+- **`resolveZone()` never returns `OVERTIME`** — the four clock zones are a function of one instant, overtime is a position in the cycle. Two new invariants in `architecture.md` record this and the chronological walk.
+- **Threshold and factor are constants in code**, not `AppSettings` — same reason as the zone percentages: payroll is never frozen, so an editable figure would silently reprice every past cycle.
+
+**Tests**: 242 → **250** unit, 127 → **128** e2e. The worked example (42.62 h) is deliberately unchanged — it sits far below the threshold, so a regression there would mean the feature leaked into cycles it must not touch.
+
+⚠️ **The design was measured, not assumed.** Capping the already-aggregated day cells was the cheaper implementation and is **wrong by up to 8 h/cycle** in display order (`DAY` first, when hours actually run NIGHT → DAY → EVENING); even in chronological zone order it is only silently correct while zones stay defined by fixed hour boundaries. See the tracker entry for the measurements.
+
+---
+
+## Step 16a — Overtime (frontend, done 2026-09-11)
+
+The step the four-zone decision was taken to make cheap, and it held: **neither payroll component changed.** `PayrollSummary` builds its rows from `zones[]` and `PayrollDayTable` builds its columns the same way, so the fifth zone appeared on both by adding one union member and one label.
+
+- `api/payroll.ts` — `PayZone` gains `"OVERTIME"`. `DayZoneHours` is `Record<PayZone, number>`, so the day cells followed on their own.
+- `lib/messages.ts` — `SHORT_ZONE_LABELS.OVERTIME = "Overtime"`, the column header without a percentage (§8a). Without it the fallback prints the full "Overtime +80%" into a header beside "Day" and "Evening".
+- **The day table went 6 → 7 columns.** Both tables already sit in `overflow-x-auto` and every cell is `whitespace-nowrap`, so the extra width scrolls inside the table rather than moving the page.
+
+⚠️ **Four component tests failed on hardcoded column indices** (`cells[5]`, `toHaveLength(5)`) — they asserted positions that the new column shifted. Rewritten to derive from the data (`cells[cells.length - 1]`, `ZONES.length + 1`) so the next zone does not break them again.
+
+**Tests**: 235 → **237** frontend, in 17 files.
+
+---
+
 ## Rule for every step
 
 Before a module is considered "done":
