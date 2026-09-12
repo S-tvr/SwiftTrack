@@ -6,7 +6,7 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 
 ![NestJS](https://img.shields.io/badge/NestJS-11-E0234E?logo=nestjs&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![Prisma](https://img.shields.io/badge/Prisma-7-2D3748?logo=prisma&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
@@ -29,14 +29,14 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 - Reset a forgotten password: the account goes back through activation with a fresh code, and every device it was signed in on is signed out
 - Payroll overview for a cycle — hours, pay and total cost across the team, with a warning for anyone still clocked in
 - Drill down into any employee's shift history or payroll breakdown
-- Settings — the day the pay cycle starts and ends
+- Settings — the day the pay cycle starts, from the 20th to the 25th. The end day is not a second setting: it is always the day before, and is shown rather than offered
 
 **Both roles**
 
 - Change your own password. Every other signed-in device is signed out; the one making the change stays in
 - Forgotten it instead? The sign-in page says to ask an admin, who resets it and hands over a new activation code — there is no email, so the code travels out of band
 
-**Pay calculation** happens on the server and is recomputed from the raw shifts on every request. Hours are split across four rate zones by when they were worked, and anything past 173.33 hours in a cycle becomes overtime whatever the clock said. A shift crossing a boundary is divided between zones. Each cycle is priced at the hourly rate in force when it started, so a raise applies from the next cycle and leaves past ones untouched.
+**Pay calculation** happens on the server and is recomputed from the raw shifts on every request. Hours fall into five rate zones. Four of them answer *when* an hour was worked and are decided by the clock alone; the fifth, overtime, answers *how many hours came before it* — past 173.33 in a cycle, an hour moves there whatever the clock said. A shift crossing a boundary is divided between zones. Each cycle is priced at the hourly rate in force when it started, so a raise applies from the next cycle and leaves past ones untouched.
 
 | Zone | When | Rate |
 | --- | --- | --- |
@@ -52,10 +52,10 @@ Time tracking and payroll for a single company. Employees clock in and out and s
 
 | Layer | Choice |
 | --- | --- |
-| Backend | NestJS 11, TypeScript |
+| Backend | NestJS 11, TypeScript 5.7 |
 | ORM | Prisma 7 with the `@prisma/adapter-pg` driver adapter |
 | Database | PostgreSQL 16 |
-| Frontend | React 19, Vite 8, React Router 7 |
+| Frontend | React 19, Vite 8, React Router 7, TypeScript 6 |
 | Styling | Tailwind CSS v4 (CSS-first, no config file), shadcn/ui on Base UI |
 | Auth | JWT bearer tokens (`@nestjs/jwt` + Passport), 12-hour expiry, revoked on password change |
 | Validation | `class-validator` DTOs behind a global `ValidationPipe` |
@@ -184,7 +184,7 @@ cd backend && npm run seed:demo
 
 ## Testing
 
-**Backend** — 264 unit tests and 137 full-stack tests against a real database:
+**Backend** — 277 unit tests and 155 full-stack tests against a real database:
 
 ```bash
 cd backend
@@ -239,6 +239,7 @@ Swagger UI is at **http://localhost:3000/api** with every endpoint, DTO and erro
 │   │   ├── time-entries/    clock in/out, shift CRUD, overlap rules
 │   │   ├── payroll/         rate zones and pay calculation
 │   │   ├── settings/        pay-cycle configuration
+│   │   ├── audit/           who changed what, and what it said before
 │   │   ├── common/          error codes, and the request/error logging
 │   │   └── main.ts          bootstrap, CORS, Swagger, ValidationPipe, error filter
 │   └── test/                end-to-end suite
@@ -268,6 +269,7 @@ Deliberate boundaries of this version, not oversights:
 - **Single tenant, single admin.** There is no public registration — the first admin comes from the seed script, and every employee is created by that admin.
 - **Password recovery runs through the admin, and stops there.** An employee who forgets their password asks the admin, who resets it and reads out a new activation code; there is no email, so the code travels out of band by design. The admin has no such route of their own — no email reset and no second admin — so recovering *that* password means editing the database or re-running the seed.
 - **An open shift is only visible in the cycle it started in**, which is intentional: a shift running right now must not raise an alarm on a cycle from three months ago.
+- **No browser end-to-end tests.** The planned Playwright step was not built. The API is covered end to end against a real database and the components have unit tests, but nothing drives a real browser through a whole flow, so the seams between the two are verified by hand.
 
 ---
 
