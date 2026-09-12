@@ -1,5 +1,7 @@
 # SwiftTrack
 
+> Για οδηγίες χρήσης και τους κανόνες της εφαρμογής, ανατρέξτε στο [EGCHEIRIDIO.md](EGCHEIRIDIO.md).
+
 Time tracking and payroll for a single company. Employees clock in and out and see what they have earned; an admin manages the team, corrects shifts and reviews the payroll cost for each pay cycle.
 
 ![NestJS](https://img.shields.io/badge/NestJS-11-E0234E?logo=nestjs&logoColor=white)
@@ -260,7 +262,8 @@ Deliberate boundaries of this version, not oversights:
 
 - **Payroll is never frozen.** Pay is recomputed from raw shifts on every request. Hourly rates are historised, so a raise does not reach past cycles — but editing a shift in a past cycle still changes that cycle's total. A snapshot per closed cycle would fix the rest.
 - **A new rate takes effect at the next cycle, and cannot be corrected afterwards.** Until that cycle starts the rate stays editable; once it is in force, changing it means editing the database.
-- **No audit log and no approval flow.** Employees write the hours they are paid for, and an edit leaves no history behind. The server logs failed requests and errors, but nothing records who changed what once a write succeeds.
+- **The audit trail has no reader.** Every successful write is recorded — who acted, on whom, and the row as it stood before and after — across shifts, employees, queued rates and settings. What is missing is the way out: there is no endpoint and no screen, so reading it means querying the `AuditLog` table directly. A viewer for an admin is the obvious next step.
+- **No approval flow.** Employees write the hours they are paid for, and nothing holds a shift back until someone signs it off. The audit trail records the change; it does not gate it.
 - **Overlapping shifts are checked, not constrained.** Two simultaneous submissions can both pass the check; the result is one duplicate row an admin can delete. A database-level exclusion constraint would close it.
 - **Single tenant, single admin.** There is no public registration — the first admin comes from the seed script, and every employee is created by that admin.
 - **Password recovery runs through the admin, and stops there.** An employee who forgets their password asks the admin, who resets it and reads out a new activation code; there is no email, so the code travels out of band by design. The admin has no such route of their own — no email reset and no second admin — so recovering *that* password means editing the database or re-running the seed.
