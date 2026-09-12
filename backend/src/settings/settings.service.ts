@@ -15,7 +15,7 @@ import {
 import { AuditAction, type AppSettings } from '../generated/prisma/client';
 
 const SETTINGS_ROW_ID = 1;
-const MIN_CYCLE_START_DAY = 11;
+const MIN_CYCLE_START_DAY = 20;
 const MAX_CYCLE_START_DAY = 25;
 
 /**
@@ -215,7 +215,7 @@ export class SettingsService {
   }
 
   /**
-   * `UpdateSettingsDto` keeps the stored day inside 11-25, where no month is
+   * `UpdateSettingsDto` keeps the stored day inside 20-25, where no month is
    * ever short of it. A row edited directly in the database could still hold
    * e.g. 31, which `Date.UTC` would silently roll over into the next month —
    * a wrong boundary, not an error. So it is checked here, on the path that

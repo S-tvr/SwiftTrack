@@ -122,7 +122,7 @@ export const LABELS = {
    *
    * ⚠️ Not "Total Monthly Cost", which is what the step 0 mockup said. A cycle
    * runs from the 25th to the 24th by default and its start day is configurable
-   * (11–25), so it is **not** a calendar month: an admin reading "monthly" would
+   * (20–25), so it is **not** a calendar month: an admin reading "monthly" would
    * file this figure under July while it covers 25 Jul – 24 Aug. The
    * CycleNavigator directly above prints the real dates, so this title only has
    * to avoid naming the period wrongly.

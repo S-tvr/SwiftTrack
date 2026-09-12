@@ -31,7 +31,7 @@ import { formatOrdinalDay } from "@/lib/format"
 import { errorText, LABELS, NOTICES, PAGE_TITLES } from "@/lib/messages"
 
 /**
- * The days a cycle may start on, matching `@Min(11) @Max(25)` on
+ * The days a cycle may start on, matching `@Min(20) @Max(25)` on
  * `UpdateSettingsDto`.
  *
  * ⚠️ The restricted list and the DTO are **layers, not duplicates** — the same
@@ -39,11 +39,14 @@ import { errorText, LABELS, NOTICES, PAGE_TITLES } from "@/lib/messages"
  * invalid pair impossible *by accident*; the DTO makes it impossible *at all*,
  * for any caller. Removing either one is a real loss.
  *
- * The range itself is not cosmetic: every day in it exists in every month, so
- * resolving a cycle never needs day-of-month clamping, and consecutive cycles
- * stay contiguous (spec §4, decision 5a).
+ * The range itself is not cosmetic. It is a **business rule** — a pay cycle
+ * starts at the end of the month, and the days below 20 were flexibility nobody
+ * used — and it preserves the property the original 11-25 was chosen for: every
+ * day in it exists in every month, so resolving a cycle never needs
+ * day-of-month clamping and consecutive cycles stay contiguous (spec §4,
+ * decision 5a).
  */
-const START_DAYS = Array.from({ length: 15 }, (_, index) => index + 11)
+const START_DAYS = Array.from({ length: 6 }, (_, index) => index + 20)
 
 /**
  * ⚠️ **No `z.coerce`** — it does not typecheck on this stack (architecture.md
@@ -53,13 +56,13 @@ const START_DAYS = Array.from({ length: 15 }, (_, index) => index + 11)
  * `register(..., { valueAsNumber: true })` does not apply here — that idiom
  * belongs to a native `<select>`, which yields a string.
  *
- * The bounds carry no message on purpose: a value outside 11-25 cannot be
- * produced by a list of exactly those fifteen options, so any sentence written
- * here would be copy no user can reach. The schema is the type boundary, not a
+ * The bounds carry no message on purpose: a value outside 20-25 cannot be
+ * produced by a list of exactly those six options, so any sentence written here
+ * would be copy no user can reach. The schema is the type boundary, not a
  * second thing to read.
  */
 const settingsSchema = z.object({
-  cycleStartDay: z.number().int().min(11).max(25),
+  cycleStartDay: z.number().int().min(20).max(25),
 })
 
 type SettingsValues = z.infer<typeof settingsSchema>

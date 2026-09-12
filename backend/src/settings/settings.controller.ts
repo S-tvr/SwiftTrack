@@ -44,7 +44,7 @@ export class SettingsController {
   @ApiOperation({
     summary: 'Update the pay-cycle settings (ADMIN)',
     description:
-      'cycleStartDay must be 11-25 and cycleEndDay exactly cycleStartDay - 1, so consecutive cycles are contiguous and no shift falls between them or into two at once.',
+      'cycleStartDay must be 20-25 and cycleEndDay exactly cycleStartDay - 1, so consecutive cycles are contiguous and no shift falls between them or into two at once.',
   })
   @ApiResponse({
     status: 200,

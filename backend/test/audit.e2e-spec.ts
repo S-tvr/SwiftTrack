@@ -421,7 +421,7 @@ describe('Audit log (e2e)', () => {
       await request(ctx.server)
         .put('/settings')
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ cycleStartDay: 15, cycleEndDay: 14 })
+        .send({ cycleStartDay: 20, cycleEndDay: 19 })
         .expect(200);
 
       const [row] = await auditRows(ctx.prisma, {
@@ -432,7 +432,7 @@ describe('Audit log (e2e)', () => {
       expect(row.subjectId).toBeNull();
       expect(row.entityId).toBeNull();
       expect(row.before).toEqual({ cycleStartDay: 25, cycleEndDay: 24 });
-      expect(row.after).toEqual({ cycleStartDay: 15, cycleEndDay: 14 });
+      expect(row.after).toEqual({ cycleStartDay: 20, cycleEndDay: 19 });
     });
 
     /**
@@ -530,7 +530,7 @@ describe('Audit log (e2e)', () => {
       await request(ctx.server)
         .put('/settings')
         .set('Authorization', `Bearer ${adminToken}`)
-        .send({ cycleStartDay: 15, cycleEndDay: 14 })
+        .send({ cycleStartDay: 20, cycleEndDay: 19 })
         .expect(200);
 
       const [row] = await auditRows(ctx.prisma);

@@ -11,7 +11,7 @@ import { request } from "./client"
  * it to compute with.
  */
 export interface Settings {
-  /** Day of the month a cycle starts. 11-25, enforced by the DTO. */
+  /** Day of the month a cycle starts. 20-25, enforced by the DTO. */
   cycleStartDay: number
   /** Day of the *following* month a cycle ends. Always `cycleStartDay - 1`. */
   cycleEndDay: number

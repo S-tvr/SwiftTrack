@@ -56,7 +56,7 @@ export function formatCycleKey(year: number, month: number): string {
  * unchanged lands on the *following* month — exactly where the exclusive end
  * belongs — and rolls the year over on its own for December.
  *
- * No day-of-month clamping: `cycleStartDay` is restricted to 11-25, and every
+ * No day-of-month clamping: `cycleStartDay` is restricted to 20-25, and every
  * one of those days exists in every month, February included.
  */
 export function computeCycleRange(

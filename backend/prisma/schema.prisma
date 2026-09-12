@@ -178,9 +178,21 @@ model TimeEntry {
   @@index([userId, startTime])
 }
 
-// DB also has a `CHECK ("id" = 1)` constraint, added by hand in a migration
-// (Prisma has no native syntax for it) — enforces the single-row invariant
-// below the application layer too. See migrations/..._appsettings_singleton_check.
+// DB also has three hand-written CHECK constraints, added by migrations because
+// Prisma has no native syntax for them — each enforcing below the application
+// layer something the application already refuses at its own door:
+//
+//   `CHECK ("id" = 1)`                          the single-row invariant
+//     — migrations/..._appsettings_singleton_check
+//   `CHECK ("cycleStartDay" BETWEEN 20 AND 25)` the allowed boundary days
+//   `CHECK ("cycleEndDay" = "cycleStartDay" - 1)`  the derivation between them
+//     — migrations/..._narrow_cycle_start_day_range
+//
+// ⚠️ The 20-25 range is a **business rule**: a pay cycle starts at the end of
+// the month. It was 11-25 until 2026-09-12, and the days below 20 were
+// flexibility nobody used. It still carries the property the wider range was
+// chosen for — every day in it exists in every month, so cycle arithmetic never
+// needs day-of-month clamping and consecutive cycles stay contiguous.
 model AppSettings {
   id            Int @id @default(1)
   cycleStartDay Int @default(25)

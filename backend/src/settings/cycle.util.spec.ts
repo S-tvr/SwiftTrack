@@ -54,9 +54,9 @@ describe('computeCycleRange', () => {
   });
 
   it('needs no clamping for February — every allowed day exists in every month', () => {
-    expect(computeCycleRange('2026-02', 11)).toEqual({
-      start: utc('2026-02-11T00:00:00.000Z'),
-      endExclusive: utc('2026-03-11T00:00:00.000Z'),
+    expect(computeCycleRange('2026-02', 20)).toEqual({
+      start: utc('2026-02-20T00:00:00.000Z'),
+      endExclusive: utc('2026-03-20T00:00:00.000Z'),
     });
     // 2028 is a leap year; the 25th exists either way.
     expect(computeCycleRange('2028-02', 25)).toEqual({

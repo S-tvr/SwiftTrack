@@ -71,32 +71,20 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("SettingsPage — the select is the validation", () => {
-  it("offers exactly the fifteen days the DTO accepts, 11-25", async () => {
-    // The restricted list and @Min(11)/@Max(25) are layers, not duplicates: this
+  it("offers exactly the six days the DTO accepts, 20-25", async () => {
+    // The restricted list and @Min(20)/@Max(25) are layers, not duplicates: this
     // one makes an invalid pair impossible by accident, the DTO makes it
     // impossible at all.
+    //
+    // ⚠️ The list was 11-25 until 2026-09-12. Asserting the whole array rather
+    // than its length is what makes a day outside the business rule fail here
+    // rather than only at the API — 19 is the case that used to pass.
     await renderPage()
     await openList()
 
     const options = screen.getAllByRole("option").map((o) => o.textContent)
 
-    expect(options).toEqual([
-      "11",
-      "12",
-      "13",
-      "14",
-      "15",
-      "16",
-      "17",
-      "18",
-      "19",
-      "20",
-      "21",
-      "22",
-      "23",
-      "24",
-      "25",
-    ])
+    expect(options).toEqual(["20", "21", "22", "23", "24", "25"])
   })
 
   it("shows the day the server sent", async () => {
@@ -119,10 +107,10 @@ describe("SettingsPage — the derived end day", () => {
 
   it("follows the selection before anything is saved", async () => {
     await renderPage()
-    await chooseDay(12)
+    await chooseDay(22)
 
     expect(
-      screen.queryByText("Cycle ends on the 11th of the following month."),
+      screen.queryByText("Cycle ends on the 21st of the following month."),
     ).not.toBeNull()
   })
 })
@@ -167,7 +155,7 @@ describe("SettingsPage — saving", () => {
     // Base UI's Select.Root is generic over its value type, which is why no
     // z.coerce and no valueAsNumber appear anywhere on this page.
     await renderPage()
-    await chooseDay(11)
+    await chooseDay(21)
     await save()
 
     fireEvent.click(screen.getByRole("button", { name: "Change cycle" }))

@@ -2999,3 +2999,70 @@ Date: 2026-09-12
 - ⭐ **Ζωντανά** (rebuild): και τα **τρία** σενάρια του πίνακα παραπάνω επαληθεύτηκαν στον πραγματικό πίνακα. Κάθε γραμμή περιγράφει αλλαγή που όντως συνέβη.
 
 **Next step**: **13b (Playwright)** ή UI για το audit log, κατ' επιλογή του χρήστη.
+
+---
+
+## Αλλαγή κανόνα — ο κύκλος ξεκινά 20-25 (ήταν 11-25)
+Status: ✅ Done
+Date: 2026-09-12
+
+**Επιχειρηματικός κανόνας**, όχι τεχνικός: ο κύκλος μισθοδοσίας ξεκινά στο τέλος
+του μήνα, και οι μέρες 11-19 ήταν θεωρητική ευελιξία που κανείς δεν χρησιμοποιεί.
+Το εύρος διατηρεί ό,τι εγγυόταν το παλιό — κάθε μέρα υπάρχει σε κάθε μήνα (άρα
+κανένα clamping) και οι διαδοχικοί κύκλοι εφάπτονται.
+
+### ⭐ Το εύρημα που καθόρισε τη δουλειά
+Ο περιορισμός υπήρχε σε **οκτώ σημεία** σε τρία επίπεδα, και κανένα δεν ήξερε για
+τα άλλα: DTO εισόδου, DTO απάντησης (Swagger), σταθερές του service, σχόλιο στο
+`cycle.util`, περιγραφή controller, η λίστα του `<select>`, το zod schema και ο
+τύπος στο `api/settings.ts`. Ένα `@Min` αλλαγμένο μόνο του θα άφηνε το UI να
+προσφέρει μέρες που η API απορρίπτει — σφάλμα ορατό μόνο στο κλικ.
+
+### ⭐ Η απόφαση που δεν ήταν προφανής: migration που **μετακινεί δεδομένα**
+Είναι η πρώτη migration του project που γράφει σε γραμμή αντί να αλλάζει σχήμα.
+Χωρίς αυτήν, εγκατάσταση με αποθηκευμένο 11-19 θα συνέχιζε να δουλεύει (ο service
+διαβάζει ό,τι βρει) αλλά **κάθε** `PUT /settings` θα απορριπτόταν από το νέο DTO
+— δηλαδή ο admin κλειδωμένος έξω από τη μόνη οθόνη που θα το διόρθωνε.
+
+⚠️ Καταγράφεται ρητά στο SQL ότι η μετακίνηση **ξανακόβει κάθε όριο κύκλου**: η
+μισθοδοσία δεν παγώνει ποτέ, άρα αλλάζει ποιες ώρες ανήκουν σε ποιον κύκλο,
+πληρωμένων συμπεριλαμβανομένων. Είναι η ίδια προειδοποίηση που βλέπει ο admin
+στο `ChangeCycleDialog`, εδώ χωρίς κανέναν να την επιβεβαιώσει.
+
+### ⭐ Δύο CHECK constraints — ο κανόνας κατεβαίνει κάτω από την εφαρμογή
+Προστέθηκαν `AppSettings_cycleStartDay_range` και `AppSettings_cycleEndDay_derived`.
+Το DTO φυλάει την πόρτα της API· τα constraints φυλάνε τη γραμμή που γράφεται
+**απευθείας στη βάση**, τη μόνη διαδρομή που το DTO δεν βλέπει. Ίδιο σκεπτικό με
+το singleton check και το partial unique index.
+
+**Μετρήθηκαν, δεν υποτέθηκαν** (`psql` στη ζωντανή βάση):
+- `UPDATE ... cycleStartDay = 15` → **ERROR** `AppSettings_cycleStartDay_range` ✅
+- `UPDATE ... 22 / 20` (ασύμφωνο ζεύγος) → **ERROR** `AppSettings_cycleEndDay_derived` ✅
+
+### Files added/changed
+- `prisma/migrations/20260912020000_narrow_cycle_start_day_range/` — data move + 2 CHECK.
+- `prisma/schema.prisma` — το σχόλιο του `AppSettings` απαριθμεί πλέον **και τα τρία** constraints (έλεγε μόνο το singleton).
+- `src/settings/dto/update-settings.dto.ts` — `@Min(20)`, `cycleEndDay` `@Min(19)`.
+- `src/settings/dto/settings-response.dto.ts` — τα Swagger bounds (**ήταν λάθος και πριν**: `minimum: 10` στο cycleEndDay ενώ το DTO εισόδου έλεγε 10 και το εύρος 11-25).
+- `src/settings/settings.service.ts` — `MIN_CYCLE_START_DAY`, + σχόλιο.
+- `src/settings/settings.controller.ts`, `src/settings/cycle.util.ts` — περιγραφές.
+- `frontend/src/pages/SettingsPage.tsx` — `START_DAYS` (15 → 6 επιλογές), zod bounds.
+- `frontend/src/api/settings.ts` — σχόλιο τύπου.
+- Specs: `settings.service.spec.ts` (fixtures 11→20 + οι ημερομηνίες τους), `cycle.util.spec.ts` (Φεβρουάριος), `test/settings.e2e-spec.ts`, `test/audit.e2e-spec.ts` (15→20), `frontend/SettingsPage.spec.tsx`.
+- Context: spec (§3, §4 decision 5a, §6), `architecture.md` (3 σημεία), `build-plan.md` (4 σημεία), `ΕΓΧΕΙΡΙΔΙΟ.md`, αυτό.
+
+### ⚠️ Νέο test, όχι μόνο μετακίνηση υπαρχόντων
+Το e2e απέκτησε case **`formerly allowed, now below the range`** (11/10) δίπλα στο
+`below the range` (19/18). Χωρίς αυτό, η στένωση θα στηριζόταν μόνο στο decorator
+από το οποίο προήλθε. Το frontend spec ελέγχει **ολόκληρο τον πίνακα** των έξι
+επιλογών αντί για το μήκος του, για τον ίδιο λόγο.
+
+### Verification που εκτελέστηκε
+- Backend unit **277/277**, e2e **155/155** (154 → +1, το νέο case).
+- Frontend **251/251** — ⭐ **και τα 17 αρχεία**, χωρίς τον worker που είχε πέσει στο προηγούμενο τρέξιμο.
+- `tsc --noEmit` + `eslint --max-warnings=0` καθαρά, και στα δύο.
+- ⭐ **Ζωντανά**: `prisma migrate deploy` σε πραγματική βάση· η γραμμή έμεινε 25/24 (ήταν ήδη εντός εύρους, άρα no-op όπως προβλέπεται)· και τα δύο constraints απέρριψαν.
+
+### ⚠️ Ανοιχτά
+1. **§13 gap 8** — αμετάβλητο, αλλά **στενεύει**: η σύγκρουση χρειάζεται αλλαγή ορίου ενώ εκκρεμεί αύξηση, και τώρα υπάρχουν 6 πιθανά όρια αντί για 15.
+2. **13b (Playwright)**, **UI για το audit log**, **§13 gap 7** — αμετάβλητα.

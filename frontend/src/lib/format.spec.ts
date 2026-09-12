@@ -90,28 +90,15 @@ describe("formatOrdinalDay", () => {
     expect(formatOrdinalDay(13)).toBe("13th")
   })
 
-  it("covers every end day the settings page can produce (10-24)", () => {
-    // cycleStartDay is 11-25, so the derived end day spans exactly these.
-    const expected = [
-      "10th",
-      "11th",
-      "12th",
-      "13th",
-      "14th",
-      "15th",
-      "16th",
-      "17th",
-      "18th",
-      "19th",
-      "20th",
-      "21st",
-      "22nd",
-      "23rd",
-      "24th",
-    ]
+  it("covers every end day the settings page can produce (19-24)", () => {
+    // cycleStartDay is 20-25, so the derived end day spans exactly these.
+    // ⚠️ 21st/22nd/23rd are the reason this is asserted day by day rather than
+    // trusting a "th" suffix: they are the only irregular ones in the range,
+    // and all three survived the 2026-09-12 narrowing from 11-25.
+    const expected = ["19th", "20th", "21st", "22nd", "23rd", "24th"]
 
     expect(
-      Array.from({ length: 15 }, (_, index) => formatOrdinalDay(index + 10)),
+      Array.from({ length: 6 }, (_, index) => formatOrdinalDay(index + 19)),
     ).toEqual(expected)
   })
 

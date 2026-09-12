@@ -77,22 +77,22 @@ describe('SettingsService', () => {
   describe('updateSettings', () => {
     it('writes both days to the singleton row', async () => {
       const { service, update } = serviceWith(row(25, 24));
-      update.mockResolvedValue(row(11, 10));
+      update.mockResolvedValue(row(20, 19));
 
       await expect(
-        service.updateSettings(ACTOR, { cycleStartDay: 11, cycleEndDay: 10 }),
-      ).resolves.toEqual({ cycleStartDay: 11, cycleEndDay: 10 });
+        service.updateSettings(ACTOR, { cycleStartDay: 20, cycleEndDay: 19 }),
+      ).resolves.toEqual({ cycleStartDay: 20, cycleEndDay: 19 });
 
       expect(update).toHaveBeenCalledWith({
         where: { id: 1 },
-        data: { cycleStartDay: 11, cycleEndDay: 10 },
+        data: { cycleStartDay: 20, cycleEndDay: 19 },
       });
     });
 
     it('fails with the seed message rather than an opaque Prisma error', async () => {
       const { service, update } = serviceWith(null);
       await expect(
-        service.updateSettings(ACTOR, { cycleStartDay: 11, cycleEndDay: 10 }),
+        service.updateSettings(ACTOR, { cycleStartDay: 20, cycleEndDay: 19 }),
       ).rejects.toThrow(/prisma db seed/);
       expect(update).not.toHaveBeenCalled();
     });
@@ -115,11 +115,11 @@ describe('SettingsService', () => {
     });
 
     it('uses the stored day, not a hardcoded 25', async () => {
-      const { service } = serviceWith(row(11, 10));
+      const { service } = serviceWith(row(20, 19));
       const { range } = await service.resolveCycleRange('2026-07');
 
-      expect(range.start.toISOString()).toBe('2026-07-11T00:00:00.000Z');
-      expect(range.endExclusive.toISOString()).toBe('2026-08-11T00:00:00.000Z');
+      expect(range.start.toISOString()).toBe('2026-07-20T00:00:00.000Z');
+      expect(range.endExclusive.toISOString()).toBe('2026-08-20T00:00:00.000Z');
     });
 
     it('defaults to the cycle containing now when ?cycle= is omitted', async () => {
@@ -196,11 +196,11 @@ describe('SettingsService', () => {
     it('moves with cycleStartDay rather than assuming the 25th', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
       try {
-        const { service } = serviceWith(row(11, 10));
-        // 3 August with an 11th boundary: running cycle is 2026-07 (11 Jul -
-        // 11 Aug), so a raise today starts on 11 August.
+        const { service } = serviceWith(row(20, 19));
+        // 3 August with a 20th boundary: running cycle is 2026-07 (20 Jul -
+        // 20 Aug), so a raise today starts on 20 August.
         await expect(service.resolveRateEffectiveFrom()).resolves.toEqual(
-          new Date('2026-08-11T00:00:00.000Z'),
+          new Date('2026-08-20T00:00:00.000Z'),
         );
       } finally {
         jest.useRealTimers();
@@ -265,11 +265,11 @@ describe('SettingsService', () => {
     it('moves with cycleStartDay rather than assuming the 25th', async () => {
       jest.useFakeTimers().setSystemTime(new Date('2026-08-03T10:00:00.000Z'));
       try {
-        const { service } = serviceWith(row(11, 10));
-        // 3 August with an 11th boundary: running cycle is 2026-07 (11 Jul -
-        // 11 Aug), so the window opens on 11 June.
+        const { service } = serviceWith(row(20, 19));
+        // 3 August with a 20th boundary: running cycle is 2026-07 (20 Jul -
+        // 20 Aug), so the window opens on 20 June.
         await expect(service.resolveWritableCycleStart()).resolves.toEqual(
-          new Date('2026-06-11T00:00:00.000Z'),
+          new Date('2026-06-20T00:00:00.000Z'),
         );
       } finally {
         jest.useRealTimers();

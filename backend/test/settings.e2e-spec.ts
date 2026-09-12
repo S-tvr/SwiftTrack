@@ -51,7 +51,7 @@ describe('/settings, DB constraints and CORS', () => {
     await request(server)
       .put('/settings')
       .set('Authorization', `Bearer ${employee.token}`)
-      .send({ cycleStartDay: 11, cycleEndDay: 10 })
+      .send({ cycleStartDay: 20, cycleEndDay: 19 })
       .expect(403);
   });
 
@@ -59,7 +59,7 @@ describe('/settings, DB constraints and CORS', () => {
     await request(server)
       .put('/settings')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ cycleStartDay: 11, cycleEndDay: 10 })
+      .send({ cycleStartDay: 20, cycleEndDay: 19 })
       .expect(200);
 
     const readBack = await request(server)
@@ -67,20 +67,29 @@ describe('/settings, DB constraints and CORS', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
     expect(readBack.body as SettingsBody).toEqual({
-      cycleStartDay: 11,
-      cycleEndDay: 10,
+      cycleStartDay: 20,
+      cycleEndDay: 19,
     });
   });
 
   /**
-   * The 11–25 restriction is what makes consecutive cycles contiguous and
-   * removes day-of-month clamping entirely. The admin UI (step 13) will offer
-   * only valid pairs, but Swagger UI is literally a form for hand-made
-   * requests — the two are layers, not duplicates.
+   * The 20–25 restriction is a business rule — a pay cycle starts at the end of
+   * the month — and it keeps what the original 11–25 range guaranteed:
+   * consecutive cycles are contiguous and day-of-month clamping never arises.
+   * The admin UI offers only valid pairs, but Swagger UI is literally a form
+   * for hand-made requests — the two are layers, not duplicates.
+   *
+   * ⚠️ `19` is the case that would have passed before 2026-09-12. It is listed
+   * explicitly so the narrowing is pinned by a test rather than only by the
+   * decorator it came from.
    */
   it.each([
     ['non-contiguous', { cycleStartDay: 25, cycleEndDay: 20 }],
-    ['below the range', { cycleStartDay: 10, cycleEndDay: 9 }],
+    ['below the range', { cycleStartDay: 19, cycleEndDay: 18 }],
+    [
+      'formerly allowed, now below the range',
+      { cycleStartDay: 11, cycleEndDay: 10 },
+    ],
     ['above the range', { cycleStartDay: 26, cycleEndDay: 25 }],
     ['end after start', { cycleStartDay: 25, cycleEndDay: 26 }],
   ])('rejects a %s pair with 400', async (_, payload) => {

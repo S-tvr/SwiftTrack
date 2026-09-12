@@ -82,9 +82,18 @@ export function formatIsk(value: number): string {
 }
 
 /**
- * English ordinal suffixes, selected by `Intl` rather than hand-rolled — the
- * naive "last digit" rule gets **11th, 12th and 13th** wrong, and 11 and 12 are
- * both inside the range this project actually uses (cycle days 10-25).
+ * English ordinal suffixes, selected by `Intl` rather than hand-rolled.
+ *
+ * The naive "last digit" rule gets **11th, 12th and 13th** wrong. ⚠️ Those three
+ * left the project's own range when cycle days narrowed to 20-25 on 2026-09-12,
+ * and the argument for `Intl` deliberately does **not** rest on them: this
+ * function is handed a day of the month, and the day it is handed is not this
+ * file's to predict. A hand-rolled table would be correct only for as long as
+ * nobody calls it with a teen — which is a constraint on every future caller,
+ * enforced nowhere.
+ *
+ * What the current range does change is the *irregular* suffixes actually in
+ * play: 21st, 22nd and 23rd, which `format.spec.ts` asserts day by day.
  */
 const ORDINAL_SUFFIXES: Record<string, string> = {
   one: "st",
